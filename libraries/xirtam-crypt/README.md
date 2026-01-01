@@ -5,7 +5,7 @@ xirtam-crypt provides small, opinionated wrappers around common crypto primitive
 | Module | Types | Primitive |
 | --- | --- | --- |
 | `dh` | `DhPublic`, `DhSecret` | X25519 Diffie-Hellman |
-| `signing` | `SigningPublic`, `SigningSecret` | Ed25519 signatures |
+| `signing` | `SigningPublic`, `SigningSecret`, `Signature` | Ed25519 signatures |
 | `symmetric` | `SymmetricKey` | ChaCha20-Poly1305 |
 | `hash` | `Hash` | BLAKE3 |
 

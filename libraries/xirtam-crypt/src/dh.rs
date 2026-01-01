@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::base64::Base64;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
+use crate::hash::Hash;
 
 /// X25519 public key used for Diffie-Hellman key exchange.
 #[derive(Clone, PartialEq, Eq)]
@@ -81,6 +82,40 @@ impl DhSecret {
     }
 }
 
+fn triple_dh_key(dh1: [u8; 32], dh2: [u8; 32], dh3: [u8; 32]) -> [u8; 32] {
+    let mut material = [0u8; 96];
+    material[..32].copy_from_slice(&dh1);
+    material[32..64].copy_from_slice(&dh2);
+    material[64..].copy_from_slice(&dh3);
+
+    Hash::digest(&material).to_bytes()
+}
+
+/// Derive a Triple-DH shared key from local and remote secrets/publics.
+pub fn triple_dh(
+    local_long_term: &DhSecret,
+    local_ephemeral: &DhSecret,
+    remote_long_term: &DhPublic,
+    remote_ephemeral: &DhPublic,
+) -> [u8; 32] {
+    let local_lt_pub = local_long_term.public_key();
+    let local_eph_pub = local_ephemeral.public_key();
+
+    let dh1 = local_long_term.diffie_hellman(remote_ephemeral);
+    let dh2 = local_ephemeral.diffie_hellman(remote_long_term);
+    let dh3 = local_ephemeral.diffie_hellman(remote_ephemeral);
+
+    let local_id = (local_lt_pub.to_bytes(), local_eph_pub.to_bytes());
+    let remote_id = (remote_long_term.to_bytes(), remote_ephemeral.to_bytes());
+    let (first, second) = if local_id <= remote_id {
+        (dh1, dh2)
+    } else {
+        (dh2, dh1)
+    };
+
+    triple_dh_key(first, second, dh3)
+}
+
 impl Serialize for DhSecret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -103,6 +138,7 @@ impl<'de> Deserialize<'de> for DhSecret {
 #[cfg(test)]
 mod tests {
     use super::{DhPublic, DhSecret};
+    use super::triple_dh;
 
     #[test]
     fn serde_json_round_trip_and_printing() {
@@ -125,5 +161,18 @@ mod tests {
 
         assert_eq!(secret.to_bytes(), secret_back.to_bytes());
         assert_eq!(public.to_bytes(), public_back.to_bytes());
+    }
+
+    #[test]
+    fn triple_dh_is_symmetric() {
+        let a_lt = DhSecret::from_bytes([1u8; 32]);
+        let a_eph = DhSecret::from_bytes([2u8; 32]);
+        let b_lt = DhSecret::from_bytes([3u8; 32]);
+        let b_eph = DhSecret::from_bytes([4u8; 32]);
+
+        let a_key = triple_dh(&a_lt, &a_eph, &b_lt.public_key(), &b_eph.public_key());
+        let b_key = triple_dh(&b_lt, &b_eph, &a_lt.public_key(), &a_eph.public_key());
+
+        assert_eq!(a_key, b_key);
     }
 }

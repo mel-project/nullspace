@@ -1,9 +1,9 @@
 use core::convert::TryFrom;
 
-use ed25519_consensus::{Signature, SigningKey, VerificationKey};
+use ed25519_consensus::{Signature as Ed25519Signature, SigningKey, VerificationKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::base64::Base64;
-use serde_with::{serde_as, Bytes, IfIsHumanReadable};
+use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 use thiserror::Error;
 
 /// Ed25519 public key used for signing verification.
@@ -13,6 +13,11 @@ pub struct SigningPublic(VerificationKey);
 /// Ed25519 signing key used to produce signatures.
 #[derive(Clone)]
 pub struct SigningSecret(SigningKey);
+
+/// Ed25519 signature.
+#[serde_as]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct Signature(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 64]);
 
 /// Errors returned by signing operations.
 #[derive(Debug, Error)]
@@ -45,13 +50,12 @@ impl SigningPublic {
     }
 
     /// Verify a signature over `msg` using this public key.
-    pub fn verify(&self, signature: &[u8; 64], msg: &[u8]) -> Result<(), SigningError> {
-        let sig = Signature::from(*signature);
+    pub fn verify(&self, signature: &Signature, msg: &[u8]) -> Result<(), SigningError> {
+        let sig = Ed25519Signature::from(signature.0);
         self.0
             .verify(&sig, msg)
             .map_err(|_| SigningError::InvalidSignature)
     }
-
 }
 
 impl Serialize for SigningPublic {
@@ -94,9 +98,21 @@ impl SigningSecret {
         SigningPublic(self.0.verification_key())
     }
 
-    /// Sign a message and return the 64-byte signature.
-    pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
-        self.0.sign(msg).to_bytes()
+    /// Sign a message and return the signature.
+    pub fn sign(&self, msg: &[u8]) -> Signature {
+        Signature(self.0.sign(msg).to_bytes())
+    }
+}
+
+impl Signature {
+    /// Build a signature from its 64-byte form.
+    pub fn from_bytes(bytes: [u8; 64]) -> Self {
+        Self(bytes)
+    }
+
+    /// Serialize the signature as 64 bytes.
+    pub fn to_bytes(&self) -> [u8; 64] {
+        self.0
     }
 }
 
@@ -121,7 +137,7 @@ impl<'de> Deserialize<'de> for SigningSecret {
 
 #[cfg(test)]
 mod tests {
-    use super::{SigningPublic, SigningSecret};
+    use super::{Signature, SigningPublic, SigningSecret};
 
     #[test]
     fn serde_json_round_trip_and_verify() {
@@ -148,6 +164,13 @@ mod tests {
 
         assert_eq!(secret.to_bytes(), secret_back.to_bytes());
         assert_eq!(public.to_bytes(), public_back.to_bytes());
-        public_back.verify(&signature, msg).expect("signature verify");
+        public_back
+            .verify(&signature, msg)
+            .expect("signature verify");
+
+        let signature_json = serde_json::to_string(&signature).expect("signature to json");
+        let signature_back: Signature =
+            serde_json::from_str(&signature_json).expect("signature from json");
+        assert_eq!(signature.to_bytes(), signature_back.to_bytes());
     }
 }

@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_with::hex::Hex;
-use serde_with::{serde_as, Bytes, IfIsHumanReadable};
+use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 
 /// BLAKE3 hash output.
 #[serde_as]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub struct Hash(#[serde_as(as = "IfIsHumanReadable<Hex, Bytes>")] [u8; 32]);
 
 impl Hash {

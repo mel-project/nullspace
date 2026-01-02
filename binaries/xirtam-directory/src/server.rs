@@ -11,14 +11,13 @@ use serde_json::json;
 use xirtam_crypt::hash::Hash;
 use xirtam_structs::directory::{
     DirectoryAnchor, DirectoryChunk, DirectoryErr, DirectoryHeader, DirectoryHistoryIterExt,
-    DirectoryProtocol, DirectoryResponse, DirectoryService, DirectoryUpdate,
-    PowAlgo, PowSeed, PowSolution,
+    DirectoryProtocol, DirectoryResponse, DirectoryService, DirectoryUpdate, PowAlgo, PowSeed,
+    PowSolution,
 };
 use xirtam_structs::timestamp::Timestamp;
 
 use crate::{
-    db,
-    pow,
+    db, pow,
     state::{DirectoryState, StagingChunk},
 };
 
@@ -137,10 +136,9 @@ impl DirectoryProtocol for DirectoryServer {
         db::purge_pow_seeds(&self.state.pool, now)
             .await
             .map_err(map_db_err)?;
-        let Some((use_before, effort)) =
-            db::fetch_pow_seed(&self.state.pool, &pow_solution.seed)
-                .await
-                .map_err(map_db_err)?
+        let Some((use_before, effort)) = db::fetch_pow_seed(&self.state.pool, &pow_solution.seed)
+            .await
+            .map_err(map_db_err)?
         else {
             return Err(DirectoryErr::UpdateRejected("unknown pow seed".into()));
         };
@@ -158,17 +156,14 @@ impl DirectoryProtocol for DirectoryServer {
             .await
             .map_err(map_db_err)?
             .0;
-        let mut staging = self.state.staging.lock();
-        let history = {
-            let mut history = db::load_updates_for_key(&self.state.pool, &key, last_height)
-                .await
-                .map_err(map_db_err)?;
-            if let Some(pending) = staging.updates.get(&key) {
-                history.extend(pending.iter().cloned());
-            }
-            history.push(update.clone());
-            history
-        };
+        let mut history = db::load_updates_for_key(&self.state.pool, &key, last_height)
+            .await
+            .map_err(map_db_err)?;
+        let mut staging = self.state.staging.lock().await;
+        if let Some(pending) = staging.updates.get(&key) {
+            history.extend(pending.iter().cloned());
+        }
+        history.push(update.clone());
         history
             .iter()
             .verify_history()
@@ -180,7 +175,7 @@ impl DirectoryProtocol for DirectoryServer {
 
 pub async fn commit_chunk(state: Arc<DirectoryState>) -> anyhow::Result<()> {
     let chunk = {
-        let mut staging = state.staging.lock();
+        let mut staging = state.staging.lock().await;
         let chunk = StagingChunk {
             height: staging.height,
             updates: std::mem::take(&mut staging.updates),
@@ -226,11 +221,7 @@ pub async fn commit_chunk(state: Arc<DirectoryState>) -> anyhow::Result<()> {
         updates: chunk.updates,
     };
     db::insert_chunk(&state.pool, height, &chunk.header, &header_hash, &chunk).await?;
-    tracing::debug!(
-        height,
-        update_count,
-        "committed directory chunk"
-    );
+    tracing::debug!(height, update_count, "committed directory chunk");
     Ok(())
 }
 
@@ -244,11 +235,7 @@ async fn build_proof(
     let (_val, proof) = tree
         .get_with_proof(key_hash.to_bytes())
         .map_err(|_| DirectoryErr::RetryLater)?;
-    Ok(proof
-        .0
-        .into_iter()
-        .map(Hash::from_bytes)
-        .collect())
+    Ok(proof.0.into_iter().map(Hash::from_bytes).collect())
 }
 
 fn map_db_err(err: anyhow::Error) -> DirectoryErr {

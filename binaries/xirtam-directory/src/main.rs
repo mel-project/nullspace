@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         merkle,
         secret_key,
         directory_id: DIRECTORY_ID.into(),
-        staging: parking_lot::Mutex::new(StagingChunk {
+        staging: tokio::sync::Mutex::new(StagingChunk {
             height: 0,
             updates: Default::default(),
         }),

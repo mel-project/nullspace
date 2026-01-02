@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use smol_str::SmolStr;
 use sqlx::SqlitePool;
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 use xirtam_crypt::signing::SigningSecret;
 use xirtam_structs::directory::DirectoryUpdate;
 

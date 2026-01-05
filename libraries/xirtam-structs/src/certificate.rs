@@ -1,9 +1,9 @@
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use xirtam_crypt::{
-    dh::DhPublic,
+    dh::{DhPublic, DhSecret},
     hash::{BcsHashExt, Hash},
-    signing::{Signable, Signature, SigningPublic},
+    signing::{Signable, Signature, SigningPublic, SigningSecret},
 };
 
 use crate::timestamp::Timestamp;
@@ -13,6 +13,57 @@ use crate::timestamp::Timestamp;
 pub struct DevicePublic {
     pub sign_pk: SigningPublic,
     pub long_pk: DhPublic,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// The secret key material for a device.
+pub struct DeviceSecret {
+    pub sign_sk: SigningSecret,
+    pub long_sk: DhSecret,
+}
+
+impl DeviceSecret {
+    /// Return the public identity for this device.
+    pub fn public(&self) -> DevicePublic {
+        DevicePublic {
+            sign_pk: self.sign_sk.public_key(),
+            long_pk: self.long_sk.public_key(),
+        }
+    }
+
+    /// Create a self-signed certificate for this device.
+    pub fn self_signed(&self, expiry: Timestamp, can_sign: bool) -> DeviceCertificate {
+        let pk = self.public();
+        let signed_by = pk.sign_pk.bcs_hash();
+        let mut cert = DeviceCertificate {
+            pk,
+            signed_by,
+            expiry,
+            can_sign,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        cert.sign(&self.sign_sk);
+        cert
+    }
+
+    /// Issue a certificate for another device public key.
+    pub fn issue_certificate(
+        &self,
+        subject: &DevicePublic,
+        expiry: Timestamp,
+        can_sign: bool,
+    ) -> DeviceCertificate {
+        let signed_by = self.sign_sk.public_key().bcs_hash();
+        let mut cert = DeviceCertificate {
+            pk: subject.clone(),
+            signed_by,
+            expiry,
+            can_sign,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        cert.sign(&self.sign_sk);
+        cert
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

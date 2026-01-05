@@ -1,4 +1,7 @@
 use crate::hash::Hash;
+use std::fmt;
+
+use derivative::Derivative;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::base64::Base64;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
@@ -8,8 +11,9 @@ use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 pub struct DhPublic(x25519_dalek::PublicKey);
 
 /// X25519 static secret key used for Diffie-Hellman key exchange.
-#[derive(Clone)]
-pub struct DhSecret(x25519_dalek::StaticSecret);
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
+pub struct DhSecret(#[derivative(Debug(format_with = "redacted_debug"))] x25519_dalek::StaticSecret);
 
 #[serde_as]
 #[derive(Serialize, Deserialize)]
@@ -133,6 +137,10 @@ impl<'de> Deserialize<'de> for DhSecret {
         let DhSecretSerde(bytes) = DhSecretSerde::deserialize(deserializer)?;
         Ok(DhSecret::from_bytes(bytes))
     }
+}
+
+fn redacted_debug<T>(_value: &T, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("REDACTED")
 }
 
 #[cfg(test)]

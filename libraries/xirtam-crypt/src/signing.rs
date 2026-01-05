@@ -1,5 +1,7 @@
 use core::convert::TryFrom;
+use std::fmt;
 
+use derivative::Derivative;
 use ed25519_consensus::{Signature as Ed25519Signature, SigningKey, VerificationKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::base64::Base64;
@@ -11,8 +13,9 @@ use thiserror::Error;
 pub struct SigningPublic(VerificationKey);
 
 /// Ed25519 signing key used to produce signatures.
-#[derive(Clone)]
-pub struct SigningSecret(SigningKey);
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
+pub struct SigningSecret(#[derivative(Debug(format_with = "redacted_debug"))] SigningKey);
 
 /// Ed25519 signature.
 #[serde_as]
@@ -21,7 +24,7 @@ pub struct Signature(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 6
 
 /// Types that carry a signature over a serialized payload.
 pub trait Signable {
-    /// Return the bytes that are signed.
+    /// Return the bytes that are signed. This should *not* depend on the signature field.
     fn signed_value(&self) -> Vec<u8>;
 
     /// Mutable access to the signature field.
@@ -137,6 +140,10 @@ impl Signature {
     pub fn to_bytes(&self) -> [u8; 64] {
         self.0
     }
+}
+
+fn redacted_debug<T>(_value: &T, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    formatter.write_str("REDACTED")
 }
 
 impl Serialize for SigningSecret {

@@ -16,7 +16,7 @@ use xirtam_structs::directory::{
 };
 use xirtam_structs::timestamp::Timestamp;
 
-use crate::{db, pow, state::DirectoryState};
+use crate::{db, mirror, pow, state::DirectoryState};
 
 #[derive(Clone)]
 pub struct DirectoryServer {
@@ -71,6 +71,15 @@ impl DirectoryProtocol for DirectoryServer {
     }
 
     async fn v1_get_anchor(&self) -> Result<DirectoryAnchor, DirectoryErr> {
+        if let Some(mirror) = &self.state.mirror {
+            let anchor = mirror.anchor.read().await.clone();
+            return anchor.ok_or(DirectoryErr::RetryLater);
+        }
+        let secret_key = self
+            .state
+            .secret_key
+            .as_ref()
+            .ok_or(DirectoryErr::RetryLater)?;
         let (height, header) = db::load_last_header(&self.state.pool)
             .await
             .map_err(map_db_err)?
@@ -84,7 +93,7 @@ impl DirectoryProtocol for DirectoryServer {
             last_header_hash: hash,
             signature: xirtam_crypt::signing::Signature::from_bytes([0u8; 64]),
         };
-        anchor.sign(&self.state.secret_key);
+        anchor.sign(secret_key);
         Ok(anchor)
     }
 
@@ -124,6 +133,9 @@ impl DirectoryProtocol for DirectoryServer {
         update: DirectoryUpdate,
         pow_solution: PowSolution,
     ) -> Result<(), DirectoryErr> {
+        if let Some(mirror) = &self.state.mirror {
+            return mirror::forward_insert(mirror, key, update, pow_solution).await;
+        }
         let now = unix_time();
         db::purge_pow_seeds(&self.state.pool, now)
             .await

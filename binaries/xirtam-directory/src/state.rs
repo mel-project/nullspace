@@ -7,11 +7,13 @@ use xirtam_crypt::signing::SigningSecret;
 use xirtam_structs::directory::DirectoryUpdate;
 
 use crate::merkle::MeshaNodeStore;
+use crate::mirror::MirrorState;
 
 pub struct DirectoryState {
     pub pool: SqlitePool,
     pub merkle: Arc<MeshaNodeStore>,
-    pub secret_key: SigningSecret,
+    pub secret_key: Option<SigningSecret>,
     pub directory_id: SmolStr,
     pub staging: Mutex<BTreeMap<String, Vec<DirectoryUpdate>>>,
+    pub mirror: Option<Arc<MirrorState>>,
 }

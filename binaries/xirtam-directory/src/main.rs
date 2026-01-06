@@ -1,6 +1,7 @@
 mod config;
 mod db;
 mod merkle;
+mod mirror;
 mod pow;
 mod server;
 mod state;
@@ -17,7 +18,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use xirtam_crypt::signing::SigningSecret;
 
-use crate::{config::Args, state::DirectoryState};
+use crate::{config::Args, mirror::MirrorState, state::DirectoryState};
 
 const DIRECTORY_ID: &str = "xirtam-directory";
 const CHUNK_SECONDS: u64 = 30;
@@ -30,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let db_path = args.db_path.clone();
+    std::fs::create_dir_all(&db_path)?;
 
     let (pool_res, merkle_res) = (db::init_sqlite(&db_path), async {
         merkle::open_store(&db_path)
@@ -39,21 +41,39 @@ async fn main() -> anyhow::Result<()> {
     let pool = pool_res?;
     let merkle = merkle_res?;
 
-    let secret_key = load_secret_key(&args.secret_key)?;
-    let public_key = secret_key.public_key();
-    tracing::info!(
-        anchor_public_key = %public_key,
-        "directory anchor public key"
-    );
+    let mirror = args.mirror.map(|endpoint| {
+        tracing::info!(endpoint = %endpoint, "directory mirror enabled");
+        Arc::new(MirrorState::new(endpoint))
+    });
+    let secret_key = if mirror.is_some() {
+        None
+    } else {
+        let key_path = args
+            .secret_key
+            .as_ref()
+            .context("secret key required when not mirroring")?;
+        let secret_key = load_secret_key(key_path)?;
+        let public_key = secret_key.public_key();
+        tracing::info!(
+            anchor_public_key = %public_key,
+            "directory anchor public key"
+        );
+        Some(secret_key)
+    };
     let state = Arc::new(DirectoryState {
         pool,
         merkle,
         secret_key,
         directory_id: DIRECTORY_ID.into(),
         staging: tokio::sync::Mutex::new(Default::default()),
+        mirror,
     });
 
-    tokio::spawn(run_chunker(state.clone()));
+    if state.mirror.is_some() {
+        tokio::spawn(mirror::run_mirror_sync(state.clone()));
+    } else {
+        tokio::spawn(run_chunker(state.clone()));
+    }
 
     let app = Router::new()
         .route("/", post(server::handle_rpc))

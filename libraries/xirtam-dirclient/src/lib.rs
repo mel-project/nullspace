@@ -54,7 +54,7 @@ impl DirClient {
         &self.raw
     }
 
-    /// Fetch and verify a directory entry by key.
+    /// Fetch and verify a directory item by key.
     ///
     /// This validates the signed anchor, syncs headers, checks the SMT proof,
     /// and returns a derived listing.

@@ -9,4 +9,4 @@ edition.workspace = true
 anyhow = "1.0.100"
 async-trait = "0.1"
 nanorpc = "0.1"
-reqwest = { version = "0.12.23", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }

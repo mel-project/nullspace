@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use std::sync::LazyLock;
+use std::{collections::BTreeMap, str::FromStr};
 
 use async_trait::async_trait;
 use nanorpc::nanorpc_derive;
@@ -10,27 +10,55 @@ use thiserror::Error;
 use url::Url;
 use xirtam_crypt::{hash::Hash, signing::SigningPublic};
 
-use crate::{Message, handle::Handle};
+use crate::certificate::CertificateChain;
+use crate::{Message, handle::Handle, timestamp::NanoTimestamp};
 
+/// The RPC protocol implemented by gateway servers.
 #[nanorpc_derive]
 #[async_trait]
-/// The RPC protocol implemented by gateway servers.
 pub trait GatewayProtocol {
+    /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this gateway is proper to the handle, the certificate chain served to others is also updated by "merging".
+    async fn v1_device_auth(
+        &self,
+        handle: Handle,
+        cert: CertificateChain,
+    ) -> Result<(), GatewayServerError>;
+
+    /// Retrieve the devices for a given handle.
+    async fn v1_device_list(
+        &self,
+        handle: Handle,
+    ) -> Result<Option<CertificateChain>, GatewayServerError>;
+
     /// Send a message into a mailbox.
     async fn v1_mailbox_send(
         &self,
         auth: AuthToken,
         mailbox: MailboxId,
         message: Message,
-    ) -> Result<(), MailboxError>;
+    ) -> Result<(), GatewayServerError>;
 
-    /// Receive a message from a mailbox.
-    async fn v1_mailbox_recv(
+    /// Receive one or more messages, from one or many mailboxes. This is batched to make long-polling more efficient. The gateway *may* choose to limit the number of messages in the response, so clients should be prepared to repeat until getting an empty "page".
+    async fn v1_mailbox_multirecv(
+        &self,
+        args: Vec<MailboxRecvArgs>,
+        timeout_ms: u64,
+    ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError>;
+
+    /// Edit the mailbox ACL.
+    async fn v1_mailbox_acl_edit(
         &self,
         auth: AuthToken,
-        mailbox: MailboxId,
-        timeout_ms: u64,
-    ) -> Result<Message, MailboxError>;
+        arg: MailboxAclEdit,
+    ) -> Result<(), GatewayServerError>;
+}
+
+/// Arguments for receiving messages from a single mailbox.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MailboxRecvArgs {
+    pub auth: AuthToken,
+    pub mailbox: MailboxId,
+    pub after: NanoTimestamp,
 }
 
 /// A gateway name that matches the rules for gateway names.
@@ -89,6 +117,7 @@ static GATEWAY_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^~[A-Za-z0-9_]{5,15}$").expect("valid gateway name regex"));
 
 /// A gateway descriptor stored at the directory.
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GatewayDescriptor {
     /// All the *publicly* available URLs for this gateway.
     pub public_urls: Vec<Url>,
@@ -97,7 +126,7 @@ pub struct GatewayDescriptor {
 }
 
 /// A mailbox ID at a gateway, wrapping a hash value.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct MailboxId(Hash);
 
@@ -109,6 +138,23 @@ impl MailboxId {
             handle.as_str().as_bytes(),
         ))
     }
+}
+
+/// An entry stored in a mailbox, with metadata added by the gateway.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MailboxEntry {
+    pub message: Message,
+    pub received_at: NanoTimestamp,
+    pub sender_auth_token_hash: Option<Hash>,
+}
+
+/// An ACL edit request for a mailbox.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MailboxAclEdit {
+    pub token_hash: Hash,
+    pub can_edit_acl: bool,
+    pub can_send: bool,
+    pub can_recv: bool,
 }
 
 /// An opaque authentication token.
@@ -123,11 +169,11 @@ impl AuthToken {
     }
 }
 
-/// An error when handling mailboxes.
+/// An error from the gateway server.
 #[derive(Error, Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MailboxError {
-    #[error("access denied to mailbox")]
+pub enum GatewayServerError {
+    #[error("access denied")]
     AccessDenied,
     #[error("rate limited, retry later")]
     RetryLater,

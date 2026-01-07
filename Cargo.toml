@@ -6,12 +6,12 @@ resolver = "2"
 [workspace.package]
 version = "0.0.1"
 repository = "https://github.com/mel-project/xirtam-core"
-license = "ISC"
+license = "LGPL-3.0"
 edition = "2024"
 
 
 [patch.crates-io]
-novasmt = { path = "../novasmt" }
+#novasmt = { path = "../novasmt" }
 
 
 [profile.release]

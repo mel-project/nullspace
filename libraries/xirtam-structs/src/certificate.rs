@@ -8,7 +8,7 @@ use xirtam_crypt::{
 
 use crate::timestamp::Timestamp;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// The identity public key of a device, that never changes throughout the lifetime of the device.
 pub struct DevicePublic {
     pub sign_pk: SigningPublic,
@@ -66,7 +66,7 @@ impl DeviceSecret {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// The certificate of a particular device, which includes the public key and the capabilities of the device.
 pub struct DeviceCertificate {
     pub pk: DevicePublic,
@@ -78,7 +78,7 @@ pub struct DeviceCertificate {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-/// A chain a certificates that ultimately represents a set of authorized devices.
+/// A chain of certificates that ultimately represents a set of authorized devices.
 pub struct CertificateChain(pub Vec<DeviceCertificate>);
 
 impl Signable for DeviceCertificate {
@@ -97,6 +97,16 @@ impl Signable for DeviceCertificate {
 }
 
 impl CertificateChain {
+    /// Merge another certificate chain into this one, deduplicating by full certificate equality.
+    pub fn merge(mut self, other: &CertificateChain) -> CertificateChain {
+        for cert in &other.0 {
+            if !self.0.contains(cert) {
+                self.0.push(cert.clone());
+            }
+        }
+        self
+    }
+
     /// Verify the chain and return the non-expired certificates.
     pub fn verify(&self, trusted_pk_hash: Hash) -> anyhow::Result<Vec<DeviceCertificate>> {
         let now = unix_time();

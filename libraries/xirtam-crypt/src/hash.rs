@@ -7,7 +7,7 @@ use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 
 /// BLAKE3 hash output.
 #[serde_as]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct Hash(#[serde_as(as = "IfIsHumanReadable<Hex, Bytes>")] [u8; 32]);
 
 #[derive(Clone, Debug, PartialEq, Eq)]

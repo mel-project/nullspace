@@ -1,21 +1,24 @@
-use std::fmt;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
+use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
+use thiserror::Error;
 
-/// A validated user handle matching ^@[A-Za-z0-9_]{5,15}$.
+/// A user handle that matches the rules for user handles.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Handle(SmolStr);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("invalid handle")]
 pub struct HandleError;
 
 impl Handle {
     pub fn parse(handle: impl AsRef<str>) -> Result<Self, HandleError> {
         let handle = handle.as_ref();
-        if !is_valid_handle(handle) {
+        if !HANDLE_RE.is_match(handle) {
             return Err(HandleError);
         }
         Ok(Self(SmolStr::new(handle)))
@@ -38,7 +41,7 @@ impl TryFrom<SmolStr> for Handle {
     type Error = HandleError;
 
     fn try_from(value: SmolStr) -> Result<Self, Self::Error> {
-        if !is_valid_handle(value.as_str()) {
+        if !HANDLE_RE.is_match(value.as_str()) {
             return Err(HandleError);
         }
         Ok(Self(value))
@@ -55,20 +58,16 @@ impl<'de> Deserialize<'de> for Handle {
     }
 }
 
-impl fmt::Display for HandleError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid handle")
-    }
-}
+static HANDLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^@[A-Za-z0-9_]{5,15}$").expect("valid handle regex"));
 
-impl std::error::Error for HandleError {}
+#[cfg(test)]
+mod tests {
+    use super::Handle;
 
-fn is_valid_handle(handle: &str) -> bool {
-    let bytes = handle.as_bytes();
-    if bytes.len() < 6 || bytes.len() > 16 || bytes[0] != b'@' {
-        return false;
+    #[test]
+    fn handle_roundtrip() {
+        let handle = Handle::parse("@user_01").expect("valid handle");
+        assert_eq!(handle.as_str(), "@user_01");
     }
-    bytes[1..]
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
 }

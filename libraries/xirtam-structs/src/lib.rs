@@ -1,6 +1,7 @@
 pub mod certificate;
 pub mod directory;
 pub mod envelope;
+pub mod gateway;
 pub mod handle;
 pub mod timestamp;
 
@@ -31,6 +32,7 @@ macro_rules! v1_kind {
 
 impl Message {
     v1_kind!(root_cert_hash);
+    v1_kind!(gateway_descriptor);
 
     v1_kind!(message_content);
     v1_kind!(direct_message);

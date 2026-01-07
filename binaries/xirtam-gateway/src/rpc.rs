@@ -13,6 +13,8 @@ use xirtam_structs::gateway::{
 };
 use xirtam_structs::{Message, handle::Handle};
 
+use crate::device;
+
 #[derive(Clone, Default)]
 pub struct GatewayServer;
 
@@ -37,17 +39,17 @@ pub async fn handle_rpc(body: Bytes) -> impl IntoResponse {
 impl GatewayProtocol for GatewayServer {
     async fn v1_device_auth(
         &self,
-        _handle: Handle,
-        _cert: CertificateChain,
+        handle: Handle,
+        cert: CertificateChain,
     ) -> Result<(), GatewayServerError> {
-        Err(GatewayServerError::RetryLater)
+        device::device_auth(handle, cert).await
     }
 
     async fn v1_device_list(
         &self,
-        _handle: Handle,
+        handle: Handle,
     ) -> Result<Option<CertificateChain>, GatewayServerError> {
-        Err(GatewayServerError::RetryLater)
+        device::device_list(handle).await
     }
 
     async fn v1_mailbox_send(

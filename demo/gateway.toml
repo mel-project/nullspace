@@ -1,5 +1,5 @@
 listen = "0.0.0.0:7000"
-db_path = "demo/state/gateway.db"
+db_path = ":memory:"
 signing_sk = "demo/state/gateway-signing.key"
 gateway_name = "~demo01"
 public_urls = ["http://127.0.0.1:7000"]

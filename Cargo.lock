@@ -4358,6 +4358,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bcs",
  "bytes",
  "clap",
  "nanorpc",

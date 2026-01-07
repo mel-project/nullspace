@@ -53,7 +53,7 @@ pub async fn init_name() -> anyhow::Result<()> {
             CONFIG.gateway_name
         );
     }
-    tracing::info!("Validated gateway name {}", CONFIG.gateway_name);
+    tracing::info!("validated gateway name {}", CONFIG.gateway_name);
     Ok(())
 }
 

@@ -26,6 +26,10 @@ pub async fn device_auth(
         return Err(GatewayServerError::AccessDenied);
     }
 
+    if cert.verify(descriptor.root_cert_hash).is_err() {
+        return Err(GatewayServerError::AccessDenied);
+    }
+
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
     let existing = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT cert_chain FROM device_certificates WHERE handle = ?",
@@ -43,14 +47,12 @@ pub async fn device_auth(
         return Err(GatewayServerError::AccessDenied);
     }
     let data = bcs::to_bytes(&merged).map_err(fatal_retry_later)?;
-    sqlx::query(
-        "INSERT OR REPLACE INTO device_certificates (handle, cert_chain) VALUES (?, ?)",
-    )
-    .bind(handle.as_str())
-    .bind(data)
-    .execute(&mut *tx)
-    .await
-    .map_err(fatal_retry_later)?;
+    sqlx::query("INSERT OR REPLACE INTO device_certificates (handle, cert_chain) VALUES (?, ?)")
+        .bind(handle.as_str())
+        .bind(data)
+        .execute(&mut *tx)
+        .await
+        .map_err(fatal_retry_later)?;
     tx.commit().await.map_err(fatal_retry_later)?;
 
     Ok(AuthToken::random())

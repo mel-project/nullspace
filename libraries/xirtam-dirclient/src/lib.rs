@@ -10,7 +10,11 @@ use xirtam_structs::directory::{
     DirectoryClient, DirectoryHistoryIterExt, DirectoryResponse, DirectoryUpdate,
     DirectoryUpdateInner, PowSolution,
 };
-use xirtam_structs::{Message, handle::Handle};
+use xirtam_structs::{
+    Message,
+    gateway::{GatewayDescriptor, GatewayName},
+    handle::Handle,
+};
 mod header_sync;
 mod pow;
 
@@ -83,6 +87,23 @@ impl DirClient {
         Ok(Some(Hash::from_bytes(bytes)))
     }
 
+    /// Fetch and decode the gateway descriptor for a gateway name.
+    pub async fn get_gateway_descriptor(
+        &self,
+        gateway_name: &GatewayName,
+    ) -> anyhow::Result<Option<GatewayDescriptor>> {
+        let listing = self.query_raw(gateway_name.as_str()).await?;
+        let latest = match listing.latest {
+            Some(latest) => latest,
+            None => return Ok(None),
+        };
+        if latest.kind != Message::V1_GATEWAY_DESCRIPTOR {
+            anyhow::bail!("unexpected message kind: {}", latest.kind);
+        }
+        let descriptor: GatewayDescriptor = bcs::from_bytes(&latest.inner)?;
+        Ok(Some(descriptor))
+    }
+
     /// Build and submit a root certificate hash update for a user handle.
     pub async fn insert_roothash(
         &self,
@@ -109,6 +130,32 @@ impl DirClient {
         Ok(())
     }
 
+    /// Build and submit a gateway descriptor update for a gateway name.
+    pub async fn insert_gateway_descriptor(
+        &self,
+        gateway_name: &GatewayName,
+        descriptor: &GatewayDescriptor,
+        signer: &SigningSecret,
+    ) -> anyhow::Result<()> {
+        let response = self.fetch_verified_response(gateway_name.as_str()).await?;
+        response
+            .history
+            .iter()
+            .verify_history()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let prev_update_hash = prev_update_hash(&response.history)?;
+        let update = signed_update(
+            prev_update_hash,
+            DirectoryUpdateInner::Update(Message {
+                kind: Message::V1_GATEWAY_DESCRIPTOR.into(),
+                inner: bcs::to_bytes(descriptor)?.into(),
+            }),
+            signer,
+        );
+        self.insert_raw(gateway_name.as_str(), update).await?;
+        Ok(())
+    }
+
     /// Add an owner to a user handle.
     pub async fn add_owner(
         &self,
@@ -132,6 +179,29 @@ impl DirClient {
         Ok(())
     }
 
+    /// Add an owner to a gateway name.
+    pub async fn add_gateway_owner(
+        &self,
+        gateway_name: &GatewayName,
+        owner: SigningPublic,
+        signer: &SigningSecret,
+    ) -> anyhow::Result<()> {
+        let response = self.fetch_verified_response(gateway_name.as_str()).await?;
+        response
+            .history
+            .iter()
+            .verify_history()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let prev_update_hash = prev_update_hash(&response.history)?;
+        let update = signed_update(
+            prev_update_hash,
+            DirectoryUpdateInner::AddOwner(owner),
+            signer,
+        );
+        self.insert_raw(gateway_name.as_str(), update).await?;
+        Ok(())
+    }
+
     /// Remove an owner from a user handle.
     pub async fn del_owner(
         &self,
@@ -152,6 +222,29 @@ impl DirClient {
             signer,
         );
         self.insert_raw(handle.as_str(), update).await?;
+        Ok(())
+    }
+
+    /// Remove an owner from a gateway name.
+    pub async fn del_gateway_owner(
+        &self,
+        gateway_name: &GatewayName,
+        owner: SigningPublic,
+        signer: &SigningSecret,
+    ) -> anyhow::Result<()> {
+        let response = self.fetch_verified_response(gateway_name.as_str()).await?;
+        response
+            .history
+            .iter()
+            .verify_history()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let prev_update_hash = prev_update_hash(&response.history)?;
+        let update = signed_update(
+            prev_update_hash,
+            DirectoryUpdateInner::DelOwner(owner),
+            signer,
+        );
+        self.insert_raw(gateway_name.as_str(), update).await?;
         Ok(())
     }
 

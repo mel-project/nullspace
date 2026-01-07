@@ -117,7 +117,7 @@ static GATEWAY_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^~[A-Za-z0-9_]{5,15}$").expect("valid gateway name regex"));
 
 /// A gateway descriptor stored at the directory.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct GatewayDescriptor {
     /// All the *publicly* available URLs for this gateway.
     pub public_urls: Vec<Url>,

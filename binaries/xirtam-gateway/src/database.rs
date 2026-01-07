@@ -12,10 +12,11 @@ pub static DATABASE: LazyLock<SqlitePool> = LazyLock::new(|| {
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .foreign_keys(true)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
-    SqlitePool::connect_lazy_with(options)
+    tokio::runtime::Handle::current()
+        .block_on(async {
+            let pool = SqlitePool::connect_with(options).await?;
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            Ok::<_, anyhow::Error>(pool)
+        })
+        .expect("failed to initialize database")
 });
-
-pub async fn init_database() -> anyhow::Result<()> {
-    sqlx::migrate!("./migrations").run(&*DATABASE).await?;
-    Ok(())
-}

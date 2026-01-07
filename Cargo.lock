@@ -4355,6 +4355,7 @@ dependencies = [
  "bytes",
  "clap",
  "nanorpc",
+ "rand 0.9.2",
  "serde",
  "serde_json",
  "sqlx",
@@ -4362,6 +4363,10 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "url",
+ "xirtam-crypt",
+ "xirtam-dirclient",
+ "xirtam-nanorpc",
  "xirtam-structs",
 ]
 

@@ -1,5 +1,6 @@
 mod config;
 mod database;
+mod dir_client;
 mod rpc;
 
 use axum::{Router, routing::post};
@@ -14,8 +15,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| EnvFilter::new("xirtam_gateway=debug"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    database::init_database().await?;
-
+    dir_client::init_name().await?;
     let app = Router::new().route("/", post(rpc::handle_rpc));
     let listener = TcpListener::bind(CONFIG.listen).await?;
     axum::serve(listener, app).await?;

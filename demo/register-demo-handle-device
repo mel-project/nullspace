@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+DIR_ENDPOINT="http://127.0.0.1:4000"
+DIR_PUBLIC_KEY="jsB+n5jnNmQhZlXxeCdBseGLm81cgeccWFePsXI/FFI="
+GATEWAY_NAME="~demo01"
+HANDLE="@demo01"
+
+STATE_DIR="$ROOT/demo/state"
+HANDLE_KEYS="$STATE_DIR/handle-owner.json"
+DEVICE_SECRET="$STATE_DIR/device-secret.bcs"
+DEVICE_CHAIN="$STATE_DIR/device-chain.bcs"
+
+cd "$ROOT"
+mkdir -p "$STATE_DIR"
+
+MULTITOOL=(cargo run -p xirtam-multitool --)
+DIR_ARGS=(--endpoint "$DIR_ENDPOINT" --public-key "$DIR_PUBLIC_KEY")
+
+if [[ ! -f "$HANDLE_KEYS" ]]; then
+  "${MULTITOOL[@]}" keygen > "$HANDLE_KEYS"
+fi
+
+SIGNING_PUBLIC="$(jq -r '.signing.public' "$HANDLE_KEYS")"
+SIGNING_SECRET="$(jq -r '.signing.secret' "$HANDLE_KEYS")"
+
+if [[ -z "$SIGNING_PUBLIC" || "$SIGNING_PUBLIC" == "null" || -z "$SIGNING_SECRET" || "$SIGNING_SECRET" == "null" ]]; then
+  echo "failed to read signing keys from $HANDLE_KEYS" >&2
+  exit 1
+fi
+
+if [[ ! -f "$DEVICE_SECRET" ]]; then
+  "${MULTITOOL[@]}" device new-secret --out "$DEVICE_SECRET"
+fi
+
+if [[ ! -f "$DEVICE_CHAIN" ]]; then
+  "${MULTITOOL[@]}" device chain-init --root-secret "$DEVICE_SECRET" --out "$DEVICE_CHAIN"
+fi
+
+ROOT_HASH="$("${MULTITOOL[@]}" device chain-dump --chain "$DEVICE_CHAIN" | jq -r '.[0].signed_by')"
+
+if [[ -z "$ROOT_HASH" || "$ROOT_HASH" == "null" ]]; then
+  echo "failed to extract root hash from $DEVICE_CHAIN" >&2
+  exit 1
+fi
+
+"${MULTITOOL[@]}" "${DIR_ARGS[@]}" dir handle-add-owner "$HANDLE" \
+  --owner "$SIGNING_PUBLIC" \
+  --secret-key "$SIGNING_SECRET"
+
+"${MULTITOOL[@]}" "${DIR_ARGS[@]}" dir handle-insert "$HANDLE" "$GATEWAY_NAME" \
+  --roothash "$ROOT_HASH" \
+  --secret-key "$SIGNING_SECRET"
+
+"${MULTITOOL[@]}" "${DIR_ARGS[@]}" device auth "$HANDLE" \
+  --chain "$DEVICE_CHAIN"

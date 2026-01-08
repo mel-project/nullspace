@@ -107,6 +107,11 @@ impl CertificateChain {
         self
     }
 
+    /// Return the last certificate in the chain, which represents the device.
+    pub fn last_device(&self) -> Option<&DeviceCertificate> {
+        self.0.last()
+    }
+
     /// Verify the chain and return the non-expired certificates.
     pub fn verify(&self, trusted_pk_hash: Hash) -> anyhow::Result<Vec<DeviceCertificate>> {
         let now = unix_time();

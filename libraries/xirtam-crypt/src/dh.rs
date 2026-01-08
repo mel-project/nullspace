@@ -4,7 +4,8 @@ use std::str::FromStr;
 
 use derivative::Derivative;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_with::base64::Base64;
+use serde_with::base64::{Base64, UrlSafe};
+use serde_with::formats::Unpadded;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 
 use crate::encoding;
@@ -21,11 +22,15 @@ pub struct DhSecret(#[derivative(Debug(format_with = "redacted_debug"))] x25519_
 
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-struct DhPublicSerde(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 32]);
+struct DhPublicSerde(
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
+);
 
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-struct DhSecretSerde(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 32]);
+struct DhSecretSerde(
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
+);
 
 impl DhPublic {
     /// Build a public key from its 32-byte compressed form.

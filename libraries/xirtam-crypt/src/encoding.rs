@@ -1,6 +1,6 @@
 use std::fmt;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseKeyError {
@@ -10,11 +10,11 @@ pub enum ParseKeyError {
 }
 
 pub fn encode_32_base64(bytes: [u8; 32]) -> String {
-    STANDARD.encode(bytes)
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 pub fn decode_32_base64(input: &str) -> Result<[u8; 32], ParseKeyError> {
-    let bytes = STANDARD
+    let bytes = URL_SAFE_NO_PAD
         .decode(input.as_bytes())
         .map_err(|_| ParseKeyError::InvalidBase64)?;
     if bytes.len() != 32 {

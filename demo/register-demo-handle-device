@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 DIR_ENDPOINT="http://127.0.0.1:4000"
-DIR_PUBLIC_KEY="jsB+n5jnNmQhZlXxeCdBseGLm81cgeccWFePsXI/FFI="
+DIR_PUBLIC_KEY="OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124"
 GATEWAY_NAME="~demo01"
 HANDLE="@demo01"
 

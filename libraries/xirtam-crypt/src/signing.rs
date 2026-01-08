@@ -5,7 +5,8 @@ use std::str::FromStr;
 use derivative::Derivative;
 use ed25519_consensus::{Signature as Ed25519Signature, SigningKey, VerificationKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_with::base64::Base64;
+use serde_with::base64::{Base64, UrlSafe};
+use serde_with::formats::Unpadded;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 use thiserror::Error;
 
@@ -24,7 +25,9 @@ pub struct SigningSecret(#[derivative(Debug(format_with = "redacted_debug"))] Si
 /// Ed25519 signature.
 #[serde_as]
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
-pub struct Signature(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 64]);
+pub struct Signature(
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 64],
+);
 
 /// Types that carry a signature over a serialized payload.
 pub trait Signable {
@@ -60,11 +63,15 @@ pub enum SigningError {
 
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-struct SigningPublicSerde(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 32]);
+struct SigningPublicSerde(
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
+);
 
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-struct SigningSecretSerde(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 32]);
+struct SigningSecretSerde(
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
+);
 
 impl SigningPublic {
     /// Build a public key from its 32-byte compressed form.

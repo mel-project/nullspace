@@ -7,6 +7,7 @@ use crate::config::CONFIG;
 use crate::database::DATABASE;
 use crate::dir_client::DIR_CLIENT;
 use crate::fatal_retry_later;
+use crate::mailbox;
 
 pub async fn device_auth(
     handle: Handle,
@@ -50,7 +51,7 @@ pub async fn device_auth(
     )
     .bind(handle.as_str())
     .bind(device_hash.to_bytes().to_vec())
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(fatal_retry_later)?;
     let has_existing_token = existing_token.is_some();
@@ -58,11 +59,12 @@ pub async fn device_auth(
         Some(data) => Some(bcs::from_bytes(&data).map_err(fatal_retry_later)?),
         None => None,
     };
+    let mut newly_created: Option<AuthToken> = None;
     let existing = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT cert_chain FROM device_certificates WHERE handle = ?",
     )
     .bind(handle.as_str())
-    .fetch_optional(&mut *tx)
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(fatal_retry_later)?;
     let existing_chain = match existing {
@@ -78,7 +80,7 @@ pub async fn device_auth(
     sqlx::query("INSERT OR REPLACE INTO device_certificates (handle, cert_chain) VALUES (?, ?)")
         .bind(handle.as_str())
         .bind(data)
-        .execute(&mut *tx)
+        .execute(tx.as_mut())
         .await
         .map_err(fatal_retry_later)?;
     if auth_token.is_none() {
@@ -91,11 +93,13 @@ pub async fn device_auth(
         .bind(handle.as_str())
         .bind(device_hash.to_bytes().to_vec())
         .bind(token_data)
-        .execute(&mut *tx)
+        .execute(tx.as_mut())
         .await
         .map_err(fatal_retry_later)?;
         auth_token = Some(new_token);
+        newly_created = Some(new_token);
     }
+    mailbox::update_dm_mailbox(&mut tx, &handle, newly_created).await?;
     tx.commit().await.map_err(fatal_retry_later)?;
 
     let auth_token = auth_token.expect("auth token is set");

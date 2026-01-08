@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nanorpc::nanorpc_derive;
 use serde::{Deserialize, Serialize};
-use serde_with::{FromInto, IfIsHumanReadable, base64::Base64, serde_as};
+use serde_with::base64::{Base64, UrlSafe};
+use serde_with::formats::Unpadded;
+use serde_with::{FromInto, IfIsHumanReadable, serde_as};
 use smol_str::SmolStr;
 use thiserror::Error;
 use xirtam_crypt::{
@@ -232,6 +234,6 @@ where
 pub struct DirectoryResponse {
     pub history: Vec<DirectoryUpdate>,
     pub proof_height: u64,
-    #[serde_as(as = "IfIsHumanReadable<Base64, FromInto<Vec<u8>>>")]
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
     pub proof_merkle_branch: Bytes,
 }

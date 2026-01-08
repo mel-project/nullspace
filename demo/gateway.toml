@@ -1,7 +1,8 @@
 listen = "0.0.0.0:7000"
-db_path = ":memory:"
+tcp_listen = "0.0.0.0:7001"
+db_path = "demo/state/gateway.db"
 signing_sk = "demo/state/gateway-signing.key"
 gateway_name = "~demo01"
-public_urls = ["http://127.0.0.1:7000"]
+public_urls = ["tcp://127.0.0.1:7001"]
 directory_url = "http://127.0.0.1:4000"
-directory_pk = "jsB+n5jnNmQhZlXxeCdBseGLm81cgeccWFePsXI/FFI="
+directory_pk = "OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124"

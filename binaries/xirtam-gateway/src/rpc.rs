@@ -8,12 +8,12 @@ use bytes::Bytes;
 use nanorpc::{JrpcRequest, RpcService};
 use xirtam_structs::certificate::CertificateChain;
 use xirtam_structs::gateway::{
-    AuthToken, GatewayProtocol, GatewayServerError, GatewayService, MailboxAclEdit, MailboxEntry,
+    AuthToken, GatewayProtocol, GatewayServerError, GatewayService, MailboxAcl, MailboxEntry,
     MailboxId, MailboxRecvArgs,
 };
 use xirtam_structs::{Message, handle::Handle};
 
-use crate::device;
+use crate::{device, mailbox};
 
 #[derive(Clone, Default)]
 pub struct GatewayServer;
@@ -54,26 +54,27 @@ impl GatewayProtocol for GatewayServer {
 
     async fn v1_mailbox_send(
         &self,
-        _auth: AuthToken,
-        _mailbox: MailboxId,
-        _message: Message,
+        auth: AuthToken,
+        mailbox_id: MailboxId,
+        message: Message,
     ) -> Result<(), GatewayServerError> {
-        Err(GatewayServerError::RetryLater)
+        mailbox::mailbox_send(auth, mailbox_id, message).await
     }
 
     async fn v1_mailbox_multirecv(
         &self,
-        _args: Vec<MailboxRecvArgs>,
-        _timeout_ms: u64,
+        args: Vec<MailboxRecvArgs>,
+        timeout_ms: u64,
     ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError> {
-        Err(GatewayServerError::RetryLater)
+        mailbox::mailbox_multirecv(args, timeout_ms).await
     }
 
     async fn v1_mailbox_acl_edit(
         &self,
-        _auth: AuthToken,
-        _arg: MailboxAclEdit,
+        auth: AuthToken,
+        mailbox_id: MailboxId,
+        arg: MailboxAcl,
     ) -> Result<(), GatewayServerError> {
-        Err(GatewayServerError::RetryLater)
+        mailbox::mailbox_acl_edit(auth, mailbox_id, arg).await
     }
 }

@@ -1,10 +1,10 @@
 {
   "signing": {
-    "public": "VVfh7VbtogrcwhP81kurlM9XbZfU0NLCItsnmd5szhw=",
-    "secret": "u9/sixZAuHPwmuMPLjPwxmImhFVbmA0fxDXjb8J8aZA="
+    "public": "VVfh7VbtogrcwhP81kurlM9XbZfU0NLCItsnmd5szhw",
+    "secret": "u9_sixZAuHPwmuMPLjPwxmImhFVbmA0fxDXjb8J8aZA"
   },
   "dh": {
-    "public": "lL1S7kqwXPXh3ndG1X/S+pjL5OFiy3/KGUEMWXYH0V4=",
-    "secret": "gyH6m6xoLmBoE/RnzbkyXa8B1lRLvhJtcXvOSf3/nmM="
+    "public": "lL1S7kqwXPXh3ndG1X_S-pjL5OFiy3_KGUEMWXYH0V4",
+    "secret": "gyH6m6xoLmBoE_RnzbkyXa8B1lRLvhJtcXvOSf3_nmM"
   }
 }

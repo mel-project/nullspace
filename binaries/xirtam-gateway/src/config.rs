@@ -16,6 +16,7 @@ struct Args {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub listen: SocketAddr,
+    pub tcp_listen: Option<SocketAddr>,
     pub db_path: String,
     pub signing_sk: PathBuf,
     pub gateway_name: GatewayName,

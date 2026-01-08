@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use nanorpc::nanorpc_derive;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_with::hex::Hex;
+use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 use smol_str::SmolStr;
 use thiserror::Error;
 use url::Url;
@@ -49,7 +51,8 @@ pub trait GatewayProtocol {
     async fn v1_mailbox_acl_edit(
         &self,
         auth: AuthToken,
-        arg: MailboxAclEdit,
+        mailbox: MailboxId,
+        arg: MailboxAcl,
     ) -> Result<(), GatewayServerError>;
 }
 
@@ -144,6 +147,10 @@ impl MailboxId {
             handle.as_str().as_bytes(),
         ))
     }
+
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
 }
 
 /// An entry stored in a mailbox, with metadata added by the gateway.
@@ -154,9 +161,9 @@ pub struct MailboxEntry {
     pub sender_auth_token_hash: Option<Hash>,
 }
 
-/// An ACL edit request for a mailbox.
+/// An ACL for a mailbox.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct MailboxAclEdit {
+pub struct MailboxAcl {
     pub token_hash: Hash,
     pub can_edit_acl: bool,
     pub can_send: bool,
@@ -164,14 +171,23 @@ pub struct MailboxAclEdit {
 }
 
 /// An opaque authentication token.
+#[serde_as]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AuthToken(Hash);
+pub struct AuthToken(#[serde_as(as = "IfIsHumanReadable<Hex, Bytes>")] [u8; 20]);
 
 impl AuthToken {
     /// Generates a new random authentication token.
     pub fn random() -> Self {
-        Self(Hash::from_bytes(rand::random()))
+        Self(rand::random())
+    }
+
+    /// Returns the all-zero authentication token for implicit ACL matching.
+    pub fn anonymous() -> Self {
+        Self(Default::default())
+    }
+
+    pub fn to_bytes(&self) -> [u8; 20] {
+        self.0
     }
 }
 

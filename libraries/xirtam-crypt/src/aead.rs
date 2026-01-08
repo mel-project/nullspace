@@ -2,7 +2,8 @@ use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_with::base64::Base64;
+use serde_with::base64::{Base64, UrlSafe};
+use serde_with::formats::Unpadded;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 use thiserror::Error;
 
@@ -18,7 +19,9 @@ pub enum AeadError {
 /// ChaCha20-Poly1305 key used for symmetric encryption and decryption.
 #[serde_as]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AeadKey(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] [u8; 32]);
+pub struct AeadKey(
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
+);
 
 impl AeadKey {
     /// Generate a random symmetric key.

@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::LazyLock, time::Duration};
+use std::{sync::LazyLock, time::Duration};
 
 use sqlx::{
     SqlitePool,
@@ -8,10 +8,9 @@ use sqlx::{
 use crate::config::CONFIG;
 
 pub static DATABASE: LazyLock<SqlitePool> = LazyLock::new(|| {
-    let options = SqliteConnectOptions::from_str(&CONFIG.db_path)
-        .unwrap()
+    let options = SqliteConnectOptions::new()
+        .filename(&CONFIG.db_path)
         .create_if_missing(true)
-        .shared_cache(CONFIG.db_path.contains(":memory:"))
         .busy_timeout(Duration::from_secs(5))
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .foreign_keys(true)
@@ -19,7 +18,6 @@ pub static DATABASE: LazyLock<SqlitePool> = LazyLock::new(|| {
     pollster::block_on(async {
         let pool = SqlitePoolOptions::new()
             .max_connections(500)
-            .min_connections(1) // IMPORTANT: keep at least one connection open
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;

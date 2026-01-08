@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
@@ -11,8 +12,9 @@ use xirtam_crypt::{
 use xirtam_nanorpc::Transport;
 use xirtam_structs::{
     certificate::{CertificateChain, DeviceSecret},
-    gateway::{AuthToken, GatewayClient},
+    gateway::{AuthToken, GatewayClient, MailboxId, MailboxRecvArgs},
     handle::Handle,
+    Message,
     timestamp::Timestamp,
 };
 
@@ -65,6 +67,19 @@ enum Command {
     ChainDump {
         #[arg(long)]
         chain: PathBuf,
+    },
+    MailboxSend {
+        handle: Handle,
+        #[arg(long)]
+        chain: PathBuf,
+        message: String,
+    },
+    MailboxRecv {
+        handle: Handle,
+        #[arg(long)]
+        chain: PathBuf,
+        #[arg(long, default_value_t = 30000)]
+        timeout_ms: u64,
     },
 }
 
@@ -148,6 +163,62 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             let chain = read_bcs::<CertificateChain>(&chain)?;
             print_json(&chain)?;
         }
+        Command::MailboxSend {
+            handle,
+            chain,
+            message,
+        } => {
+            let endpoint = resolve_gateway_endpoint(global, &handle).await?;
+            let client = GatewayClient::from(Transport::new(endpoint));
+            let chain = read_bcs::<CertificateChain>(&chain)?;
+            let auth = client
+                .v1_device_auth(handle.clone(), chain)
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let mailbox = MailboxId::direct(&handle);
+            let msg = Message {
+                kind: Message::V1_PLAINTEXT_DIRECT_MESSAGE.into(),
+                inner: Bytes::from(message.into_bytes()),
+            };
+            client
+                .v1_mailbox_send(auth, mailbox, msg)
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        }
+        Command::MailboxRecv {
+            handle,
+            chain,
+            timeout_ms,
+        } => {
+            let endpoint = resolve_gateway_endpoint(global, &handle).await?;
+            let client = GatewayClient::from(Transport::new(endpoint));
+            let chain = read_bcs::<CertificateChain>(&chain)?;
+            let auth = client
+                .v1_device_auth(handle.clone(), chain)
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let mailbox = MailboxId::direct(&handle);
+            let mut after = xirtam_structs::timestamp::NanoTimestamp(0);
+            loop {
+                let args = vec![MailboxRecvArgs {
+                    auth,
+                    mailbox,
+                    after,
+                }];
+                let response = client
+                    .v1_mailbox_multirecv(args, timeout_ms)
+                    .await?
+                    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+                let entries = response.get(&mailbox).cloned().unwrap_or_default();
+                if entries.is_empty() {
+                    continue;
+                }
+                for entry in entries {
+                    after = entry.received_at;
+                    print_json_line(&entry)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -207,5 +278,11 @@ fn write_secret_file(path: &Path, secret: &DeviceSecret) -> anyhow::Result<()> {
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms)
         .with_context(|| format!("chmod secret {}", path.display()))?;
+    Ok(())
+}
+
+fn print_json_line<T: Serialize>(value: &T) -> anyhow::Result<()> {
+    let json = serde_json::to_string(value)?;
+    println!("{json}");
     Ok(())
 }

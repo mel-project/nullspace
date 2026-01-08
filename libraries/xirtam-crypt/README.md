@@ -1,6 +1,6 @@
 # xirtam-crypt
 
-xirtam-crypt provides small, opinionated wrappers around common crypto primitives with consistent construction and serialization (including human-readable JSON via base64).
+xirtam-crypt provides small, opinionated wrappers around common crypto primitives with consistent construction and serialization (including human-readable JSON via unpadded base64url).
 
 | Module | Types | Primitive |
 | --- | --- | --- |

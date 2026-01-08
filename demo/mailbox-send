@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+DIR_ENDPOINT="http://127.0.0.1:4000"
+DIR_PUBLIC_KEY="OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124"
+DEFAULT_HANDLE="@demo01"
+CHAIN_FILE="$ROOT/demo/state/device-chain.bcs"
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: $(basename "$0") [@handle] <message...>" >&2
+  exit 1
+fi
+
+HANDLE="$DEFAULT_HANDLE"
+if [[ "$1" == @* ]]; then
+  HANDLE="$1"
+  shift
+fi
+
+MESSAGE="$*"
+
+cd "$ROOT"
+
+if [[ ! -f "$CHAIN_FILE" ]]; then
+  echo "missing chain file: $CHAIN_FILE (run demo/register-demo-handle-device first)" >&2
+  exit 1
+fi
+
+exec cargo run -p xirtam-multitool -- \
+  --endpoint "$DIR_ENDPOINT" \
+  --public-key "$DIR_PUBLIC_KEY" \
+  device mailbox-send "$HANDLE" \
+  --chain "$CHAIN_FILE" \
+  "$MESSAGE"

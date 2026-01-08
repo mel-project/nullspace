@@ -2,16 +2,21 @@ mod config;
 mod database;
 mod device;
 mod dir_client;
+mod mailbox;
 mod rpc;
 
 use std::fmt::Display;
+use std::future::Future;
+use std::pin::Pin;
 
 use axum::{Router, routing::post};
+use futures_concurrency::future::Race;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use xirtam_structs::gateway::GatewayServerError;
+use xirtam_structs::gateway::{GatewayServerError, GatewayService};
 
 use crate::config::CONFIG;
+use crate::rpc::GatewayServer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,7 +27,24 @@ async fn main() -> anyhow::Result<()> {
     dir_client::init_name().await?;
     let app = Router::new().route("/", post(rpc::handle_rpc));
     let listener = TcpListener::bind(CONFIG.listen).await?;
-    axum::serve(listener, app).await?;
+    let mut servers: Vec<Pin<Box<dyn Future<Output = anyhow::Result<()>>>>> = Vec::new();
+
+    servers.push(Box::pin(async move {
+        axum::serve(listener, app).await.map_err(anyhow::Error::from)
+    }));
+
+    if let Some(tcp_listen) = CONFIG.tcp_listen {
+        let service = GatewayService(GatewayServer::default());
+        servers.push(Box::pin(async move {
+            xirtam_nanorpc::serve_tcp(tcp_listen, service).await
+        }));
+    }
+
+    if servers.len() == 1 {
+        servers.pop().unwrap().await?;
+    } else {
+        servers.race().await?;
+    }
     Ok(())
 }
 

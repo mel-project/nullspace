@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_crypt::dh::DhPublic;
+use xirtam_crypt::hash::{BcsHashExt, Hash};
+use xirtam_crypt::signing::Signable;
 use xirtam_structs::certificate::CertificateChain;
-use xirtam_structs::gateway::{AuthToken, GatewayServerError};
+use xirtam_structs::gateway::{AuthToken, GatewayServerError, SignedTempPk};
 use xirtam_structs::handle::Handle;
 
 use crate::config::CONFIG;
@@ -131,24 +132,49 @@ pub async fn device_list(handle: Handle) -> Result<Option<CertificateChain>, Gat
 
 pub async fn device_add_temp_pk(
     auth: AuthToken,
-    temp_pk: DhPublic,
+    temp_pk: SignedTempPk,
 ) -> Result<(), GatewayServerError> {
     let auth_bytes = bcs::to_bytes(&auth).map_err(fatal_retry_later)?;
-    let device_hash = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT device_hash FROM device_auth_tokens WHERE auth_token = ?",
+    let row = sqlx::query_as::<_, (Vec<u8>, String)>(
+        "SELECT device_hash, handle FROM device_auth_tokens WHERE auth_token = ?",
     )
     .bind(auth_bytes)
     .fetch_optional(&*DATABASE)
     .await
     .map_err(fatal_retry_later)?;
-    let Some(device_hash) = device_hash else {
+    let Some((device_hash, handle)) = row else {
         return Err(GatewayServerError::AccessDenied);
     };
+    let chain_bytes = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT cert_chain FROM device_certificates WHERE handle = ?",
+    )
+    .bind(handle)
+    .fetch_optional(&*DATABASE)
+    .await
+    .map_err(fatal_retry_later)?;
+    let Some(chain_bytes) = chain_bytes else {
+        return Err(GatewayServerError::AccessDenied);
+    };
+    let chain: CertificateChain = bcs::from_bytes(&chain_bytes).map_err(fatal_retry_later)?;
+    let device_hash_obj = bytes_to_hash(&device_hash)?;
+    let device = chain
+        .0
+        .iter()
+        .find(|cert| cert.pk.bcs_hash() == device_hash_obj)
+        .ok_or(GatewayServerError::AccessDenied)?;
+    temp_pk
+        .verify(device.pk.sign_pk)
+        .map_err(|_| GatewayServerError::AccessDenied)?;
+    let created = i64::try_from(temp_pk.created.0)
+        .map_err(|_| fatal_retry_later("invalid created timestamp"))?;
     sqlx::query(
-        "INSERT OR REPLACE INTO device_temp_pks (device_hash, temp_pk) VALUES (?, ?)",
+        "INSERT OR REPLACE INTO device_temp_pks \
+         (device_hash, temp_pk, created, signature) VALUES (?, ?, ?, ?)",
     )
     .bind(device_hash)
-    .bind(temp_pk.to_bytes().to_vec())
+    .bind(temp_pk.temp_pk.to_bytes().to_vec())
+    .bind(created)
+    .bind(temp_pk.signature.to_bytes().to_vec())
     .execute(&*DATABASE)
     .await
     .map_err(fatal_retry_later)?;
@@ -157,9 +183,9 @@ pub async fn device_add_temp_pk(
 
 pub async fn device_temp_pks(
     handle: Handle,
-) -> Result<BTreeMap<Hash, DhPublic>, GatewayServerError> {
-    let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-        "SELECT t.device_hash, t.temp_pk \
+) -> Result<BTreeMap<Hash, SignedTempPk>, GatewayServerError> {
+    let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, i64, Vec<u8>)>(
+        "SELECT t.device_hash, t.temp_pk, t.created, t.signature \
          FROM device_temp_pks t \
          JOIN device_auth_tokens d ON t.device_hash = d.device_hash \
          WHERE d.handle = ?",
@@ -170,10 +196,19 @@ pub async fn device_temp_pks(
     .map_err(fatal_retry_later)?;
 
     let mut out = BTreeMap::new();
-    for (device_hash, temp_pk) in rows {
+    for (device_hash, temp_pk, created, signature) in rows {
         let hash = bytes_to_hash(&device_hash)?;
         let pk = bytes_to_pk(&temp_pk)?;
-        out.insert(hash, pk);
+        let created = created_to_timestamp(created)?;
+        let signature = bytes_to_signature(&signature)?;
+        out.insert(
+            hash,
+            SignedTempPk {
+                temp_pk: pk,
+                created,
+                signature,
+            },
+        );
     }
     Ok(out)
 }
@@ -190,4 +225,21 @@ fn bytes_to_pk(bytes: &[u8]) -> Result<DhPublic, GatewayServerError> {
         .try_into()
         .map_err(|_| fatal_retry_later("invalid temp pk length"))?;
     Ok(DhPublic::from_bytes(buf))
+}
+
+fn bytes_to_signature(
+    bytes: &[u8],
+) -> Result<xirtam_crypt::signing::Signature, GatewayServerError> {
+    let buf: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| fatal_retry_later("invalid signature length"))?;
+    Ok(xirtam_crypt::signing::Signature::from_bytes(buf))
+}
+
+fn created_to_timestamp(
+    created: i64,
+) -> Result<xirtam_structs::timestamp::Timestamp, GatewayServerError> {
+    let created =
+        u64::try_from(created).map_err(|_| fatal_retry_later("invalid created timestamp"))?;
+    Ok(xirtam_structs::timestamp::Timestamp(created))
 }

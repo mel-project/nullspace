@@ -1,115 +1,24 @@
-use std::fmt::Display;
-
 use bytes::Bytes;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use xirtam_crypt::aead::AeadKey;
-use xirtam_crypt::dh::{DhPublic, DhSecret, triple_dh};
+use xirtam_crypt::dh::{DhPublic, DhSecret};
 
-#[derive(Clone)]
-pub struct EnvelopePublic {
-    pub long_term: DhPublic,
-    pub short_term: DhPublic,
+pub fn envelope_encrypt(to: &DhPublic, msg: &[u8]) -> Bytes {
+    let eph_sk = DhSecret::random();
+    let ss = eph_sk.diffie_hellman(to);
+    bcs::to_bytes(&(
+        eph_sk.public_key(),
+        AeadKey::from_bytes(ss)
+            .encrypt(Default::default(), msg, &[])
+            .unwrap(),
+    ))
+    .unwrap()
+    .into()
 }
 
-#[derive(Clone)]
-pub struct EnvelopeSecret {
-    pub long_term: DhSecret,
-    pub short_term: DhSecret,
-}
-
-#[derive(Debug, Error)]
-/// An intentionally opaque error in sealing or opening envelopes.
-pub struct EnvelopeError;
-
-impl Display for EnvelopeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        "envelope error".fmt(f)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct EnvelopePayload {
-    sender_ephemeral: DhPublic,
-    ciphertext: Vec<u8>,
-}
-
-impl EnvelopeSecret {
-    pub fn seal_to(
-        &self,
-        recipient: &EnvelopePublic,
-        plaintext: Bytes,
-    ) -> Result<Bytes, EnvelopeError> {
-        let sender_ephemeral = DhSecret::random();
-        let key_bytes = triple_dh(
-            &self.long_term,
-            &sender_ephemeral,
-            &recipient.long_term,
-            &recipient.short_term,
-        );
-        let key = AeadKey::from_bytes(key_bytes);
-        let nonce = [0u8; 12];
-        let ciphertext = key
-            .encrypt(nonce, &plaintext, &[])
-            .map_err(|_| EnvelopeError)?;
-        let payload = EnvelopePayload {
-            sender_ephemeral: sender_ephemeral.public_key(),
-            ciphertext,
-        };
-        let encoded = bcs::to_bytes(&payload).map_err(|_| EnvelopeError)?;
-        Ok(Bytes::from(encoded))
-    }
-
-    pub fn open_from(
-        &self,
-        envelope: Bytes,
-        sender_long_term: &DhPublic,
-    ) -> Result<Bytes, EnvelopeError> {
-        let payload: EnvelopePayload = bcs::from_bytes(&envelope).map_err(|_| EnvelopeError)?;
-        let key_bytes = triple_dh(
-            &self.long_term,
-            &self.short_term,
-            sender_long_term,
-            &payload.sender_ephemeral,
-        );
-        let key = AeadKey::from_bytes(key_bytes);
-        let plaintext = key
-            .decrypt([0u8; 12], &payload.ciphertext, &[])
-            .map_err(|_| EnvelopeError)?;
-        Ok(Bytes::from(plaintext))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn envelope_roundtrip() {
-        let sender_secret = EnvelopeSecret {
-            long_term: DhSecret::random(),
-            short_term: DhSecret::random(),
-        };
-        let receiver_long_term = DhSecret::random();
-        let receiver_short_term = DhSecret::random();
-        let envelope_public = EnvelopePublic {
-            long_term: receiver_long_term.public_key(),
-            short_term: receiver_short_term.public_key(),
-        };
-        let envelope_secret = EnvelopeSecret {
-            long_term: receiver_long_term,
-            short_term: receiver_short_term,
-        };
-        let plaintext = Bytes::from_static(b"roundtrip envelope test");
-
-        let sealed = sender_secret
-            .seal_to(&envelope_public, plaintext.clone())
-            .expect("seal");
-        let opened = envelope_secret
-            .open_from(sealed, &sender_secret.long_term.public_key())
-            .expect("open");
-
-        assert_eq!(opened, plaintext);
-    }
-
+pub fn envelope_decrypt(my_sk: &DhSecret, envelope: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let (eph_pk, ct): (DhPublic, Vec<u8>) = bcs::from_bytes(envelope)?;
+    let ss = my_sk.diffie_hellman(&eph_pk);
+    // Decrypt with the same AEAD parameters used in encrypt()
+    let pt = AeadKey::from_bytes(ss).decrypt(Default::default(), &ct, &[])?;
+    Ok(pt)
 }

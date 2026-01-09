@@ -1,11 +1,14 @@
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use rand::RngCore;
+use derivative::Derivative;
 use serde::{Deserialize, Serialize};
 use serde_with::base64::{Base64, UrlSafe};
 use serde_with::formats::Unpadded;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 use thiserror::Error;
+
+use crate::redacted_debug;
 
 /// Errors returned by symmetric encryption operations.
 #[derive(Debug, Error)]
@@ -18,8 +21,10 @@ pub enum AeadError {
 
 /// ChaCha20-Poly1305 key used for symmetric encryption and decryption.
 #[serde_as]
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Derivative)]
+#[derivative(Debug)]
 pub struct AeadKey(
+    #[derivative(Debug(format_with = "redacted_debug"))]
     #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
 );
 

@@ -3,6 +3,7 @@ pub mod directory;
 pub mod envelope;
 pub mod gateway;
 pub mod handle;
+pub mod msg_content;
 pub mod timestamp;
 
 use bytes::Bytes;

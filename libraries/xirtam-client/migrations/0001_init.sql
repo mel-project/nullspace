@@ -11,7 +11,7 @@ CREATE TABLE dm_messages (
     id INTEGER PRIMARY KEY,
     peer_handle TEXT NOT NULL,
     sender_handle TEXT NOT NULL,
-    message_kind TEXT NOT NULL,
+    mime TEXT NOT NULL,
     body BLOB NOT NULL,
     received_at INTEGER
 );

@@ -11,9 +11,11 @@ use smol_str::SmolStr;
 use thiserror::Error;
 use url::Url;
 use xirtam_crypt::dh::DhPublic;
+use xirtam_crypt::signing::{Signable, Signature};
 use xirtam_crypt::{hash::Hash, signing::SigningPublic};
 
 use crate::certificate::CertificateChain;
+use crate::timestamp::Timestamp;
 use crate::{Message, handle::Handle, timestamp::NanoTimestamp};
 
 /// The RPC protocol implemented by gateway servers.
@@ -37,13 +39,13 @@ pub trait GatewayProtocol {
     async fn v1_device_temp_pks(
         &self,
         handle: Handle,
-    ) -> Result<BTreeMap<Hash, DhPublic>, GatewayServerError>;
+    ) -> Result<BTreeMap<Hash, SignedTempPk>, GatewayServerError>;
 
     /// Store a device's temp public key.
     async fn v1_device_add_temp_pk(
         &self,
         auth: AuthToken,
-        temp_pk: DhPublic,
+        temp_pk: SignedTempPk,
     ) -> Result<(), GatewayServerError>;
 
     /// Send a message into a mailbox.
@@ -68,6 +70,27 @@ pub trait GatewayProtocol {
         mailbox: MailboxId,
         arg: MailboxAcl,
     ) -> Result<(), GatewayServerError>;
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SignedTempPk {
+    pub temp_pk: DhPublic,
+    pub created: Timestamp,
+    pub signature: Signature,
+}
+
+impl Signable for SignedTempPk {
+    fn signed_value(&self) -> Vec<u8> {
+        bcs::to_bytes(&(&self.temp_pk, &self.created)).unwrap()
+    }
+
+    fn signature_mut(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
 }
 
 /// Arguments for receiving messages from a single mailbox.

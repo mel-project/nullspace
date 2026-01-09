@@ -6,11 +6,10 @@ use axum::{
 };
 use bytes::Bytes;
 use nanorpc::{JrpcRequest, RpcService};
-use xirtam_crypt::dh::DhPublic;
 use xirtam_structs::certificate::CertificateChain;
 use xirtam_structs::gateway::{
     AuthToken, GatewayProtocol, GatewayServerError, GatewayService, MailboxAcl, MailboxEntry,
-    MailboxId, MailboxRecvArgs,
+    MailboxId, MailboxRecvArgs, SignedTempPk,
 };
 use xirtam_structs::{Message, handle::Handle};
 
@@ -65,14 +64,14 @@ impl GatewayProtocol for GatewayServer {
     async fn v1_device_temp_pks(
         &self,
         handle: Handle,
-    ) -> Result<BTreeMap<xirtam_crypt::hash::Hash, DhPublic>, GatewayServerError> {
+    ) -> Result<BTreeMap<xirtam_crypt::hash::Hash, SignedTempPk>, GatewayServerError> {
         device::device_temp_pks(handle).await
     }
 
     async fn v1_device_add_temp_pk(
         &self,
         auth: AuthToken,
-        temp_pk: DhPublic,
+        temp_pk: SignedTempPk,
     ) -> Result<(), GatewayServerError> {
         device::device_add_temp_pk(auth, temp_pk).await
     }

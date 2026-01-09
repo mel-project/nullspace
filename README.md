@@ -7,7 +7,7 @@ What is a confederal protocol? [Read this blogpost first](https://nullchinchilla
 - [x] Directory RPC + PoW updates + header sync (server + dirclient)
 - [x] Gateway RPC + mailbox storage/ACLs + device auth
 - [x] Core structs: handles, gateway descriptors, certificates, envelopes, message kinds
-- [ ] Mailbox crypto protocol (DH mailbox keys, FS/PCS, sender/receiver flow)
+- [x] DM encryption format (encrypted headers + signed temp keys)
 - [ ] Group protocol (group IDs, rekeying, membership control)
 - [ ] Directory privacy improvements (PIR/bucketed lookup)
 
@@ -64,20 +64,34 @@ root pk -> device 1
 
 The most basic *underlying* protocol is the "mailbox protocol". It's a loosely SimpleX-like 1-to-1 DM protocol with a somewhat email like interface.
 
-We use a *coarse-grained* mechanism to ensure forward secrecy and post-compromise secrecy:
-- A DH **mailbox key** signed by the device key sits at the gateway.
-- The mailbox key is updated at most every hour, with an anacron-style scheduling.
-- Senders cache the recipient's DH key for an hour after looking it up at the recipient's gateway.
-- Senders use a fully asynchronous approach (embed an ephemeral dh pk, a long-term dh pk signed by their device, and symmetrically encrypted body with key derived from triple-dh).
-- Receivers keep around the current and previous mailbox key.
-
-Each mailbox has an ACL of auth token hashes, used by anybody wishing to subscribe to or write to that mailbox.
+Each handle has a DM mailbox at its gateway. Device auth tokens get ACL entries (and optionally an anonymous ACL for public inboxes).
 
 When reading from a mailbox, each item in the mailbox comes attached with the *hash* of the sender auth token used to push it there (if any).
 
-The low-level encrypted payloads sent to mailboxes are called *envelopes*; they carry a `Message` inside.
+### Encrypted DMs
 
-Each handle has a DM mailbox at its gateway. Device auth tokens get ACL entries (and optionally an anonymous ACL for public inboxes).
+DMs are encrypted with an `EncryptedDm` payload (stored inside `v1.direct_message`). It has:
+
+- `headers`: `BTreeMap<Hash, Bytes>` keyed by the recipient device hash (the cert's `bcs_hash`).
+- `body`: AEAD-encrypted `Message` (`v1.message_content`) with zero nonce and empty AAD.
+
+Each header is `envelope_encrypt(recipient_temp_pk, header_bytes)` where `header_bytes` is the BCS encoding of:
+
+```
+{
+  sender_handle,
+  sender_chain, // full certificate chain for sender device
+  key,          // symmetric key K
+  key_sig       // signature over K by sender device signing key
+}
+```
+
+Recipients fetch signed temp keys from the gateway (`v1_device_temp_pks`) and use their own temp secret to open the envelope. They then:
+- verify the sender chain against the handle's root cert hash from the directory
+- verify `key_sig` against the sender device signing key
+- decrypt the body with `K` to recover `MessageContent { mime, body }`
+
+Each mailbox has an ACL of auth token hashes, used by anybody wishing to subscribe to or write to that mailbox.
 
 ## DMs
 
@@ -106,4 +120,4 @@ Message {
 }
 ```
 
-The `v1.message_content` kind is the common content carrier; the concrete payload schema is TBD.
+The `v1.message_content` kind carries `MessageContent { mime, body }`.

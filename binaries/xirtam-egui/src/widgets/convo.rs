@@ -9,7 +9,10 @@ use egui_infinite_scroll::InfiniteScroll;
 use smol_str::SmolStr;
 use tracing::debug;
 use xirtam_client::internal::DmMessage;
+use xirtam_crypt::hash::Hash;
 use xirtam_structs::handle::Handle;
+use xirtam_structs::timestamp::NanoTimestamp;
+use chrono::{DateTime, Local};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -133,11 +136,21 @@ impl Widget for Convo<'_> {
                     }
                     scroller.ui(ui, 10, |ui, _index, item| {
                         let mut job = LayoutJob::default();
+                        let timestamp = format_timestamp(item.received_at);
+                        job.append(
+                            &format!("[{timestamp}] "),
+                            0.0,
+                            TextFormat {
+                                color: Color32::GRAY,
+                                ..Default::default()
+                            },
+                        );
+                        let sender_color = handle_color(&item.sender);
                         job.append(
                             &format!("{}: ", item.sender),
                             0.0,
                             TextFormat {
-                                color: Color32::DARK_BLUE,
+                                color: sender_color,
                                 ..Default::default()
                             },
                         );
@@ -163,4 +176,26 @@ impl Widget for Convo<'_> {
 
         ui.response()
     }
+}
+
+fn handle_color(handle: &Handle) -> Color32 {
+    let hash = Hash::digest(handle.as_str().as_bytes());
+    let bytes = hash.to_bytes();
+    let hue = (u16::from_le_bytes([bytes[0], bytes[1]]) % 360) as f32 / 360.0;
+    let hsva = egui::ecolor::Hsva::new(hue, 0.65, 0.55, 1.0);
+    let [r, g, b] = hsva.to_srgb();
+    Color32::from_rgb(r, g, b)
+}
+
+fn format_timestamp(ts: Option<NanoTimestamp>) -> String {
+    let Some(ts) = ts else {
+        return "--:--".to_string();
+    };
+    let secs = (ts.0 / 1_000_000_000) as i64;
+    let nsec = (ts.0 % 1_000_000_000) as u32;
+    let Some(dt) = DateTime::from_timestamp(secs, nsec) else {
+        return "--:--".to_string();
+    };
+    let local = dt.with_timezone(&Local);
+    local.format("%H:%M").to_string()
 }

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
+use clap::Parser;
 use eframe::egui::{self, Modal, Spinner};
 use tokio::{
     runtime::Runtime,
@@ -16,6 +18,17 @@ mod widgets;
 
 const DEFAULT_DIR_ENDPOINT: &str = "http://127.0.0.1:4000";
 const DEFAULT_DIR_ANCHOR_PK: &str = "OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124";
+
+#[derive(Debug, Parser)]
+#[command(name = "xirtam-egui", about = "Minimal xirtam GUI client")]
+struct Cli {
+    #[arg(long)]
+    db_path: Option<PathBuf>,
+    #[arg(long, default_value = DEFAULT_DIR_ENDPOINT)]
+    dir_endpoint: String,
+    #[arg(long, default_value = DEFAULT_DIR_ANCHOR_PK)]
+    dir_anchor_pk: String,
+}
 
 struct XirtamApp {
     client: Client,
@@ -96,6 +109,7 @@ impl eframe::App for XirtamApp {
                 }
             }
         });
+        ctx.request_repaint_after(Duration::from_millis(200));
     }
 }
 
@@ -105,12 +119,14 @@ fn main() -> eframe::Result<()> {
             "xirtam=debug,xirtam_egui=debug",
         ))
         .init();
+    let cli = Cli::parse();
     let runtime = Runtime::new().expect("tokio runtime");
     let _guard = runtime.enter();
     let config = Config {
-        db_path: default_db_path(),
-        dir_endpoint: Url::parse(DEFAULT_DIR_ENDPOINT).expect("dir endpoint"),
-        dir_anchor_pk: DEFAULT_DIR_ANCHOR_PK
+        db_path: cli.db_path.unwrap_or_else(default_db_path),
+        dir_endpoint: Url::parse(&cli.dir_endpoint).expect("dir endpoint"),
+        dir_anchor_pk: cli
+            .dir_anchor_pk
             .parse::<SigningPublic>()
             .expect("dir anchor pk"),
     };

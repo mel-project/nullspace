@@ -7321,6 +7321,8 @@ dependencies = [
  "anyhow",
  "base64",
  "bytes",
+ "chrono",
+ "clap",
  "dirs",
  "eframe",
  "egui",

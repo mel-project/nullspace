@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, mpsc::Receiver};
 
 use anyctx::AnyCtx;
@@ -218,6 +218,26 @@ impl InternalProtocol for InternalImpl {
                 received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
             });
         }
+        Ok(out)
+    }
+
+    async fn all_peers(&self) -> Result<BTreeSet<Handle>, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        let identity = Identity::load(db)
+            .await
+            .map_err(|_| InternalRpcError::NotReady)?;
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT peer_handle FROM dm_messages",
+        )
+        .fetch_all(db)
+        .await
+        .map_err(internal_err)?;
+        let mut out = BTreeSet::new();
+        for (peer_handle,) in rows {
+            let peer = Handle::parse(peer_handle).map_err(internal_err)?;
+            out.insert(peer);
+        }
+        out.insert(identity.handle);
         Ok(out)
     }
 }

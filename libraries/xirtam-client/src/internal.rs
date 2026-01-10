@@ -10,6 +10,7 @@ use thiserror::Error;
 use xirtam_structs::gateway::GatewayName;
 use xirtam_structs::handle::Handle;
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
+use std::collections::BTreeSet;
 
 /// The internal JSON-RPC interface exposed by xirtam-client.
 #[nanorpc_derive]
@@ -39,6 +40,7 @@ pub trait InternalProtocol {
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<DmMessage>, InternalRpcError>;
+    async fn all_peers(&self) -> Result<BTreeSet<Handle>, InternalRpcError>;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

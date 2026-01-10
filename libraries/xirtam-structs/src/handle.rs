@@ -11,7 +11,7 @@ use xirtam_crypt::hash::Hash;
 use crate::gateway::GatewayName;
 
 /// A user handle that matches the rules for user handles.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Handle(SmolStr);
 

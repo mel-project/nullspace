@@ -181,14 +181,9 @@ async fn acl_for_token(
         return Ok(acl);
     }
     let anonymous = AuthToken::anonymous();
-    if let Some(acl) = load_acl(tx, mailbox_id, anonymous).await? {
-        if token_is_registered(tx, token).await? {
-            return Ok(MailboxAcl {
-                token_hash: token.bcs_hash(),
-                can_edit_acl: acl.can_edit_acl,
-                can_send: acl.can_send,
-                can_recv: acl.can_recv,
-            });
+    if token == anonymous {
+        if let Some(acl) = load_acl(tx, mailbox_id, anonymous).await? {
+            return Ok(acl);
         }
     }
     Ok(empty_acl(token))
@@ -236,21 +231,6 @@ async fn load_acl(
         can_send: can_send != 0,
         can_recv: can_recv != 0,
     }))
-}
-
-async fn token_is_registered(
-    tx: &mut Transaction<'_, Sqlite>,
-    token: AuthToken,
-) -> Result<bool, GatewayServerError> {
-    let token_data = bcs::to_bytes(&token).map_err(fatal_retry_later)?;
-    let exists = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM device_auth_tokens WHERE auth_token = ? LIMIT 1",
-    )
-    .bind(token_data)
-    .fetch_optional(tx.as_mut())
-    .await
-    .map_err(fatal_retry_later)?;
-    Ok(exists.is_some())
 }
 
 fn empty_acl(token: AuthToken) -> MailboxAcl {

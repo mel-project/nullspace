@@ -6,7 +6,7 @@ use anyhow::Context;
 use futures_concurrency::future::TryJoin;
 use moka::future::Cache;
 use xirtam_structs::certificate::{CertificateChain, DeviceCertificate};
-use xirtam_structs::gateway::{GatewayClient, SignedMediumPk};
+use xirtam_structs::gateway::{GatewayClient, GatewayName, SignedMediumPk};
 use xirtam_structs::handle::Handle;
 
 use crate::config::Config;
@@ -16,6 +16,7 @@ use crate::gateway::get_gateway_client;
 pub struct PeerInfo {
     pub handle: Handle,
     pub gateway: Arc<GatewayClient>,
+    pub gateway_name: GatewayName,
     pub certs: Vec<DeviceCertificate>,
     pub medium_pks: BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>,
 }
@@ -51,6 +52,7 @@ pub async fn get_peer_info(
             Ok(Arc::new(PeerInfo {
                 handle: handle.clone(),
                 gateway,
+                gateway_name: descriptor.gateway_name.clone(),
                 certs,
                 medium_pks,
             }))

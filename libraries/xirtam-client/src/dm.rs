@@ -136,9 +136,14 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
         }];
         let response = match gateway.v1_mailbox_multirecv(args, timeout_ms).await {
             Ok(response) => {
-                let next = (timeout_ms + DM_RECV_TIMEOUT_STEP_MS).min(DM_RECV_TIMEOUT_MAX_MS);
-                tracing::debug!(prev = timeout_ms, next, "mailbox multirecv AIMD increase");
-                timeout_ms = next;
+                if let Ok(v) = &response
+                    && v.is_empty()
+                {
+                    // increase "every 10 seconds"
+                    let next = (timeout_ms + DM_RECV_TIMEOUT_STEP_MS).min(DM_RECV_TIMEOUT_MAX_MS);
+                    tracing::debug!(prev = timeout_ms, next, "mailbox multirecv AIMD increase");
+                    timeout_ms = next;
+                }
                 response
             }
             Err(err) => {
@@ -180,9 +185,14 @@ async fn send_dm_once(
     message: &Message,
 ) -> anyhow::Result<NanoTimestamp> {
     let peer = get_peer_info(ctx, target).await?;
+    let own_gateway = own_gateway_name(ctx, identity).await?;
     let recipients = recipients_from_peer(peer.as_ref())?;
 
-    let auth = device_auth(peer.gateway.as_ref(), identity).await?;
+    let auth = if peer.gateway_name == own_gateway {
+        device_auth(peer.gateway.as_ref(), identity).await?
+    } else {
+        AuthToken::anonymous()
+    };
     let envelope = Envelope::encrypt_message(
         message,
         identity.handle.clone(),
@@ -236,6 +246,18 @@ async fn device_auth(client: &GatewayClient, identity: &Identity) -> anyhow::Res
         .v1_device_auth(identity.handle.clone(), identity.cert_chain.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+async fn own_gateway_name(
+    ctx: &anyctx::AnyCtx<Config>,
+    identity: &Identity,
+) -> anyhow::Result<xirtam_structs::gateway::GatewayName> {
+    let dir = ctx.get(DIR_CLIENT);
+    let descriptor = dir
+        .get_handle_descriptor(&identity.handle)
+        .await?
+        .context("identity handle not in directory")?;
+    Ok(descriptor.gateway_name)
 }
 
 async fn send_envelope(

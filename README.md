@@ -103,11 +103,9 @@ Groups are uniquely identified by a **group ID**, which is the hash of the initi
 
 Each group has its own hierarchy of cryptographic certificates. This assigns group admins, mods, etc, with differing permissions.
 
-Each group is hosted on its own mailbox at a gateway. This means that groups have one, canonical gateway, and one canonical history.
+Each group is hosted on its own mailbox. This means that groups have one, canonical server, and one canonical history.
 
-From the canonical history, a group roster and an auth-token-hash -> handle mapping can be built.
-
-Group membership changes and periodic rekeying are TODO.
+From the canonical history, a group roster and a mailbox-token-hash -> username mapping can be built.
 
 ## Messages
 

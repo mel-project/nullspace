@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use eframe::egui::{CentralPanel, Key, Response, Widget};
+use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
 use egui::mutex::Mutex;
 use egui::text::LayoutJob;
 use egui::{Color32, ScrollArea, TextEdit, TextFormat, TopBottomPanel};
@@ -12,7 +12,7 @@ use xirtam_client::internal::DmMessage;
 use xirtam_crypt::hash::Hash;
 use xirtam_structs::handle::Handle;
 use xirtam_structs::timestamp::NanoTimestamp;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -134,7 +134,21 @@ impl Widget for Convo<'_> {
                     if scroller.top_loading_state().loading() {
                         ui.spinner();
                     }
+                    let mut last_date: Option<NaiveDate> = None;
                     scroller.ui(ui, 10, |ui, _index, item| {
+                        if let Some(date) = date_from_timestamp(item.received_at) {
+                            if last_date != Some(date) {
+                                ui.add_space(4.0);
+                                let label = format!("[{}]", date.format("%A, %d %b %Y"));
+                                ui.label(
+                                    RichText::new(label)
+                                        .color(Color32::GRAY)
+                                        .size(12.0),
+                                );
+                                ui.add_space(4.0);
+                                last_date = Some(date);
+                            }
+                        }
                         let mut job = LayoutJob::default();
                         let timestamp = format_timestamp(item.received_at);
                         job.append(
@@ -198,4 +212,12 @@ fn format_timestamp(ts: Option<NanoTimestamp>) -> String {
     };
     let local = dt.with_timezone(&Local);
     local.format("%H:%M").to_string()
+}
+
+fn date_from_timestamp(ts: Option<NanoTimestamp>) -> Option<NaiveDate> {
+    let ts = ts?;
+    let secs = (ts.0 / 1_000_000_000) as i64;
+    let nsec = (ts.0 % 1_000_000_000) as u32;
+    let dt = DateTime::from_timestamp(secs, nsec)?;
+    Some(dt.with_timezone(&Local).date_naive())
 }

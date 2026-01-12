@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, mpsc::Receiver};
 
 use anyctx::AnyCtx;
-use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
+use async_channel::Receiver as AsyncReceiver;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_concurrency::future::Race;
@@ -19,7 +19,7 @@ use xirtam_structs::handle::{Handle, HandleDescriptor};
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 
 use crate::Config;
-use crate::database::{DATABASE, DbNotify};
+use crate::database::{DATABASE, DbNotify, event_loop, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::dm::{recv_loop, send_loop};
 use crate::gateway::get_gateway_client;
@@ -174,11 +174,7 @@ impl InternalProtocol for InternalImpl {
         Ok(row.0)
     }
 
-    async fn add_contact(
-        &self,
-        handle: Handle,
-        init_msg: String,
-    ) -> Result<(), InternalRpcError> {
+    async fn add_contact(&self, handle: Handle, init_msg: String) -> Result<(), InternalRpcError> {
         let dir = self.ctx.get(DIR_CLIENT);
         if dir
             .get_handle_descriptor(&handle)
@@ -242,23 +238,58 @@ impl InternalProtocol for InternalImpl {
         Ok(out)
     }
 
-    async fn all_peers(&self) -> Result<BTreeSet<Handle>, InternalRpcError> {
+    async fn all_peers(&self) -> Result<BTreeMap<Handle, DmMessage>, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let rows = sqlx::query_as::<_, (String,)>(
-            "SELECT DISTINCT peer_handle FROM dm_messages",
+        let rows = sqlx::query_as::<_, (i64, String, String, String, Vec<u8>, Option<i64>)>(
+            "SELECT id, peer_handle, sender_handle, mime, body, received_at \
+             FROM dm_messages \
+             ORDER BY id DESC",
         )
         .fetch_all(db)
         .await
         .map_err(internal_err)?;
-        let mut out = BTreeSet::new();
-        for (peer_handle,) in rows {
+        let mut out = BTreeMap::new();
+        for (id, peer_handle, sender_handle, mime, body, received_at) in rows {
             let peer = Handle::parse(peer_handle).map_err(internal_err)?;
-            out.insert(peer);
+            if out.contains_key(&peer) {
+                continue;
+            }
+            let sender = Handle::parse(sender_handle).map_err(internal_err)?;
+            let direction = if sender == identity.handle {
+                DmDirection::Outgoing
+            } else {
+                DmDirection::Incoming
+            };
+            out.insert(
+                peer.clone(),
+                DmMessage {
+                    id,
+                    peer,
+                    sender,
+                    direction,
+                    mime: smol_str::SmolStr::new(mime),
+                    body: Bytes::from(body),
+                    received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
+                },
+            );
         }
-        out.insert(identity.handle);
+        if !out.contains_key(&identity.handle) {
+            out.insert(
+                identity.handle.clone(),
+                DmMessage {
+                    id: 0,
+                    peer: identity.handle.clone(),
+                    sender: identity.handle,
+                    direction: DmDirection::Outgoing,
+                    mime: smol_str::SmolStr::new(""),
+                    body: Bytes::new(),
+                    received_at: None,
+                },
+            );
+        }
         Ok(out)
     }
 }
@@ -273,46 +304,6 @@ async fn rpc_loop(
             let response = service.respond_raw(req).await;
             resp_tx.send(response).ok();
         });
-    }
-}
-
-async fn event_loop(ctx: &AnyCtx<Config>, event_tx: AsyncSender<Event>) {
-    let db = ctx.get(DATABASE);
-    let mut notify = DbNotify::new();
-    let mut logged_in = loop {
-        match identity_exists(db).await {
-            Ok(value) => break value,
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to check identity state");
-            }
-        }
-    };
-    event_tx.send(Event::State { logged_in }).await.ok();
-    let mut last_seen_id = current_max_message_id(db).await.unwrap_or(0);
-    loop {
-        notify.wait_for_change().await;
-        let next_logged_in = match identity_exists(db).await {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to check identity state");
-                continue;
-            }
-        };
-        if next_logged_in != logged_in {
-            logged_in = next_logged_in;
-            event_tx.send(Event::State { logged_in }).await.ok();
-        }
-        let (new_last, peers) = match new_message_peers(db, last_seen_id).await {
-            Ok(result) => result,
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to query dm messages");
-                continue;
-            }
-        };
-        last_seen_id = new_last;
-        for peer in peers {
-            event_tx.send(Event::DmUpdated { peer }).await.ok();
-        }
     }
 }
 
@@ -332,44 +323,6 @@ async fn worker_loop(ctx: &AnyCtx<Config>) {
     (send_loop(ctx), recv_loop(ctx), rotation_loop(ctx))
         .race()
         .await;
-}
-
-async fn identity_exists(db: &sqlx::SqlitePool) -> anyhow::Result<bool> {
-    let row = sqlx::query_as::<_, (i64,)>("SELECT 1 FROM client_identity WHERE id = 1")
-        .fetch_optional(db)
-        .await?;
-    Ok(row.is_some())
-}
-
-async fn current_max_message_id(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
-    let row = sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(id) FROM dm_messages")
-        .fetch_one(db)
-        .await?;
-    Ok(row.0.unwrap_or(0))
-}
-
-async fn new_message_peers(
-    db: &sqlx::SqlitePool,
-    last_seen_id: i64,
-) -> anyhow::Result<(i64, Vec<Handle>)> {
-    let rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT id, peer_handle FROM dm_messages WHERE id > ? ORDER BY id",
-    )
-    .bind(last_seen_id)
-    .fetch_all(db)
-    .await?;
-    if rows.is_empty() {
-        return Ok((last_seen_id, Vec::new()));
-    }
-    let mut peers = HashSet::new();
-    let mut max_id = last_seen_id;
-    for (id, peer_handle) in rows {
-        max_id = max_id.max(id);
-        if let Ok(peer) = Handle::parse(peer_handle) {
-            peers.insert(peer);
-        }
-    }
-    Ok((max_id, peers.into_iter().collect()))
 }
 
 async fn register_bootstrap(

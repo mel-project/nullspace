@@ -19,8 +19,8 @@ enum LoginStep {
 impl Widget for Login<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let step = ui.use_state(|| LoginStep::EnterHandle, ());
-        let mut handle_str = ui.use_state(|| "@alice01".to_string(), ()).into_var();
-        let mut gateway_str = ui.use_state(|| "~demo01".to_string(), ()).into_var();
+        let mut handle_str = ui.use_state(|| "".to_string(), ()).into_var();
+        let mut gateway_str = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut bundle_str = ui.use_state(String::new, ()).into_var();
         let register_info = ui.use_state(|| None::<xirtam_client::internal::RegisterStartInfo>, ());
         let register_start = ui.use_state(PromiseSlot::new, ());

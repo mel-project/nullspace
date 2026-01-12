@@ -11,13 +11,12 @@ use url::Url;
 use xirtam_client::{Client, Config, internal::Event};
 use xirtam_crypt::signing::SigningPublic;
 
-mod component;
 mod promises;
 mod screens;
 mod widgets;
 
-const DEFAULT_DIR_ENDPOINT: &str = "http://127.0.0.1:4000";
-const DEFAULT_DIR_ANCHOR_PK: &str = "OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124";
+const DEFAULT_DIR_ENDPOINT: &str = "https://xirtam-test-directory.nullfruit.net/";
+const DEFAULT_DIR_ANCHOR_PK: &str = "M7nRvqmTOKOyF2HxhjdVxAKUIqANb4jXa5EKZ2UFD8I";
 
 #[derive(Debug, Parser)]
 #[command(name = "xirtam-egui", about = "Minimal xirtam GUI client")]
@@ -47,12 +46,21 @@ impl XirtamApp {
     fn new(cc: &eframe::CreationContext<'_>, client: Client, recv_event: Receiver<Event>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         cc.egui_ctx.style_mut(|style| {
-            style.spacing.item_spacing = egui::vec2(4.0, 4.0);
+            style.spacing.item_spacing = egui::vec2(6.0, 6.0);
             style.spacing.window_margin = egui::Margin::same(24);
-            style.spacing.button_padding = egui::vec2(8.0, 4.0);
+            style.spacing.button_padding = egui::vec2(6.0, 4.0);
             style.spacing.indent = 16.0;
+            for wid in [
+                &mut style.visuals.widgets.active,
+                &mut style.visuals.widgets.hovered,
+                &mut style.visuals.widgets.noninteractive,
+                &mut style.visuals.widgets.open,
+                &mut style.visuals.widgets.inactive,
+            ] {
+                wid.corner_radius = egui::CornerRadius::ZERO;
+            }
         });
-        cc.egui_ctx.set_zoom_factor(1.25);
+        // cc.egui_ctx.set_zoom_factor(1.25);
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "fantasque".to_string(),
@@ -99,13 +107,19 @@ impl eframe::App for XirtamApp {
             }
             match self.state.logged_in {
                 Some(true) => {
-                    ui.add(screens::steady_state::SteadyState(self));
+                    ui.push_id("steady_state", |ui| {
+                        ui.add(screens::steady_state::SteadyState(self));
+                    });
                 }
                 Some(false) => {
-                    ui.add(screens::login::Login(self));
+                    ui.push_id("login", |ui| {
+                        ui.add(screens::login::Login(self));
+                    });
                 }
                 None => {
-                    ui.add(Spinner::new());
+                    ui.push_id("loading", |ui| {
+                        ui.add(Spinner::new());
+                    });
                 }
             }
         });

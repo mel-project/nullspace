@@ -1,14 +1,14 @@
 use eframe::egui::{Response, Widget};
-use egui::Button;
+use egui::{Align, Button, Layout};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use xirtam_structs::handle::Handle;
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::XirtamApp;
-use crate::promises::{AsyncMemo, flatten_rpc};
+use crate::promises::flatten_rpc;
 use crate::widgets::add_contact::AddContact;
 use crate::widgets::convo::Convo;
 
@@ -21,9 +21,8 @@ impl Widget for SteadyState<'_> {
         let mut show_add_contact: Var<bool> = ui.use_state(|| false, ()).into_var();
         let all_chats = ui.use_memo(
             || {
-                AsyncMemo::spawn_async_with(rpc.clone(), |rpc| async move {
-                    flatten_rpc(rpc.all_peers().await)
-                })
+                let result = pollster::block_on(rpc.all_peers());
+                flatten_rpc(result)
             },
             self.0.state.update_count,
         );
@@ -38,12 +37,7 @@ impl Widget for SteadyState<'_> {
             .exact_width(200.0)
             .frame(frame)
             .show_inside(ui, |ui| {
-                self.render_left(
-                    ui,
-                    &all_chats,
-                    &mut *selected_chat,
-                    &mut *show_add_contact,
-                )
+                self.render_left(ui, &all_chats, &mut *selected_chat, &mut *show_add_contact)
             });
         eframe::egui::CentralPanel::default()
             .frame(frame)
@@ -62,7 +56,7 @@ impl<'a> SteadyState<'a> {
     fn render_left(
         &mut self,
         ui: &mut eframe::egui::Ui,
-        all_chats: &AsyncMemo<Result<BTreeSet<Handle>, String>>,
+        all_chats: &Result<BTreeMap<Handle, xirtam_client::internal::DmMessage>, String>,
         selected_chat: &mut Option<Handle>,
         show_add_contact: &mut bool,
     ) {
@@ -70,21 +64,24 @@ impl<'a> SteadyState<'a> {
             *show_add_contact = true;
         }
         ui.separator();
-        match all_chats.poll() {
-            std::task::Poll::Ready(lst) => match &*lst {
-                Ok(lst) => {
-                    for handle in lst {
-                        if ui.button(handle.to_string()).clicked() {
+        match all_chats {
+            Ok(lst) => {
+                ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
+                    for (handle, _last_msg) in lst {
+                        if ui
+                            .selectable_label(
+                                *selected_chat == Some(handle.clone()),
+                                handle.to_string(),
+                            )
+                            .clicked()
+                        {
                             selected_chat.replace(handle.clone());
                         }
                     }
-                }
-                Err(err) => {
-                    self.0.state.error_dialog.replace(err.to_string());
-                }
-            },
-            std::task::Poll::Pending => {
-                ui.spinner();
+                });
+            }
+            Err(err) => {
+                self.0.state.error_dialog.replace(err.to_string());
             }
         }
     }

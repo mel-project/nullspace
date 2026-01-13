@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
 use egui::mutex::Mutex;
 use egui::text::LayoutJob;
@@ -9,16 +10,15 @@ use egui_infinite_scroll::InfiniteScroll;
 use smol_str::SmolStr;
 use tracing::debug;
 use xirtam_client::internal::DmMessage;
-use xirtam_crypt::hash::Hash;
 use xirtam_structs::handle::Handle;
 use xirtam_structs::timestamp::NanoTimestamp;
-use chrono::{DateTime, Local, NaiveDate};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::XirtamApp;
 use crate::promises::flatten_rpc;
+use crate::utils::color::handle_color;
 
 pub struct Convo<'a>(pub &'a mut XirtamApp, pub Handle);
 
@@ -34,28 +34,27 @@ impl Widget for Convo<'_> {
                 let start_peer = peer.clone();
                 let limit: u16 = 100;
                 Arc::new(Mutex::new(
-                    InfiniteScroll::<DmMessage, u64>::new()
-                        .start_loader_async(move |cursor| {
-                            let rpc = start_rpc.clone();
-                            let peer = start_peer.clone();
-                            async move {
-                                let before = cursor.map(|value| value as i64);
-                                let messages = flatten_rpc(
-                                    rpc.dm_history(peer.clone(), before, None, limit).await,
-                                )?;
-                                debug!(
-                                    cursor = ?before,
-                                    count = messages.len(),
-                                    "dm start_loader"
-                                );
-                                if messages.is_empty() {
-                                    return Ok((Vec::new(), None));
-                                }
-                                let next_cursor =
-                                    messages.first().and_then(|msg| msg.id.checked_sub(1));
-                                Ok((messages, next_cursor.map(|value| value as u64)))
+                    InfiniteScroll::<DmMessage, u64>::new().start_loader_async(move |cursor| {
+                        let rpc = start_rpc.clone();
+                        let peer = start_peer.clone();
+                        async move {
+                            let before = cursor.map(|value| value as i64);
+                            let messages = flatten_rpc(
+                                rpc.dm_history(peer.clone(), before, None, limit).await,
+                            )?;
+                            debug!(
+                                cursor = ?before,
+                                count = messages.len(),
+                                "dm start_loader"
+                            );
+                            if messages.is_empty() {
+                                return Ok((Vec::new(), None));
                             }
-                        }),
+                            let next_cursor =
+                                messages.first().and_then(|msg| msg.id.checked_sub(1));
+                            Ok((messages, next_cursor.map(|value| value as u64)))
+                        }
+                    }),
                 ))
             },
             (self.1.clone(),),
@@ -82,7 +81,7 @@ impl Widget for Convo<'_> {
                             by_id.insert(item.id, item);
                         }
                         scroller.items = by_id.into_values().collect();
-                        scroller.virtual_list.reset();
+                        // scroller.virtual_list.reset();
                     }
                     Err(err) => {
                         eprintln!("dm history refresh failed: {err}");
@@ -129,22 +128,16 @@ impl Widget for Convo<'_> {
                 ui.use_state(|| true, (self.1.clone(),)).into_var();
             let scroll_output = ScrollArea::vertical()
                 .stick_to_bottom(*stick_to_bottom)
+                .animated(false)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    if scroller.top_loading_state().loading() {
-                        ui.spinner();
-                    }
                     let mut last_date: Option<NaiveDate> = None;
                     scroller.ui(ui, 10, |ui, _index, item| {
                         if let Some(date) = date_from_timestamp(item.received_at) {
                             if last_date != Some(date) {
                                 ui.add_space(4.0);
                                 let label = format!("[{}]", date.format("%A, %d %b %Y"));
-                                ui.label(
-                                    RichText::new(label)
-                                        .color(Color32::GRAY)
-                                        .size(12.0),
-                                );
+                                ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
                                 ui.add_space(4.0);
                                 last_date = Some(date);
                             }
@@ -178,9 +171,6 @@ impl Widget for Convo<'_> {
                         );
                         ui.label(job);
                     });
-                    if scroller.bottom_loading_state().loading() {
-                        ui.spinner();
-                    }
                 });
             let max_offset =
                 (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
@@ -190,15 +180,6 @@ impl Widget for Convo<'_> {
 
         ui.response()
     }
-}
-
-fn handle_color(handle: &Handle) -> Color32 {
-    let hash = Hash::digest(handle.as_str().as_bytes());
-    let bytes = hash.to_bytes();
-    let hue = (u16::from_le_bytes([bytes[0], bytes[1]]) % 360) as f32 / 360.0;
-    let hsva = egui::ecolor::Hsva::new(hue, 0.65, 0.55, 1.0);
-    let [r, g, b] = hsva.to_srgb();
-    Color32::from_rgb(r, g, b)
 }
 
 fn format_timestamp(ts: Option<NanoTimestamp>) -> String {

@@ -1,4 +1,4 @@
-use eframe::egui::{Response, Widget};
+use eframe::egui::{Response, ViewportCommand, Widget};
 use egui::{Align, Button, Layout};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
@@ -10,7 +10,9 @@ use std::sync::Arc;
 use crate::XirtamApp;
 use crate::promises::flatten_rpc;
 use crate::widgets::add_contact::AddContact;
+use crate::widgets::add_device::AddDevice;
 use crate::widgets::convo::Convo;
+use crate::widgets::preferences::Preferences;
 
 pub struct SteadyState<'a>(pub &'a mut XirtamApp);
 
@@ -19,6 +21,8 @@ impl Widget for SteadyState<'_> {
         let rpc = Arc::new(self.0.client.rpc());
         let mut selected_chat: Var<Option<Handle>> = ui.use_state(|| None, ()).into_var();
         let mut show_add_contact: Var<bool> = ui.use_state(|| false, ()).into_var();
+        let mut show_add_device: Var<bool> = ui.use_state(|| false, ()).into_var();
+        let mut show_preferences: Var<bool> = ui.use_state(|| false, ()).into_var();
         let all_chats = ui.use_memo(
             || {
                 let result = pollster::block_on(rpc.all_peers());
@@ -29,7 +33,22 @@ impl Widget for SteadyState<'_> {
 
         let frame = eframe::egui::Frame::default().inner_margin(eframe::egui::Margin::same(8));
         eframe::egui::TopBottomPanel::top("steady_menu").show_inside(ui, |ui| {
-            ui.horizontal(|ui| ui.menu_button("File", |ui| ui.button("Preferences")));
+            ui.horizontal(|ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Preferences").clicked() {
+                        *show_preferences = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Add device").clicked() {
+                        *show_add_device = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Exit").clicked() {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                        ui.close_menu();
+                    }
+                });
+            });
             ui.add_space(4.0);
         });
         eframe::egui::SidePanel::left("steady_left")
@@ -47,6 +66,14 @@ impl Widget for SteadyState<'_> {
         ui.add(AddContact {
             app: self.0,
             open: &mut *show_add_contact,
+        });
+        ui.add(AddDevice {
+            app: self.0,
+            open: &mut *show_add_device,
+        });
+        ui.add(Preferences {
+            app: self.0,
+            open: &mut *show_preferences,
         });
         ui.response()
     }

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use futures_concurrency::future::TryJoin;
@@ -33,6 +33,7 @@ pub async fn get_peer_info(
 ) -> anyhow::Result<Arc<PeerInfo>> {
     PEER_CACHE
         .try_get_with(handle.clone(), async {
+            let start = Instant::now();
             let dir = ctx.get(DIR_CLIENT);
             let descriptor = dir
                 .get_handle_descriptor(handle)
@@ -48,7 +49,7 @@ pub async fn get_peer_info(
             let certs = chain
                 .verify(descriptor.root_cert_hash)
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-
+            tracing::debug!(handle=%handle, elapsed=debug(start.elapsed()), "refreshed peer info");
             Ok(Arc::new(PeerInfo {
                 handle: handle.clone(),
                 gateway,
@@ -61,10 +62,7 @@ pub async fn get_peer_info(
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
 }
 
-async fn fetch_chain(
-    gateway: &GatewayClient,
-    handle: &Handle,
-) -> anyhow::Result<CertificateChain> {
+async fn fetch_chain(gateway: &GatewayClient, handle: &Handle) -> anyhow::Result<CertificateChain> {
     gateway
         .v1_device_certs(handle.clone())
         .await?

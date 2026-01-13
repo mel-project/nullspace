@@ -181,10 +181,9 @@ async fn acl_for_token(
         return Ok(acl);
     }
     let anonymous = AuthToken::anonymous();
-    if token == anonymous {
-        if let Some(acl) = load_acl(tx, mailbox_id, anonymous).await? {
-            return Ok(acl);
-        }
+
+    if let Some(acl) = load_acl(tx, mailbox_id, anonymous).await? {
+        return Ok(acl);
     }
     Ok(empty_acl(token))
 }

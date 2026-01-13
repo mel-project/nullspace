@@ -17,7 +17,7 @@ use xirtam_client::{
 use xirtam_crypt::signing::SigningPublic;
 
 use crate::utils::prefs::PrefData;
-use crate::events::event_loop;
+use crate::events::{event_loop, spawn_audio_thread};
 
 mod events;
 mod promises;
@@ -222,7 +222,8 @@ fn main() -> eframe::Result<()> {
     let rpc = client.rpc();
     let (event_tx, event_rx) = mpsc::channel(64);
     let focused = Arc::new(AtomicBool::new(true));
-    runtime.spawn(event_loop(rpc, event_tx, focused.clone()));
+    let audio_tx = spawn_audio_thread();
+    runtime.spawn(event_loop(rpc, event_tx, focused.clone(), audio_tx));
     let options = eframe::NativeOptions::default();
     eframe::run_native(
         "xirtam-egui",

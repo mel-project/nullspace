@@ -1,14 +1,13 @@
 use nanorpc::DynRpcTransport;
 use sqlx::SqlitePool;
-use tracing::{debug, info};
+use tracing::debug;
 use xirtam_crypt::hash::Hash;
 use xirtam_structs::directory::{DirectoryAnchor, DirectoryClient, DirectoryHeader};
 
 const BATCH_LIMIT: u64 = 10_000;
 
 pub async fn max_stored_height(pool: &SqlitePool) -> anyhow::Result<Option<u64>> {
-    let height =
-        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(height) FROM _dirclient_headers")
+    let height = sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(height) FROM _dirclient_headers")
         .fetch_one(pool)
         .await?
         .map(|s| s as u64);
@@ -18,9 +17,9 @@ pub async fn max_stored_height(pool: &SqlitePool) -> anyhow::Result<Option<u64>>
 pub async fn load_header(pool: &SqlitePool, height: u64) -> anyhow::Result<DirectoryHeader> {
     let data =
         sqlx::query_scalar::<_, Vec<u8>>("SELECT header FROM _dirclient_headers WHERE height = ?")
-        .bind(height as i64)
-        .fetch_optional(pool)
-        .await?;
+            .bind(height as i64)
+            .fetch_optional(pool)
+            .await?;
     let Some(data) = data else {
         anyhow::bail!("missing header {}", height);
     };
@@ -28,13 +27,12 @@ pub async fn load_header(pool: &SqlitePool, height: u64) -> anyhow::Result<Direc
 }
 
 async fn load_header_hash(pool: &SqlitePool, height: u64) -> anyhow::Result<Option<Hash>> {
-    let data =
-        sqlx::query_scalar::<_, Vec<u8>>(
-            "SELECT header_hash FROM _dirclient_headers WHERE height = ?",
-        )
-            .bind(height as i64)
-            .fetch_optional(pool)
-            .await?;
+    let data = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT header_hash FROM _dirclient_headers WHERE height = ?",
+    )
+    .bind(height as i64)
+    .fetch_optional(pool)
+    .await?;
     Ok(data.map(|bytes| {
         let mut buf = [0u8; 32];
         buf.copy_from_slice(&bytes);
@@ -66,7 +64,7 @@ pub async fn sync_headers(
     };
     while next <= anchor.last_header_height {
         let end = (next + BATCH_LIMIT - 1).min(anchor.last_header_height);
-        info!(from = next, to = end, "syncing directory headers");
+        debug!(from = next, to = end, "syncing directory headers");
         let headers = raw
             .v1_get_headers(next, end)
             .await?

@@ -2,13 +2,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use notify_rust::Notification;
-use rodio::{Decoder, OutputStream, Sink};
-use tokio::sync::mpsc::Sender;
+use rodio::{Decoder, OutputStreamBuilder, Sink};
+use std::sync::mpsc::{Receiver, Sender as StdSender};
+use tokio::sync::mpsc::Sender as TokioSender;
 use xirtam_client::internal::{DmDirection, Event, InternalClient};
 
 use crate::promises::flatten_rpc;
 
-pub async fn event_loop(rpc: InternalClient, event_tx: Sender<Event>, focused: Arc<AtomicBool>) {
+const NOTIFICATION_SOUND: &[u8] = include_bytes!("sounds/notification.mp3");
+
+pub async fn event_loop(
+    rpc: InternalClient,
+    event_tx: TokioSender<Event>,
+    focused: Arc<AtomicBool>,
+    audio_tx: StdSender<Vec<u8>>,
+) {
     let focused_task = focused.clone();
     let mut max_notified = 0;
     loop {
@@ -32,7 +40,7 @@ pub async fn event_loop(rpc: InternalClient, event_tx: Sender<Event>, focused: A
                                 {
                                     tracing::warn!(error = %err, "notification error");
                                 }
-                                play_notification_sound();
+                                play_sound(&audio_tx, NOTIFICATION_SOUND);
                             }
                         }
                         Err(err) => {
@@ -51,21 +59,31 @@ pub async fn event_loop(rpc: InternalClient, event_tx: Sender<Event>, focused: A
     }
 }
 
-fn play_notification_sound() {
-    let Ok((_stream, stream_handle)) = OutputStream::try_default() else {
+pub fn spawn_audio_thread() -> StdSender<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || audio_thread(rx));
+    tx
+}
+
+fn audio_thread(rx: Receiver<Vec<u8>>) {
+    let Ok(stream) = OutputStreamBuilder::open_default_stream() else {
         tracing::warn!("failed to open audio output stream");
         return;
     };
-    let bytes = include_bytes!("sounds/notification.mp3");
-    let cursor = std::io::Cursor::new(bytes);
-    let Ok(source) = Decoder::new(cursor) else {
-        tracing::warn!("failed to decode notification sound");
-        return;
-    };
-    let Ok(sink) = Sink::try_new(&stream_handle) else {
-        tracing::warn!("failed to create audio sink");
-        return;
-    };
-    sink.append(source);
-    sink.detach();
+    for bytes in rx {
+        let cursor = std::io::Cursor::new(bytes);
+        let Ok(source) = Decoder::new(cursor) else {
+            tracing::warn!("failed to decode notification sound");
+            continue;
+        };
+        let sink = Sink::connect_new(stream.mixer());
+        sink.append(source);
+        sink.detach();
+    }
+}
+
+fn play_sound(audio_tx: &StdSender<Vec<u8>>, bytes: &[u8]) {
+    if audio_tx.send(bytes.to_vec()).is_err() {
+        tracing::warn!("audio thread not available");
+    }
 }

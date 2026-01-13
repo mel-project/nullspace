@@ -1,131 +1,145 @@
 use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
-use egui::mutex::Mutex;
 use egui::text::LayoutJob;
 use egui::{Color32, ScrollArea, TextEdit, TextFormat, TopBottomPanel};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use egui_infinite_scroll::InfiniteScroll;
 use pollster::FutureExt;
 use smol_str::SmolStr;
 use tracing::debug;
+use xirtam_client::InternalClient;
 use xirtam_client::internal::DmMessage;
 use xirtam_structs::handle::Handle;
 use xirtam_structs::timestamp::NanoTimestamp;
-
-use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use crate::XirtamApp;
 use crate::promises::flatten_rpc;
 use crate::utils::color::handle_color;
 use crate::utils::markdown::layout_md_raw;
+use std::collections::BTreeMap;
+
+const INITIAL_LIMIT: u16 = 100;
+const PAGE_LIMIT: u16 = 100;
 
 pub struct Convo<'a>(pub &'a mut XirtamApp, pub Handle);
 
+#[derive(Clone, Debug, Default)]
+struct ConvoState {
+    messages: BTreeMap<i64, DmMessage>,
+    oldest_id: Option<i64>,
+    latest_received_id: Option<i64>,
+    last_update_count_seen: u64,
+    initialized: bool,
+    no_more_older: bool,
+}
+
+impl ConvoState {
+    fn apply_messages(&mut self, messages: Vec<DmMessage>) {
+        for msg in messages {
+            if msg.received_at.is_some() {
+                self.latest_received_id = Some(
+                    self.latest_received_id
+                        .map(|id| id.max(msg.id))
+                        .unwrap_or(msg.id),
+                );
+            }
+            self.oldest_id = Some(self.oldest_id.map(|id| id.min(msg.id)).unwrap_or(msg.id));
+            self.messages.insert(msg.id, msg);
+        }
+    }
+
+    fn load_initial(&mut self, rpc: &xirtam_client::internal::InternalClient, peer: &Handle) {
+        let result = rpc
+            .dm_history(peer.clone(), None, None, INITIAL_LIMIT)
+            .block_on();
+        match flatten_rpc(result) {
+            Ok(messages) => {
+                debug!(count = messages.len(), "dm initial load");
+                self.apply_messages(messages);
+                self.initialized = true;
+            }
+            Err(err) => {
+                tracing::warn!("dm initial load failed: {err}");
+            }
+        }
+    }
+
+    fn refresh_newer(&mut self, rpc: &InternalClient, peer: &Handle) {
+        let mut after = self
+            .latest_received_id
+            .and_then(|id| id.checked_add(1))
+            .unwrap_or_default();
+        loop {
+            let result = rpc
+                .dm_history(peer.clone(), None, Some(after), PAGE_LIMIT)
+                .block_on();
+            match flatten_rpc(result) {
+                Ok(messages) => {
+                    tracing::debug!(messages = debug(&messages), "received a batch of DMs");
+                    if messages.is_empty() {
+                        break;
+                    }
+                    after = messages.last().map(|msg| msg.id + 1).unwrap_or_default();
+                    self.apply_messages(messages);
+                }
+                Err(err) => {
+                    tracing::warn!("dm history refresh failed: {err}");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn load_older(&mut self, rpc: &InternalClient, peer: &Handle) {
+        if self.no_more_older {
+            return;
+        }
+        let Some(oldest_id) = self.oldest_id else {
+            self.no_more_older = true;
+            return;
+        };
+        let Some(before) = oldest_id.checked_sub(1) else {
+            self.no_more_older = true;
+            return;
+        };
+        let result = rpc
+            .dm_history(peer.clone(), Some(before), None, PAGE_LIMIT)
+            .block_on();
+        match flatten_rpc(result) {
+            Ok(messages) => {
+                if messages.is_empty() {
+                    self.no_more_older = true;
+                } else {
+                    self.apply_messages(messages);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("dm older load failed: {err}");
+            }
+        }
+    }
+}
+
 impl Widget for Convo<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let rpc = Arc::new(self.0.client.rpc());
+        let rpc = self.0.client.rpc();
         let update_count = self.0.state.update_count;
         let mut draft: Var<String> = ui.use_state(String::new, (self.1.clone(),)).into_var();
-        let scroller = ui.use_memo(
-            || {
-                let peer = self.1.clone();
-                let start_rpc = rpc.clone();
-                let start_peer = peer.clone();
-                let limit: u16 = 50;
-                Arc::new(Mutex::new(
-                    InfiniteScroll::<DmMessage, u64>::new().start_loader_async(move |cursor| {
-                        let rpc = start_rpc.clone();
-                        let peer = start_peer.clone();
-                        async move {
-                            let before = cursor.map(|value| value as i64);
-                            let messages = flatten_rpc(
-                                rpc.dm_history(peer.clone(), before, None, limit).await,
-                            )?;
-                            debug!(
-                                cursor = ?before,
-                                count = messages.len(),
-                                "dm start_loader"
-                            );
-                            if messages.is_empty() {
-                                return Ok((Vec::new(), None));
-                            }
-                            let next_cursor =
-                                messages.first().and_then(|msg| msg.id.checked_sub(1));
-                            Ok((messages, next_cursor.map(|value| value as u64)))
-                        }
-                    }),
-                ))
-            },
-            (self.1.clone(),),
-        );
+        let mut state: Var<ConvoState> = ui
+            .use_state(ConvoState::default, (self.1.clone(),))
+            .into_var();
 
-        let scroller_for_effect = scroller.clone();
-        let rpc_for_effect = rpc.clone();
-        let peer_for_effect = self.1.clone();
-        ui.use_effect(
-            || {
-                let last_received_id = {
-                    let scroller = scroller_for_effect.lock();
-                    scroller
-                        .items
-                        .iter()
-                        .filter(|msg| msg.received_at.is_some())
-                        .map(|msg| msg.id)
-                        .max()
-                };
-                let mut after = last_received_id.and_then(|id| id.checked_add(1));
-                let mut fetched = Vec::new();
-                if last_received_id.is_none() {
-                    scroller.lock().reload();
-                    return;
-                }
-                loop {
-                    let result = rpc_for_effect
-                        .dm_history(peer_for_effect.clone(), None, after, 200)
-                        .block_on();
-                    match flatten_rpc(result) {
-                        Ok(messages) => {
-                            if messages.is_empty() {
-                                break;
-                            }
-                            after = messages.last().and_then(|msg| msg.id.checked_add(1));
-                            fetched.extend(messages);
-                            if after.is_none() {
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("dm history refresh failed: {err}");
-                            break;
-                        }
-                    }
-                }
-                if fetched.is_empty() {
-                    return;
-                }
-                let mut scroller = scroller_for_effect.lock();
-                if scroller.items.is_empty() {
-                    return;
-                }
-                let mut by_id = BTreeMap::new();
-                for item in scroller.items.drain(..) {
-                    by_id.insert(item.id, item);
-                }
-                for item in fetched {
-                    by_id.insert(item.id, item);
-                }
-                scroller.items = by_id.into_values().collect();
-            },
-            (self.1.clone(), update_count),
-        );
-
-        let mut scroller = scroller.lock();
+        if !state.initialized {
+            state.load_initial(&rpc, &self.1);
+            state.last_update_count_seen = update_count;
+        } else if update_count > state.last_update_count_seen {
+            state.refresh_newer(&rpc, &self.1);
+            state.last_update_count_seen = update_count;
+        }
 
         ui.heading(self.1.to_string());
-        TopBottomPanel::bottom(ui.next_auto_id())
+        TopBottomPanel::bottom(ui.id().with("bottom"))
             .resizable(false)
             .show_inside(ui, |ui| {
                 ui.add_space(8.0);
@@ -151,6 +165,7 @@ impl Widget for Convo<'_> {
                             );
                         });
                         draft.clear();
+                        ui.ctx().request_discard("msg sent");
                     }
                 });
             });
@@ -159,12 +174,13 @@ impl Widget for Convo<'_> {
             let mut stick_to_bottom: Var<bool> =
                 ui.use_state(|| true, (self.1.clone(),)).into_var();
             let scroll_output = ScrollArea::vertical()
+                .id_salt("scroll")
                 .stick_to_bottom(*stick_to_bottom)
                 .animated(false)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     let mut last_date: Option<NaiveDate> = None;
-                    scroller.ui(ui, 10, |ui, _index, item| {
+                    for item in state.messages.values() {
                         if let Some(date) = date_from_timestamp(item.received_at)
                             && last_date != Some(date)
                         {
@@ -227,12 +243,16 @@ impl Widget for Convo<'_> {
                         }
 
                         ui.label(job);
-                    });
+                    }
                 });
             let max_offset =
                 (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
             let at_bottom = max_offset - scroll_output.state.offset.y <= 2.0;
             *stick_to_bottom = at_bottom;
+            let at_top = scroll_output.state.offset.y <= 2.0;
+            if at_top {
+                state.load_older(&rpc, &self.1);
+            }
         });
 
         ui.response()

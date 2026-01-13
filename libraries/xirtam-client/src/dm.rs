@@ -124,7 +124,6 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
     let mut after = load_mailbox_after(db, &my_info.gateway_name, mailbox).await?;
     let mut timeout_ms = DM_RECV_TIMEOUT_MIN_MS;
     loop {
-        let my_info = get_peer_info(ctx, &identity.handle).await?;
         let gateway = my_info.gateway.clone();
         let args = vec![MailboxRecvArgs {
             auth,

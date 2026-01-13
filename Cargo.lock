@@ -7327,6 +7327,7 @@ dependencies = [
  "moka",
  "nanorpc",
  "pollster",
+ "scopeguard",
  "serde",
  "serde_json",
  "serde_with",

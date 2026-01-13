@@ -13,7 +13,7 @@ use crate::directory::DIR_CLIENT;
 use crate::gateway::get_gateway_client;
 use crate::identity::Identity;
 
-const MEDIUM_ROTATE_INTERVAL: Duration = Duration::from_secs(60);
+const MEDIUM_ROTATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 pub async fn rotation_loop(ctx: &AnyCtx<Config>) {
     loop {

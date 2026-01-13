@@ -10,7 +10,7 @@ use xirtam_structs::Message;
 use xirtam_structs::certificate::DevicePublic;
 use xirtam_structs::envelope::Envelope;
 use xirtam_structs::gateway::{
-    AuthToken, GatewayClient, MailboxId, MailboxRecvArgs, SignedMediumPk,
+    AuthToken, GatewayClient, GatewayName, MailboxId, MailboxRecvArgs, SignedMediumPk,
 };
 use xirtam_structs::handle::Handle;
 use xirtam_structs::msg_content::MessageContent;
@@ -19,7 +19,6 @@ use xirtam_structs::timestamp::NanoTimestamp;
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
 use crate::directory::DIR_CLIENT;
-use crate::gateway::get_gateway_client;
 use crate::identity::Identity;
 use crate::peer::{PeerInfo, get_peer_info};
 
@@ -116,19 +115,17 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
 
 async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    let dir = ctx.get(DIR_CLIENT);
     let identity = Identity::load(db).await?;
-    let descriptor = dir
-        .get_handle_descriptor(&identity.handle)
-        .await?
-        .context("identity handle not in directory")?;
-    let gateway = get_gateway_client(ctx, &descriptor.gateway_name).await?;
+    let my_info = get_peer_info(ctx, &identity.handle).await?;
+    let gateway = my_info.gateway.clone();
     let auth = device_auth(gateway.as_ref(), &identity).await?;
     let mailbox = MailboxId::direct(&identity.handle);
-    ensure_mailbox_state(db, &descriptor.gateway_name, mailbox).await?;
-    let mut after = load_mailbox_after(db, &descriptor.gateway_name, mailbox).await?;
+    ensure_mailbox_state(db, &my_info.gateway_name, mailbox).await?;
+    let mut after = load_mailbox_after(db, &my_info.gateway_name, mailbox).await?;
     let mut timeout_ms = DM_RECV_TIMEOUT_MIN_MS;
     loop {
+        let my_info = get_peer_info(ctx, &identity.handle).await?;
+        let gateway = my_info.gateway.clone();
         let args = vec![MailboxRecvArgs {
             auth,
             mailbox,
@@ -167,8 +164,7 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
         for entry in entries {
             after = entry.received_at;
             if let Err(err) =
-                process_mailbox_entry(ctx, &identity, &descriptor.gateway_name, mailbox, entry)
-                    .await
+                process_mailbox_entry(ctx, &my_info.gateway_name, mailbox, entry).await
             {
                 tracing::warn!(error = %err, "failed to process mailbox entry");
             }
@@ -278,17 +274,17 @@ async fn send_envelope(
 
 async fn process_mailbox_entry(
     ctx: &anyctx::AnyCtx<Config>,
-    identity: &Identity,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
+    gateway_name: &GatewayName,
     mailbox: MailboxId,
     entry: xirtam_structs::gateway::MailboxEntry,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let dir = ctx.get(DIR_CLIENT);
+    let identity = Identity::load(db).await?;
+    update_mailbox_after(db, gateway_name, mailbox, entry.received_at).await?;
     let message = entry.message;
     if message.kind != Message::V1_DIRECT_MESSAGE {
         warn!(kind = %message.kind, "ignoring non-dm mailbox entry");
-        update_mailbox_after(db, gateway_name, mailbox, entry.received_at).await?;
         return Ok(());
     }
     let envelope: Envelope = bcs::from_bytes(&message.inner)?;
@@ -332,7 +328,6 @@ async fn process_mailbox_entry(
         .map_err(|_| anyhow::anyhow!("failed to verify envelope"))?;
     if message.kind != Message::V1_MESSAGE_CONTENT {
         warn!(kind = %message.kind, "ignoring non-message-content dm");
-        update_mailbox_after(db, gateway_name, mailbox, entry.received_at).await?;
         return Ok(());
     }
     let content: MessageContent = bcs::from_bytes(&message.inner)?;
@@ -342,7 +337,6 @@ async fn process_mailbox_entry(
             recipient = %content.recipient,
             "ignoring dm with mismatched recipient",
         );
-        update_mailbox_after(db, gateway_name, mailbox, entry.received_at).await?;
         return Ok(());
     }
     let peer_handle = if sender_handle == identity.handle {

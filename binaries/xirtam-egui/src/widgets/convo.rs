@@ -165,15 +165,14 @@ impl Widget for Convo<'_> {
                     ui.set_width(ui.available_width());
                     let mut last_date: Option<NaiveDate> = None;
                     scroller.ui(ui, 10, |ui, _index, item| {
-                        if let Some(date) = date_from_timestamp(item.received_at) {
-                            if last_date != Some(date) {
+                        if let Some(date) = date_from_timestamp(item.received_at)
+                            && last_date != Some(date) {
                                 ui.add_space(4.0);
                                 let label = format!("[{}]", date.format("%A, %d %b %Y"));
                                 ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
                                 ui.add_space(4.0);
                                 last_date = Some(date);
                             }
-                        }
                         let mut job = LayoutJob::default();
                         let timestamp = format_timestamp(item.received_at);
                         job.append(

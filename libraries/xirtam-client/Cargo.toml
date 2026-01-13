@@ -39,3 +39,4 @@ xirtam-crypt = { version = "0.0.1", path = "../xirtam-crypt" }
 xirtam-dirclient = { version = "0.0.1", path = "../xirtam-dirclient" }
 xirtam-nanorpc = { version = "0.0.1", path = "../xirtam-nanorpc" }
 xirtam-structs = { version = "0.0.1", path = "../xirtam-structs" }
+scopeguard = "1.2.0"

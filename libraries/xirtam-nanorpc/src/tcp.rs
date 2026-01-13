@@ -281,7 +281,7 @@ where
                 }
                 Ok(_) => {
                     let trimmed =
-                        line.trim_end_matches(|c| c == '\n' || c == '\r').to_string();
+                        line.trim_end_matches(['\n', '\r']).to_string();
                     if trimmed.is_empty() {
                         continue;
                     }
@@ -382,7 +382,7 @@ async fn handle_connection_io<S, R, W>(
         match read_result {
             Ok(0) => return,
             Ok(_) => {
-                let trimmed = line.trim_end_matches(|c| c == '\n' || c == '\r');
+                let trimmed = line.trim_end_matches(['\n', '\r']);
                 if trimmed.is_empty() {
                     continue;
                 }

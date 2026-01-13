@@ -28,8 +28,8 @@ impl Widget for AddDevice<'_> {
                 ui.separator();
                 ui.label("Generate a device bundle here, then paste it into the new device");
                 let busy = bundle_req.is_running();
-                ui.checkbox(&mut *can_sign, "Allow this device to sign new devices");
-                ui.checkbox(&mut *never_expires, "Never expires");
+                ui.checkbox(&mut can_sign, "Allow this device to sign new devices");
+                ui.checkbox(&mut never_expires, "Never expires");
                 ui.add_enabled_ui(!*never_expires, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Expires in days");

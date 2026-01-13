@@ -229,12 +229,12 @@ fn main() -> eframe::Result<()> {
             // tokio::time::sleep(Duration::from_secs(1)).await;
             match rpc.next_event().await {
                 Ok(event) => {
-                    if let Event::DmUpdated { peer } = &event {
-                        if !focused_task.load(Ordering::Relaxed) {
+                    if let Event::DmUpdated { peer } = &event
+                        && !focused_task.load(Ordering::Relaxed) {
                             match flatten_rpc(rpc.dm_history(peer.clone(), None, None, 1).await) {
                                 Ok(messages) => {
-                                    if let Some(message) = messages.last() {
-                                        if matches!(message.direction, DmDirection::Incoming)
+                                    if let Some(message) = messages.last()
+                                        && matches!(message.direction, DmDirection::Incoming)
                                             && message.received_at.unwrap_or_default().0
                                                 > max_notified
                                         {
@@ -253,14 +253,12 @@ fn main() -> eframe::Result<()> {
                                                 eprintln!("notification error: {err}");
                                             }
                                         }
-                                    }
                                 }
                                 Err(err) => {
                                     eprintln!("failed to fetch latest message: {err}");
                                 }
                             }
                         }
-                    }
                     if event_tx.send(event).await.is_err() {
                         break;
                     }

@@ -18,7 +18,7 @@ impl Widget for Preferences<'_> {
                     ui.add(
                         Slider::new(&mut self.app.state.prefs.zoom_percent, 80..=160)
                             .suffix("%")
-                            .clamp_to_range(true),
+                            .clamping(egui::SliderClamping::Always),
                     );
                 });
                 if ui.button("Close").clicked() {

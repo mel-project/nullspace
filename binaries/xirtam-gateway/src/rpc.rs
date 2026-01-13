@@ -26,7 +26,7 @@ pub async fn handle_rpc(body: Bytes) -> impl IntoResponse {
             Vec::new(),
         );
     };
-    let service = GatewayService(GatewayServer::default());
+    let service = GatewayService(GatewayServer);
     let response = service.respond_raw(req).await;
     (
         StatusCode::OK,

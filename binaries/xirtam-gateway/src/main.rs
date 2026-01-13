@@ -34,14 +34,14 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     if let Some(tcp_listen) = CONFIG.tcp_listen {
-        let service = GatewayService(GatewayServer::default());
+        let service = GatewayService(GatewayServer);
         servers.push(Box::pin(async move {
             xirtam_nanorpc::serve_tcp(tcp_listen, service).await
         }));
     }
 
     if let Some(lz4_listen) = CONFIG.lz4_listen {
-        let service = GatewayService(GatewayServer::default());
+        let service = GatewayService(GatewayServer);
         servers.push(Box::pin(async move {
             xirtam_nanorpc::serve_lz4tcp(lz4_listen, service).await
         }));

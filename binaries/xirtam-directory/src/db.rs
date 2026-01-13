@@ -1,10 +1,10 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::Path, time::Duration};
 
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use xirtam_crypt::hash::Hash;
 use xirtam_structs::directory::{DirectoryChunk, DirectoryHeader, PowSeed};
 
-pub async fn init_sqlite(db_dir: &PathBuf) -> anyhow::Result<SqlitePool> {
+pub async fn init_sqlite(db_dir: &Path) -> anyhow::Result<SqlitePool> {
     let path = db_dir.join("directory.db");
     let options = SqliteConnectOptions::new()
         .filename(path)

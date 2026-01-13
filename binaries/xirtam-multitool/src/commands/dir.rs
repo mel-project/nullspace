@@ -99,11 +99,10 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
                 gateway_name,
                 root_cert_hash: roothash,
             };
-            if let Some(existing) = client.get_handle_descriptor(&handle).await? {
-                if existing == descriptor {
+            if let Some(existing) = client.get_handle_descriptor(&handle).await?
+                && existing == descriptor {
                     return Ok(());
                 }
-            }
             client
                 .insert_handle_descriptor(&handle, &descriptor, &secret_key)
                 .await?;

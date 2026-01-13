@@ -37,15 +37,15 @@ impl Widget for SteadyState<'_> {
                 ui.menu_button("File", |ui| {
                     if ui.button("Preferences").clicked() {
                         *show_preferences = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Add device").clicked() {
                         *show_add_device = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Exit").clicked() {
                         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             });
@@ -56,24 +56,24 @@ impl Widget for SteadyState<'_> {
             .exact_width(200.0)
             .frame(frame)
             .show_inside(ui, |ui| {
-                self.render_left(ui, &all_chats, &mut *selected_chat, &mut *show_add_contact)
+                self.render_left(ui, &all_chats, &mut selected_chat, &mut show_add_contact)
             });
         eframe::egui::CentralPanel::default()
             .frame(frame)
             .show_inside(ui, |ui| {
-                self.render_right(ui, &*selected_chat);
+                self.render_right(ui, &selected_chat);
             });
         ui.add(AddContact {
             app: self.0,
-            open: &mut *show_add_contact,
+            open: &mut show_add_contact,
         });
         ui.add(AddDevice {
             app: self.0,
-            open: &mut *show_add_device,
+            open: &mut show_add_device,
         });
         ui.add(Preferences {
             app: self.0,
-            open: &mut *show_preferences,
+            open: &mut show_preferences,
         });
         ui.response()
     }
@@ -94,7 +94,7 @@ impl<'a> SteadyState<'a> {
         match all_chats {
             Ok(lst) => {
                 ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
-                    for (handle, _last_msg) in lst {
+                    for handle in lst.keys() {
                         if ui
                             .selectable_label(
                                 *selected_chat == Some(handle.clone()),

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, path::Path, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use meshanina::Mapping;
@@ -47,7 +47,7 @@ fn to_key(key: &[u8]) -> Result<[u8; 32], SmtError> {
     Ok(buf)
 }
 
-pub fn open_store(db_dir: &PathBuf) -> anyhow::Result<Arc<MeshaNodeStore>> {
+pub fn open_store(db_dir: &Path) -> anyhow::Result<Arc<MeshaNodeStore>> {
     let path = db_dir.join("merkle.db");
     MeshaNodeStore::open(path).map(Arc::new)
 }

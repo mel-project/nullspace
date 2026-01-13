@@ -127,7 +127,7 @@ impl Widget for Login<'_> {
                 }
                 LoginStep::FinishAddDevice => {
                     let info = (*register_info).clone();
-                    let Some(info) = info else {
+                    let Some(_info) = info else {
                         self.0.state.error_dialog = Some("missing register info".to_string());
                         step.set_next(LoginStep::EnterHandle);
                         return;

@@ -61,7 +61,7 @@ fn load_signing_secret(path: &PathBuf) -> anyhow::Result<SigningSecret> {
     if !path.exists() {
         let mut bytes = [0u8; 32];
         rand::rng().fill_bytes(&mut bytes);
-        std::fs::write(path, &bytes)
+        std::fs::write(path, bytes)
             .with_context(|| format!("write secret key {}", path.display()))?;
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(path, perms)

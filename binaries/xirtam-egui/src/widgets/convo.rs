@@ -34,7 +34,7 @@ impl Widget for Convo<'_> {
                 let peer = self.1.clone();
                 let start_rpc = rpc.clone();
                 let start_peer = peer.clone();
-                let limit: u16 = 100;
+                let limit: u16 = 50;
                 Arc::new(Mutex::new(
                     InfiniteScroll::<DmMessage, u64>::new().start_loader_async(move |cursor| {
                         let rpc = start_rpc.clone();
@@ -166,13 +166,14 @@ impl Widget for Convo<'_> {
                     let mut last_date: Option<NaiveDate> = None;
                     scroller.ui(ui, 10, |ui, _index, item| {
                         if let Some(date) = date_from_timestamp(item.received_at)
-                            && last_date != Some(date) {
-                                ui.add_space(4.0);
-                                let label = format!("[{}]", date.format("%A, %d %b %Y"));
-                                ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
-                                ui.add_space(4.0);
-                                last_date = Some(date);
-                            }
+                            && last_date != Some(date)
+                        {
+                            ui.add_space(4.0);
+                            let label = format!("[{}]", date.format("%A, %d %b %Y"));
+                            ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
+                            ui.add_space(4.0);
+                            last_date = Some(date);
+                        }
                         let mut job = LayoutJob::default();
                         let timestamp = format_timestamp(item.received_at);
                         job.append(

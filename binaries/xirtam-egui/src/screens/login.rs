@@ -77,12 +77,11 @@ impl Widget for Login<'_> {
                     ui.label(layout_md(ui, "You are registering a **new user**:"));
                     ui.colored_label(handle_color(&handle), handle.as_str());
                     ui.add(
-                        TextEdit::singleline(&mut *gateway_str)
-                            .hint_text("Enter a ~gateway_id"),
+                        TextEdit::singleline(&mut *gateway_str).hint_text("Enter a ~gateway_id"),
                     );
                     ui.label(
                         RichText::new(
-                            "Hint: use **~public_test** for the test gateway run by the Xirtam developers",
+                            "Hint: ~public_test is the test gateway run by the Xirtam developers",
                         )
                         .size(10.0),
                     );
@@ -134,9 +133,14 @@ impl Widget for Login<'_> {
                         return;
                     };
                     ui.label(layout_md(ui, &format!("The user **{handle_str}** exists!")));
-                    ui.label(layout_md(ui, "You need to export a **device bundle** from an existing device:"));
+                    ui.label(layout_md(
+                        ui,
+                        "You need to export a **device bundle** from an existing device:",
+                    ));
                     ui.text_edit_multiline(&mut *bundle_str);
-                    ui.label(RichText::new("On your other device, go to [File] > [Add device]").small());
+                    ui.label(
+                        RichText::new("On your other device, go to [File] > [Add device]").small(),
+                    );
                     let add_enabled = !register_start.is_running() && !register_finish.is_running();
                     if ui
                         .add_enabled(add_enabled, eframe::egui::Button::new("Log in"))

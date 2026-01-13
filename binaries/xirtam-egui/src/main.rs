@@ -148,7 +148,7 @@ impl eframe::App for XirtamApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
-        tracing::debug!(focused, "am I focused?");
+
         self.focused.store(focused, Ordering::Relaxed);
         if let Ok(event) = self.recv_event.try_recv() {
             tracing::debug!(event = ?event, "processing xirtam event");

@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use eframe::egui::{DragValue, Modal, Response, TextEdit, Widget};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
@@ -26,10 +26,7 @@ impl Widget for AddDevice<'_> {
             let modal = Modal::new("add_device_modal".into()).show(ui.ctx(), |ui| {
                 ui.heading("Add device");
                 ui.separator();
-                ui.label(
-                    "Generate a device bundle here, then paste it into the new device \
-                     during login (File > Add device).",
-                );
+                ui.label("Generate a device bundle here, then paste it into the new device");
                 let busy = bundle_req.is_running();
                 ui.checkbox(&mut *can_sign, "Allow this device to sign new devices");
                 ui.checkbox(&mut *never_expires, "Never expires");
@@ -39,7 +36,8 @@ impl Widget for AddDevice<'_> {
                         ui.add(DragValue::new(&mut *expiry_days).speed(1));
                     });
                 });
-                if ui.add_enabled(!busy, eframe::egui::Button::new("Generate bundle"))
+                if ui
+                    .add_enabled(!busy, eframe::egui::Button::new("Generate bundle"))
                     .clicked()
                 {
                     let expiry = if *never_expires {

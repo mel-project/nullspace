@@ -7,6 +7,7 @@ use egui::{Color32, ScrollArea, TextEdit, TextFormat, TopBottomPanel};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use egui_infinite_scroll::InfiniteScroll;
+use pollster::FutureExt;
 use smol_str::SmolStr;
 use tracing::debug;
 use xirtam_client::internal::DmMessage;
@@ -65,32 +66,58 @@ impl Widget for Convo<'_> {
         let rpc_for_effect = rpc.clone();
         let peer_for_effect = self.1.clone();
         ui.use_effect(
-            move || {
-                let result =
-                    pollster::block_on(rpc_for_effect.dm_history(peer_for_effect, None, None, 10));
-                match flatten_rpc(result) {
-                    Ok(messages) => {
-                        let mut scroller = scroller_for_effect.lock();
-                        if scroller.items.is_empty() {
-                            return;
+            || {
+                let last_received_id = {
+                    let scroller = scroller_for_effect.lock();
+                    scroller
+                        .items
+                        .iter()
+                        .filter(|msg| msg.received_at.is_some())
+                        .map(|msg| msg.id)
+                        .max()
+                };
+                let mut after = last_received_id.and_then(|id| id.checked_add(1));
+                let mut fetched = Vec::new();
+                loop {
+                    let result = rpc_for_effect
+                        .dm_history(peer_for_effect.clone(), None, after, 200)
+                        .block_on();
+                    match flatten_rpc(result) {
+                        Ok(messages) => {
+                            if messages.is_empty() {
+                                break;
+                            }
+                            after = messages.last().and_then(|msg| msg.id.checked_add(1));
+                            fetched.extend(messages);
+                            if after.is_none() {
+                                break;
+                            }
                         }
-                        let mut by_id = BTreeMap::new();
-                        for item in scroller.items.drain(..) {
-                            by_id.insert(item.id, item);
+                        Err(err) => {
+                            eprintln!("dm history refresh failed: {err}");
+                            break;
                         }
-                        for item in messages {
-                            by_id.insert(item.id, item);
-                        }
-                        scroller.items = by_id.into_values().collect();
-                        // scroller.virtual_list.reset();
-                    }
-                    Err(err) => {
-                        eprintln!("dm history refresh failed: {err}");
                     }
                 }
+                if fetched.is_empty() {
+                    return;
+                }
+                let mut scroller = scroller_for_effect.lock();
+                if scroller.items.is_empty() {
+                    return;
+                }
+                let mut by_id = BTreeMap::new();
+                for item in scroller.items.drain(..) {
+                    by_id.insert(item.id, item);
+                }
+                for item in fetched {
+                    by_id.insert(item.id, item);
+                }
+                scroller.items = by_id.into_values().collect();
             },
             (self.1.clone(), update_count),
         );
+
         let mut scroller = scroller.lock();
 
         ui.heading(self.1.to_string());

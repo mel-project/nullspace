@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::Parser;
@@ -147,9 +147,8 @@ impl XirtamApp {
 impl eframe::App for XirtamApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
-        let focused = ctx
-            .input(|i| i.viewport().focused)
-            .unwrap_or(true);
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        tracing::debug!(focused, "am I focused?");
         self.focused.store(focused, Ordering::Relaxed);
         if let Ok(event) = self.recv_event.try_recv() {
             tracing::debug!(event = ?event, "processing xirtam event");
@@ -241,8 +240,8 @@ fn main() -> eframe::Result<()> {
                                         {
                                             max_notified =
                                                 message.received_at.unwrap_or_default().0;
-                                            let body = String::from_utf8_lossy(&message.body)
-                                                .to_string();
+                                            let body =
+                                                String::from_utf8_lossy(&message.body).to_string();
                                             if let Err(err) = Notification::new()
                                                 .summary(&format!(
                                                     "Message from {}",
@@ -278,12 +277,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             Ok(Box::new(XirtamApp::new(
-                cc,
-                client,
-                event_rx,
-                focused,
-                prefs_path,
-                prefs,
+                cc, client, event_rx, focused, prefs_path, prefs,
             )))
         }),
     )

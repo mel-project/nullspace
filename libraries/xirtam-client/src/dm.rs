@@ -6,25 +6,22 @@ use smol_str::SmolStr;
 use tracing::warn;
 use xirtam_crypt::hash::BcsHashExt;
 use xirtam_crypt::signing::Signable;
-use xirtam_structs::Message;
+use xirtam_structs::Blob;
 use xirtam_structs::certificate::DevicePublic;
 use xirtam_structs::envelope::Envelope;
-use xirtam_structs::gateway::{
-    AuthToken, GatewayClient, GatewayName, MailboxId, MailboxRecvArgs, SignedMediumPk,
-};
+use xirtam_structs::gateway::{AuthToken, GatewayClient, GatewayName, MailboxId, SignedMediumPk};
 use xirtam_structs::handle::Handle;
 use xirtam_structs::msg_content::MessageContent;
 use xirtam_structs::timestamp::NanoTimestamp;
 
 use crate::config::Config;
-use crate::database::{DATABASE, DbNotify};
+use crate::database::{
+    DATABASE, DbNotify, ensure_mailbox_state, load_mailbox_after, update_mailbox_after,
+};
 use crate::directory::DIR_CLIENT;
 use crate::identity::Identity;
+use crate::long_poll::LONG_POLLER;
 use crate::peer::{PeerInfo, get_peer_info};
-
-const DM_RECV_TIMEOUT_MIN_MS: u64 = 15_000;
-const DM_RECV_TIMEOUT_MAX_MS: u64 = 30 * 60 * 1000;
-const DM_RECV_TIMEOUT_STEP_MS: u64 = 5_000;
 
 pub async fn send_loop(ctx: &anyctx::AnyCtx<Config>) {
     loop {
@@ -55,8 +52,8 @@ async fn send_dm(
         mime: pending.mime.clone(),
         body: pending.body.clone(),
     };
-    let message = Message {
-        kind: Message::V1_MESSAGE_CONTENT.into(),
+    let message = Blob {
+        kind: Blob::V1_MESSAGE_CONTENT.into(),
         inner: Bytes::from(bcs::to_bytes(&content)?),
     };
 
@@ -81,6 +78,27 @@ async fn send_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
         mark_message_sent(db, pending.id, received_at).await?;
         DbNotify::touch();
     }
+}
+
+pub async fn queue_dm(
+    db: &sqlx::SqlitePool,
+    sender: &Handle,
+    peer: &Handle,
+    mime: &SmolStr,
+    body: &Bytes,
+) -> anyhow::Result<i64> {
+    let row = sqlx::query_as::<_, (i64,)>(
+        "INSERT INTO dm_messages (peer_handle, sender_handle, mime, body, received_at) \
+         VALUES (?, ?, ?, ?, NULL) \
+         RETURNING id",
+    )
+    .bind(peer.as_str())
+    .bind(sender.as_str())
+    .bind(mime.as_str())
+    .bind(body.to_vec())
+    .fetch_one(db)
+    .await?;
+    Ok(row.0)
 }
 
 async fn mark_message_sent(
@@ -120,53 +138,22 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
     let gateway = my_info.gateway.clone();
     let auth = device_auth(gateway.as_ref(), &identity).await?;
     let mailbox = MailboxId::direct(&identity.handle);
-    ensure_mailbox_state(db, &my_info.gateway_name, mailbox).await?;
+    ensure_mailbox_state(db, &my_info.gateway_name, mailbox, NanoTimestamp(0)).await?;
     let mut after = load_mailbox_after(db, &my_info.gateway_name, mailbox).await?;
-    let mut timeout_ms = DM_RECV_TIMEOUT_MIN_MS;
+    let poller = ctx.get(LONG_POLLER);
     loop {
-        let gateway = my_info.gateway.clone();
-        let args = vec![MailboxRecvArgs {
-            auth,
-            mailbox,
-            after,
-        }];
-        let response = match gateway.v1_mailbox_multirecv(args, timeout_ms).await {
-            Ok(response) => {
-                if let Ok(v) = &response
-                    && v.is_empty()
-                {
-                    // increase "every 10 seconds"
-                    let next = (timeout_ms + DM_RECV_TIMEOUT_STEP_MS).min(DM_RECV_TIMEOUT_MAX_MS);
-                    tracing::debug!(prev = timeout_ms, next, "mailbox multirecv AIMD increase");
-                    timeout_ms = next;
-                }
-                response
-            }
+        let entry = match poller.recv(gateway.clone(), auth, mailbox, after).await {
+            Ok(entry) => entry,
             Err(err) => {
-                let next = (timeout_ms * 4 / 5).max(DM_RECV_TIMEOUT_MIN_MS);
-                timeout_ms = next;
-                tracing::warn!(error = %err, timeout_ms, prev = timeout_ms, next,  "mailbox multirecv network error, AIMD decrease!");
+                tracing::warn!(error = %err, "mailbox recv error");
                 continue;
             }
         };
-        let response = match response {
-            Ok(response) => response,
-            Err(err) => {
-                tracing::warn!(error = %err, "mailbox multirecv server error");
-                continue;
-            }
-        };
-        let entries = response.get(&mailbox).cloned().unwrap_or_default();
-        if entries.is_empty() {
-            continue;
-        }
-        for entry in entries {
-            after = entry.received_at;
-            if let Err(err) =
-                process_mailbox_entry(ctx, &my_info.gateway_name, mailbox, entry).await
-            {
-                tracing::warn!(error = %err, "failed to process mailbox entry");
-            }
+        after = entry.received_at;
+        if let Err(err) =
+            process_mailbox_entry(ctx, &my_info.gateway_name, mailbox, entry).await
+        {
+            tracing::warn!(error = %err, "failed to process mailbox entry");
         }
         // notify once to prevent thrashing
         DbNotify::touch();
@@ -177,7 +164,7 @@ async fn send_dm_once(
     ctx: &anyctx::AnyCtx<Config>,
     identity: &Identity,
     target: &Handle,
-    message: &Message,
+    message: &Blob,
 ) -> anyhow::Result<NanoTimestamp> {
     let peer = get_peer_info(ctx, target).await?;
     let own_gateway = own_gateway_name(ctx, identity).await?;
@@ -261,8 +248,8 @@ async fn send_envelope(
     mailbox: MailboxId,
     envelope: Envelope,
 ) -> anyhow::Result<NanoTimestamp> {
-    let message = Message {
-        kind: Message::V1_DIRECT_MESSAGE.into(),
+    let message = Blob {
+        kind: Blob::V1_DIRECT_MESSAGE.into(),
         inner: Bytes::from(bcs::to_bytes(&envelope)?),
     };
     client
@@ -282,7 +269,7 @@ async fn process_mailbox_entry(
     let identity = Identity::load(db).await?;
     update_mailbox_after(db, gateway_name, mailbox, entry.received_at).await?;
     let message = entry.message;
-    if message.kind != Message::V1_DIRECT_MESSAGE {
+    if message.kind != Blob::V1_DIRECT_MESSAGE {
         warn!(kind = %message.kind, "ignoring non-dm mailbox entry");
         return Ok(());
     }
@@ -325,7 +312,7 @@ async fn process_mailbox_entry(
     let message = decrypted
         .verify(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify envelope"))?;
-    if message.kind != Message::V1_MESSAGE_CONTENT {
+    if message.kind != Blob::V1_MESSAGE_CONTENT {
         warn!(kind = %message.kind, "ignoring non-message-content dm");
         return Ok(());
     }
@@ -366,58 +353,6 @@ async fn process_mailbox_entry(
     .execute(tx.as_mut())
     .await?;
     tx.commit().await?;
-    Ok(())
-}
-
-async fn ensure_mailbox_state(
-    db: &sqlx::SqlitePool,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
-    mailbox: MailboxId,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO mailbox_state (gateway_name, mailbox_id, after_timestamp) \
-         VALUES (?, ?, 0)",
-    )
-    .bind(gateway_name.as_str())
-    .bind(mailbox.to_bytes().to_vec())
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
-async fn load_mailbox_after(
-    db: &sqlx::SqlitePool,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
-    mailbox: MailboxId,
-) -> anyhow::Result<NanoTimestamp> {
-    let row = sqlx::query_as::<_, (i64,)>(
-        "SELECT after_timestamp FROM mailbox_state \
-         WHERE gateway_name = ? AND mailbox_id = ?",
-    )
-    .bind(gateway_name.as_str())
-    .bind(mailbox.to_bytes().to_vec())
-    .fetch_optional(db)
-    .await?;
-    Ok(row
-        .map(|(after,)| NanoTimestamp(after as u64))
-        .unwrap_or(NanoTimestamp(0)))
-}
-
-async fn update_mailbox_after(
-    db: &sqlx::SqlitePool,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
-    mailbox: MailboxId,
-    after: NanoTimestamp,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE mailbox_state SET after_timestamp = ? \
-         WHERE gateway_name = ? AND mailbox_id = ?",
-    )
-    .bind(after.0 as i64)
-    .bind(gateway_name.as_str())
-    .bind(mailbox.to_bytes().to_vec())
-    .execute(db)
-    .await?;
     Ok(())
 }
 

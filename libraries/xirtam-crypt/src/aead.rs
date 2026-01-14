@@ -1,5 +1,5 @@
 use chacha20poly1305::aead::{Aead, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use derivative::Derivative;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ pub enum AeadError {
     Decrypt,
 }
 
-/// ChaCha20-Poly1305 key used for symmetric encryption and decryption.
+/// XChaCha20-Poly1305 key used for symmetric encryption and decryption.
 #[serde_as]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Derivative)]
 #[derivative(Debug)]
@@ -49,34 +49,34 @@ impl AeadKey {
     /// Encrypt `plaintext` with the given nonce and associated data.
     pub fn encrypt(
         &self,
-        nonce: [u8; 12],
+        nonce: [u8; 24],
         plaintext: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, AeadError> {
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.0));
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.0));
         let payload = Payload {
             msg: plaintext,
             aad,
         };
         cipher
-            .encrypt(Nonce::from_slice(&nonce), payload)
+            .encrypt(XNonce::from_slice(&nonce), payload)
             .map_err(|_| AeadError::Encrypt)
     }
 
     /// Decrypt `ciphertext` with the given nonce and associated data.
     pub fn decrypt(
         &self,
-        nonce: [u8; 12],
+        nonce: [u8; 24],
         ciphertext: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, AeadError> {
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&self.0));
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.0));
         let payload = Payload {
             msg: ciphertext,
             aad,
         };
         cipher
-            .decrypt(Nonce::from_slice(&nonce), payload)
+            .decrypt(XNonce::from_slice(&nonce), payload)
             .map_err(|_| AeadError::Decrypt)
     }
 }

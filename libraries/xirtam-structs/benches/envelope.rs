@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use xirtam_crypt::dh::DhSecret;
-use xirtam_structs::Message;
+use xirtam_structs::Blob;
 use xirtam_structs::certificate::{CertificateChain, DeviceSecret};
 use xirtam_structs::envelope::Envelope;
 use xirtam_structs::handle::Handle;
@@ -13,14 +13,16 @@ fn dm_benchmarks(c: &mut Criterion) {
     let sender_cert = sender_secret.self_signed(Timestamp(u64::MAX), true);
     let sender_chain = CertificateChain(vec![sender_cert]);
     let sender_handle = Handle::parse("@sender01").expect("sender handle");
+    let recipient = Handle::parse("@rcpt01").expect("recipient handle");
 
     let content = MessageContent {
+        recipient,
         sent_at: NanoTimestamp(0),
         mime: smol_str::SmolStr::new("text/plain"),
         body: Bytes::from_static(b"benchmark dm payload"),
     };
-    let message = Message {
-        kind: Message::V1_MESSAGE_CONTENT.into(),
+    let message = Blob {
+        kind: Blob::V1_MESSAGE_CONTENT.into(),
         inner: Bytes::from(bcs::to_bytes(&content).expect("content")),
     };
 

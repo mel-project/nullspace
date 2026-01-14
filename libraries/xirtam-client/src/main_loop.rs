@@ -15,18 +15,23 @@ use xirtam_crypt::hash::BcsHashExt;
 use xirtam_crypt::signing::Signable;
 use xirtam_structs::certificate::{CertificateChain, DeviceSecret};
 use xirtam_structs::gateway::{GatewayClient, GatewayName, SignedMediumPk};
+use xirtam_structs::group::GroupId;
 use xirtam_structs::handle::{Handle, HandleDescriptor};
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 
 use crate::Config;
 use crate::database::{DATABASE, DbNotify, event_loop, identity_exists};
 use crate::directory::DIR_CLIENT;
-use crate::dm::{recv_loop, send_loop};
+use crate::dm::{queue_dm, recv_loop, send_loop};
 use crate::gateway::get_gateway_client;
+use crate::groups::{
+    accept_invite, create_group, group_recv_loop, group_rekey_loop, group_send_loop, invite,
+    load_group, queue_group_message, GroupRoster,
+};
 use crate::identity::Identity;
 use crate::internal::{
-    DmDirection, DmMessage, Event, InternalProtocol, InternalRpcError, NewDeviceBundle,
-    RegisterFinish, RegisterStartInfo,
+    DmDirection, DmMessage, Event, GroupMember, GroupMessage, InternalProtocol, InternalRpcError,
+    NewDeviceBundle, RegisterFinish, RegisterStartInfo,
 };
 use crate::medium_keys::rotation_loop;
 
@@ -158,20 +163,128 @@ impl InternalProtocol for InternalImpl {
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let row = sqlx::query_as::<_, (i64,)>(
-            "INSERT INTO dm_messages (peer_handle, sender_handle, mime, body, received_at) \
-             VALUES (?, ?, ?, ?, NULL) \
-             RETURNING id",
+        let id = queue_dm(db, &identity.handle, &peer, &mime, &body)
+            .await
+            .map_err(internal_err)?;
+        DbNotify::touch();
+        Ok(id)
+    }
+
+    async fn group_create(&self, gateway: GatewayName) -> Result<GroupId, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        if !identity_exists(db).await.map_err(internal_err)? {
+            return Err(InternalRpcError::NotReady);
+        }
+        create_group(&self.ctx, gateway).await.map_err(internal_err)
+    }
+
+    async fn group_invite(&self, group: GroupId, handle: Handle) -> Result<(), InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        if !identity_exists(db).await.map_err(internal_err)? {
+            return Err(InternalRpcError::NotReady);
+        }
+        invite(&self.ctx, group, handle).await.map_err(internal_err)
+    }
+
+    async fn group_send(
+        &self,
+        group: GroupId,
+        mime: smol_str::SmolStr,
+        body: Bytes,
+    ) -> Result<i64, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        let identity = Identity::load(db)
+            .await
+            .map_err(|_| InternalRpcError::NotReady)?;
+        let id = queue_group_message(db, &group, &identity.handle, &mime, &body)
+            .await
+            .map_err(internal_err)?;
+        DbNotify::touch();
+        Ok(id)
+    }
+
+    async fn group_history(
+        &self,
+        group: GroupId,
+        before: Option<i64>,
+        after: Option<i64>,
+        limit: u16,
+    ) -> Result<Vec<GroupMessage>, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        let identity = Identity::load(db)
+            .await
+            .map_err(|_| InternalRpcError::NotReady)?;
+        let before = before.unwrap_or(i64::MAX);
+        let after = after.unwrap_or(i64::MIN);
+        let mut rows = sqlx::query_as::<_, (i64, String, String, Vec<u8>, Option<i64>)>(
+            "SELECT id, sender_handle, mime, body, received_at \
+             FROM group_messages \
+             WHERE group_id = ? AND id <= ? AND id >= ? \
+             ORDER BY id DESC \
+             LIMIT ?",
         )
-        .bind(peer.as_str())
-        .bind(identity.handle.as_str())
-        .bind(mime.as_str())
-        .bind(body.to_vec())
-        .fetch_one(db)
+        .bind(group.as_bytes().to_vec())
+        .bind(before)
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(db)
         .await
         .map_err(internal_err)?;
-        DbNotify::touch();
-        Ok(row.0)
+        rows.reverse();
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, sender_handle, mime, body, received_at) in rows {
+            let sender = Handle::parse(sender_handle).map_err(internal_err)?;
+            let direction = if sender == identity.handle {
+                DmDirection::Outgoing
+            } else {
+                DmDirection::Incoming
+            };
+            out.push(GroupMessage {
+                id,
+                group,
+                sender,
+                direction,
+                mime: smol_str::SmolStr::new(mime),
+                body: Bytes::from(body),
+                received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn group_members(&self, group: GroupId) -> Result<Vec<GroupMember>, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        if !identity_exists(db).await.map_err(internal_err)? {
+            return Err(InternalRpcError::NotReady);
+        }
+        let group_record = load_group(db, group)
+            .await
+            .map_err(internal_err)?
+            .ok_or_else(|| InternalRpcError::Other("group not found".into()))?;
+        let mut tx = db.begin().await.map_err(internal_err)?;
+        let roster =
+            GroupRoster::load(tx.as_mut(), group, group_record.descriptor.init_admin.clone())
+                .await
+                .map_err(internal_err)?;
+        let members = roster.list(tx.as_mut()).await.map_err(internal_err)?;
+        tx.commit().await.map_err(internal_err)?;
+        let out = members
+            .into_iter()
+            .map(|member| GroupMember {
+                handle: member.handle,
+                is_admin: member.is_admin,
+                status: member.status,
+            })
+            .collect();
+        Ok(out)
+    }
+
+    async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        if !identity_exists(db).await.map_err(internal_err)? {
+            return Err(InternalRpcError::NotReady);
+        }
+        accept_invite(&self.ctx, dm_id).await.map_err(internal_err)
     }
 
     async fn add_contact(&self, handle: Handle, init_msg: String) -> Result<(), InternalRpcError> {
@@ -320,7 +433,14 @@ async fn worker_loop(ctx: &AnyCtx<Config>) {
         }
         notify.wait_for_change().await;
     }
-    (send_loop(ctx), recv_loop(ctx), rotation_loop(ctx))
+    (
+        send_loop(ctx),
+        recv_loop(ctx),
+        rotation_loop(ctx),
+        group_send_loop(ctx),
+        group_recv_loop(ctx),
+        group_rekey_loop(ctx),
+    )
         .race()
         .await;
 }

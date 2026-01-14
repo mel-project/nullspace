@@ -99,13 +99,31 @@ DMs are routed to the handle's DM mailbox, with the kind `v1.direct_message` (or
 
 ## Groups
 
-Groups are uniquely identified by a **group ID**, which is the hash of the initial group descriptor.
+Groups are uniquely identified by a **group ID**, which is the hash of the initial group descriptor. The descriptor includes
+- a nonce
+- an initial admin
+- a creation time
+- the gateway name
+- a static management key (used only for the management mailbox)
 
-Each group has its own hierarchy of cryptographic certificates. This assigns group admins, mods, etc, with differing permissions.
+Each group has two mailboxes (both derived from the group ID):
+- **message mailbox**: group chat messages + rekeys (messages may expire)
+- **management mailbox**: management messages only (never expires)
 
-Each group is hosted on its own mailbox. This means that groups have one, canonical server, and one canonical history.
+Messages in groups are encrypted symmetrically with the appropriate group key and a random 192-bit nonce (XChaCha20). These messages are of kind `v1.group_message` and are BCS encoded as `{ nonce, ciphertext }`.
 
-From the canonical history, a group roster and a mailbox-token-hash -> username mapping can be built.
+The ciphertext decrypts to a signed payload:
+- `group`
+- `sender`
+- `sender_chain`
+- `message`
+- `signature` over `(group, sender, message)`
+
+This lets clients verify exactly who authored each management message and ignore invalid actions. The management mailbox uses the static management key from the descriptor; the message mailbox uses the current (rotating) group key.
+
+Rekeys are posted to the **message mailbox** as `v1.group_rekey` messages, envelope-encrypted to all group members' devices, and carry the new 32-byte group key.
+
+Group invites are sent via DMs as `MessageContent` with mime `application/vnd.xirtam.v1.group_invite` (JSON payload). Management actions are sent as `v1.group_message` in the management mailbox, carrying `MessageContent` with mime `application/vnd.xirtam.v1.group_manage`.
 
 ## Messages
 

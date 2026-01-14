@@ -14,6 +14,7 @@ use xirtam_structs::directory::{
     DirectoryProtocol, DirectoryResponse, DirectoryService, DirectoryUpdate, PowAlgo, PowSeed,
     PowSolution,
 };
+use xirtam_structs::handle::Handle;
 use xirtam_structs::timestamp::Timestamp;
 
 use crate::{db, mirror, pow, state::DirectoryState};
@@ -133,6 +134,9 @@ impl DirectoryProtocol for DirectoryServer {
         update: DirectoryUpdate,
         pow_solution: PowSolution,
     ) -> Result<(), DirectoryErr> {
+        if key == Handle::placeholder().as_str() {
+            return Err(DirectoryErr::UpdateRejected("handle is reserved".into()));
+        }
         if let Some(mirror) = &self.state.mirror {
             return mirror::forward_insert(mirror, key, update, pow_solution).await;
         }

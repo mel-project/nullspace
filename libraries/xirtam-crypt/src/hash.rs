@@ -20,6 +20,11 @@ impl Hash {
         Self(*hash.as_bytes())
     }
 
+    /// Generate a random hash value.
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+
     /// Hash a message with a key of any length by prehashing the key.
     pub fn keyed_digest(key: &[u8], msg: &[u8]) -> Self {
         let key_hash = blake3::hash(key);

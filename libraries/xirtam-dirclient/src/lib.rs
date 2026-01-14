@@ -12,7 +12,7 @@ use xirtam_structs::directory::{
     DirectoryUpdateInner, PowSolution,
 };
 use xirtam_structs::{
-    Message,
+    Blob,
     gateway::{GatewayDescriptor, GatewayName},
     handle::{Handle, HandleDescriptor},
 };
@@ -30,7 +30,7 @@ pub struct DirClient {
 #[derive(Clone, Debug)]
 pub struct DirectoryListing {
     /// Latest content message for the key, if present.
-    pub latest: Option<Message>,
+    pub latest: Option<Blob>,
     /// Current owners for the key, after applying ownership updates in order.
     pub owners: Vec<SigningPublic>,
 }
@@ -88,7 +88,7 @@ impl DirClient {
             Some(latest) => latest,
             None => return Ok(None),
         };
-        if latest.kind != Message::V1_HANDLE_DESCRIPTOR {
+        if latest.kind != Blob::V1_HANDLE_DESCRIPTOR {
             anyhow::bail!("unexpected message kind: {}", latest.kind);
         }
         let descriptor: HandleDescriptor = bcs::from_bytes(&latest.inner)?;
@@ -105,7 +105,7 @@ impl DirClient {
             Some(latest) => latest,
             None => return Ok(None),
         };
-        if latest.kind != Message::V1_GATEWAY_DESCRIPTOR {
+        if latest.kind != Blob::V1_GATEWAY_DESCRIPTOR {
             anyhow::bail!("unexpected message kind: {}", latest.kind);
         }
         let descriptor: GatewayDescriptor = bcs::from_bytes(&latest.inner)?;
@@ -128,8 +128,8 @@ impl DirClient {
         let prev_update_hash = prev_update_hash(&response.history)?;
         let update = signed_update(
             prev_update_hash,
-            DirectoryUpdateInner::Update(Message {
-                kind: Message::V1_HANDLE_DESCRIPTOR.into(),
+            DirectoryUpdateInner::Update(Blob {
+                kind: Blob::V1_HANDLE_DESCRIPTOR.into(),
                 inner: bcs::to_bytes(descriptor)?.into(),
             }),
             signer,
@@ -154,8 +154,8 @@ impl DirClient {
         let prev_update_hash = prev_update_hash(&response.history)?;
         let update = signed_update(
             prev_update_hash,
-            DirectoryUpdateInner::Update(Message {
-                kind: Message::V1_GATEWAY_DESCRIPTOR.into(),
+            DirectoryUpdateInner::Update(Blob {
+                kind: Blob::V1_GATEWAY_DESCRIPTOR.into(),
                 inner: bcs::to_bytes(descriptor)?.into(),
             }),
             signer,
@@ -209,7 +209,6 @@ impl DirClient {
         self.insert_raw(gateway_name.as_str(), update).await?;
         Ok(())
     }
-
 
     /// Remove an owner from a user handle.
     pub async fn del_owner(

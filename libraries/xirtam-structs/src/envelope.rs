@@ -8,7 +8,7 @@ use xirtam_crypt::dh::{DhPublic, DhSecret};
 use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_crypt::signing::Signature;
 
-use crate::Message;
+use crate::Blob;
 use crate::certificate::{CertificateChain, DevicePublic, DeviceSecret};
 use crate::handle::Handle;
 
@@ -42,7 +42,7 @@ pub struct EnvelopeError;
 
 impl Envelope {
     pub fn encrypt_message<I>(
-        message: &Message,
+        message: &Blob,
         sender_handle: Handle,
         sender_chain: CertificateChain,
         sender_device: &DeviceSecret,
@@ -63,7 +63,7 @@ impl Envelope {
         let header_bytes = bcs::to_bytes(&header).map_err(|_| EnvelopeError)?;
         let plaintext = bcs::to_bytes(message).map_err(|_| EnvelopeError)?;
         let ciphertext = key
-            .encrypt([0u8; 12], &plaintext, &[])
+            .encrypt([0u8; 24], &plaintext, &[])
             .map_err(|_| EnvelopeError)?;
 
         let mut headers = BTreeMap::new();
@@ -93,7 +93,7 @@ impl Envelope {
         let header: EnvelopeHeader = bcs::from_bytes(&header_bytes).map_err(|_| EnvelopeError)?;
         let key = AeadKey::from_bytes(header.key);
         let plaintext = key
-            .decrypt([0u8; 12], &self.body, &[])
+            .decrypt([0u8; 24], &self.body, &[])
             .map_err(|_| EnvelopeError)?;
         Ok(DecryptedEnvelope {
             sender_handle: header.sender_handle,
@@ -110,7 +110,7 @@ impl DecryptedEnvelope {
         &self.sender_handle
     }
 
-    pub fn verify(self, sender_root_hash: Hash) -> Result<Message, EnvelopeError> {
+    pub fn verify(self, sender_root_hash: Hash) -> Result<Blob, EnvelopeError> {
         let verified = self
             .sender_chain
             .verify(sender_root_hash)
@@ -120,7 +120,7 @@ impl DecryptedEnvelope {
             .pk
             .verify(&self.key_sig, &self.key)
             .map_err(|_| EnvelopeError)?;
-        let message: Message = bcs::from_bytes(&self.body).map_err(|_| EnvelopeError)?;
+        let message: Blob = bcs::from_bytes(&self.body).map_err(|_| EnvelopeError)?;
         Ok(message)
     }
 }
@@ -136,8 +136,7 @@ fn encrypt_header(to: &DhPublic, msg: &[u8]) -> Result<Bytes, EnvelopeError> {
 }
 
 fn decrypt_header(my_sk: &DhSecret, envelope: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
-    let (eph_pk, ct): (DhPublic, Vec<u8>) =
-        bcs::from_bytes(envelope).map_err(|_| EnvelopeError)?;
+    let (eph_pk, ct): (DhPublic, Vec<u8>) = bcs::from_bytes(envelope).map_err(|_| EnvelopeError)?;
     let ss = my_sk.diffie_hellman(&eph_pk);
     let pt = AeadKey::from_bytes(ss)
         .decrypt(Default::default(), &ct, &[])
@@ -171,8 +170,8 @@ mod tests {
             mime: smol_str::SmolStr::new("text/plain"),
             body: Bytes::from_static(b"hello recipients"),
         };
-        let message = Message {
-            kind: Message::V1_MESSAGE_CONTENT.into(),
+        let message = Blob {
+            kind: Blob::V1_MESSAGE_CONTENT.into(),
             inner: Bytes::from(bcs::to_bytes(&content).expect("content")),
         };
 

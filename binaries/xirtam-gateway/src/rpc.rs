@@ -11,7 +11,7 @@ use xirtam_structs::gateway::{
     AuthToken, GatewayProtocol, GatewayServerError, GatewayService, MailboxAcl, MailboxEntry,
     MailboxId, MailboxRecvArgs, SignedMediumPk,
 };
-use xirtam_structs::{Message, handle::Handle, timestamp::NanoTimestamp};
+use xirtam_structs::{Blob, handle::Handle, timestamp::NanoTimestamp};
 
 use crate::{device, mailbox};
 
@@ -56,7 +56,7 @@ impl GatewayProtocol for GatewayServer {
         &self,
         auth: AuthToken,
         mailbox_id: MailboxId,
-        message: Message,
+        message: Blob,
     ) -> Result<NanoTimestamp, GatewayServerError> {
         mailbox::mailbox_send(auth, mailbox_id, message).await
     }
@@ -91,5 +91,13 @@ impl GatewayProtocol for GatewayServer {
         arg: MailboxAcl,
     ) -> Result<(), GatewayServerError> {
         mailbox::mailbox_acl_edit(auth, mailbox_id, arg).await
+    }
+
+    async fn v1_register_group(
+        &self,
+        auth: AuthToken,
+        group: xirtam_structs::group::GroupId,
+    ) -> Result<(), GatewayServerError> {
+        mailbox::register_group(auth, group).await
     }
 }

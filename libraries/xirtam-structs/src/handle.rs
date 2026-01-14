@@ -34,6 +34,10 @@ impl Handle {
         Ok(Self(SmolStr::new(handle)))
     }
 
+    pub fn placeholder() -> Self {
+        Self(SmolStr::new("@placeholder"))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

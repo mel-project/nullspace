@@ -8,6 +8,7 @@ use serde_with::{FromInto, IfIsHumanReadable, serde_as};
 use smol_str::SmolStr;
 use thiserror::Error;
 use xirtam_structs::gateway::GatewayName;
+use xirtam_structs::group::GroupId;
 use xirtam_structs::handle::Handle;
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 use std::collections::BTreeMap;
@@ -33,6 +34,26 @@ pub trait InternalProtocol {
         mime: SmolStr,
         body: Bytes,
     ) -> Result<i64, InternalRpcError>;
+    async fn group_create(&self, gateway: GatewayName) -> Result<GroupId, InternalRpcError>;
+    async fn group_invite(&self, group: GroupId, handle: Handle) -> Result<(), InternalRpcError>;
+    async fn group_send(
+        &self,
+        group: GroupId,
+        mime: SmolStr,
+        body: Bytes,
+    ) -> Result<i64, InternalRpcError>;
+    async fn group_history(
+        &self,
+        group: GroupId,
+        before: Option<i64>,
+        after: Option<i64>,
+        limit: u16,
+    ) -> Result<Vec<GroupMessage>, InternalRpcError>;
+    async fn group_members(
+        &self,
+        group: GroupId,
+    ) -> Result<Vec<GroupMember>, InternalRpcError>;
+    async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError>;
     async fn add_contact(
         &self,
         handle: Handle,
@@ -52,6 +73,7 @@ pub trait InternalProtocol {
 pub enum Event {
     State { logged_in: bool },
     DmUpdated { peer: Handle },
+    GroupUpdated { group: GroupId },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,6 +115,32 @@ pub struct DmMessage {
 pub enum DmDirection {
     Incoming,
     Outgoing,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMessage {
+    pub id: i64,
+    pub group: GroupId,
+    pub sender: Handle,
+    pub direction: DmDirection,
+    pub mime: SmolStr,
+    pub body: Bytes,
+    pub received_at: Option<NanoTimestamp>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMember {
+    pub handle: Handle,
+    pub is_admin: bool,
+    pub status: GroupMemberStatus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupMemberStatus {
+    Pending,
+    Accepted,
+    Banned,
 }
 
 #[derive(Clone, Debug, Error, Serialize, Deserialize)]

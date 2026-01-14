@@ -14,7 +14,7 @@ use xirtam_crypt::{
     signing::{Signable, Signature, SigningPublic},
 };
 
-use crate::{Message, timestamp::Timestamp};
+use crate::{Blob, timestamp::Timestamp};
 
 #[nanorpc_derive]
 #[async_trait]
@@ -148,7 +148,7 @@ impl Signable for DirectoryUpdate {
 pub enum DirectoryUpdateInner {
     AddOwner(SigningPublic),
     DelOwner(SigningPublic),
-    Update(Message),
+    Update(Blob),
 }
 
 #[derive(Error, Serialize, Deserialize, Debug)]

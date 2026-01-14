@@ -15,8 +15,9 @@ use xirtam_crypt::signing::{Signable, Signature};
 use xirtam_crypt::{hash::Hash, signing::SigningPublic};
 
 use crate::certificate::CertificateChain;
+use crate::group::GroupId;
 use crate::timestamp::Timestamp;
-use crate::{Message, handle::Handle, timestamp::NanoTimestamp};
+use crate::{Blob, handle::Handle, timestamp::NanoTimestamp};
 
 /// The RPC protocol implemented by gateway servers.
 #[nanorpc_derive]
@@ -53,7 +54,7 @@ pub trait GatewayProtocol {
         &self,
         auth: AuthToken,
         mailbox: MailboxId,
-        message: Message,
+        message: Blob,
     ) -> Result<NanoTimestamp, GatewayServerError>;
 
     /// Receive one or more messages, from one or many mailboxes. This is batched to make long-polling more efficient. The gateway may choose to limit the number of messages in the response, so clients should be prepared to repeat until getting an empty "page".
@@ -69,6 +70,13 @@ pub trait GatewayProtocol {
         auth: AuthToken,
         mailbox: MailboxId,
         arg: MailboxAcl,
+    ) -> Result<(), GatewayServerError>;
+
+    /// Create group mailboxes and grant the caller full ACL rights.
+    async fn v1_register_group(
+        &self,
+        auth: AuthToken,
+        group: GroupId,
     ) -> Result<(), GatewayServerError>;
 }
 
@@ -102,7 +110,7 @@ pub struct MailboxRecvArgs {
 }
 
 /// A gateway name that matches the rules for gateway names.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct GatewayName(SmolStr);
 
@@ -177,12 +185,27 @@ pub struct GatewayDescriptor {
 pub struct MailboxId(Hash);
 
 impl MailboxId {
-    /// Gets the mailbox ID for sending DMs to the given handle
+    /// Gets the mailbox ID for DMs to the given handle
     pub fn direct(handle: &Handle) -> Self {
         Self(Hash::keyed_digest(
             b"direct-mailbox",
             handle.as_str().as_bytes(),
         ))
+    }
+
+    /// Gets the mailbox ID for a given group
+    pub fn group(group: &GroupId) -> Self {
+        Self::group_messages(group)
+    }
+
+    /// Gets the mailbox ID for group messages
+    pub fn group_messages(group: &GroupId) -> Self {
+        Self(Hash::keyed_digest(b"group-messages", &group.as_bytes()))
+    }
+
+    /// Gets the mailbox ID for group management messages
+    pub fn group_management(group: &GroupId) -> Self {
+        Self(Hash::keyed_digest(b"group-management", &group.as_bytes()))
     }
 
     pub fn to_bytes(&self) -> [u8; 32] {
@@ -193,7 +216,7 @@ impl MailboxId {
 /// An entry stored in a mailbox, with metadata added by the gateway.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MailboxEntry {
-    pub message: Message,
+    pub message: Blob,
     pub received_at: NanoTimestamp,
     pub sender_auth_token_hash: Option<Hash>,
 }
@@ -209,7 +232,7 @@ pub struct MailboxAcl {
 
 /// An opaque authentication token.
 #[serde_as]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct AuthToken(#[serde_as(as = "IfIsHumanReadable<Hex, Bytes>")] [u8; 20]);
 
 impl AuthToken {

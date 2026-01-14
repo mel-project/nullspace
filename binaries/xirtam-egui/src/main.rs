@@ -1,23 +1,21 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::Parser;
-use eframe::egui::{self, Modal, Spinner};
+
+use egui::{Modal, Spinner};
 use tokio::{
     runtime::Runtime,
     sync::mpsc::{self, Receiver},
 };
 use url::Url;
-use xirtam_client::{
-    Client, Config,
-    internal::Event,
-};
+use xirtam_client::{Client, Config, internal::Event};
 use xirtam_crypt::signing::SigningPublic;
 
-use crate::utils::prefs::PrefData;
 use crate::events::{event_loop, spawn_audio_thread};
+use crate::utils::prefs::PrefData;
 
 mod events;
 mod promises;
@@ -73,6 +71,7 @@ impl XirtamApp {
             style.spacing.window_margin = egui::Margin::same(24);
             style.spacing.button_padding = egui::vec2(6.0, 4.0);
             style.spacing.indent = 16.0;
+            // style.spacing.scroll = ScrollStyle::solid();
             for wid in [
                 &mut style.visuals.widgets.active,
                 &mut style.visuals.widgets.hovered,
@@ -156,6 +155,10 @@ impl eframe::App for XirtamApp {
                 Event::State { logged_in } => self.state.logged_in = Some(logged_in),
                 Event::DmUpdated { peer } => {
                     let _ = peer;
+                    self.state.update_count = self.state.update_count.saturating_add(1);
+                }
+                Event::GroupUpdated { group } => {
+                    let _ = group;
                     self.state.update_count = self.state.update_count.saturating_add(1);
                 }
             }

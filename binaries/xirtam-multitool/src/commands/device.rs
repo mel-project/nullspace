@@ -5,10 +5,10 @@ use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
-use xirtam_nanorpc::Transport;
 use xirtam_crypt::hash::BcsHashExt;
+use xirtam_nanorpc::Transport;
 use xirtam_structs::{
-    Message,
+    Blob,
     certificate::{CertificateChain, DeviceCertificate, DeviceSecret},
     gateway::{AuthToken, GatewayClient, MailboxId, MailboxRecvArgs},
     handle::Handle,
@@ -184,8 +184,8 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             let mailbox = MailboxId::direct(&handle);
-            let msg = Message {
-                kind: Message::V1_PLAINTEXT_DIRECT_MESSAGE.into(),
+            let msg = Blob {
+                kind: Blob::V1_PLAINTEXT_DIRECT_MESSAGE.into(),
                 inner: Bytes::from(message.into_bytes()),
             };
             client

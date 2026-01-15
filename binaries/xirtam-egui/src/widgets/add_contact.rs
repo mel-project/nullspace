@@ -2,7 +2,7 @@ use eframe::egui::{Button, Modal, Response, Spinner, TextEdit, Widget};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use poll_promise::Promise;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 
 use crate::XirtamApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
@@ -14,7 +14,7 @@ pub struct AddContact<'a> {
 
 impl Widget for AddContact<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let mut handle_str: Var<String> = ui.use_state(String::new, ()).into_var();
+        let mut username_str: Var<String> = ui.use_state(String::new, ()).into_var();
         let mut message_str: Var<String> = ui.use_state(String::new, ()).into_var();
         let add_contact = ui.use_state(PromiseSlot::new, ());
 
@@ -23,10 +23,10 @@ impl Widget for AddContact<'_> {
                 ui.heading("Add contact");
                 let busy = add_contact.is_running();
                 ui.horizontal(|ui| {
-                    ui.label("Handle");
+                    ui.label("UserName");
                     ui.add_enabled(
                         !busy,
-                        TextEdit::singleline(&mut *handle_str).desired_width(240.0),
+                        TextEdit::singleline(&mut *username_str).desired_width(240.0),
                     );
                 });
                 ui.horizontal(|ui| {
@@ -41,18 +41,18 @@ impl Widget for AddContact<'_> {
                         *self.open = false;
                     }
                     if ui.add_enabled(!busy, Button::new("Add")).clicked() {
-                        let handle = match Handle::parse(handle_str.trim()) {
-                            Ok(handle) => handle,
+                        let username = match UserName::parse(username_str.trim()) {
+                            Ok(username) => username,
                             Err(err) => {
                                 self.app.state.error_dialog =
-                                    Some(format!("invalid handle: {err}"));
+                                    Some(format!("invalid username: {err}"));
                                 return;
                             }
                         };
                         let init_msg = message_str.clone();
                         let rpc = self.app.client.rpc();
                         let promise = Promise::spawn_async(async move {
-                            flatten_rpc(rpc.add_contact(handle, init_msg).await)
+                            flatten_rpc(rpc.add_contact(username, init_msg).await)
                         });
                         add_contact.start(promise);
                     }
@@ -64,7 +64,7 @@ impl Widget for AddContact<'_> {
                     match result {
                         Ok(()) => {
                             *self.open = false;
-                            handle_str.clear();
+                            username_str.clear();
                             message_str.clear();
                         }
                         Err(err) => {

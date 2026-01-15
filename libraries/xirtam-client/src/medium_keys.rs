@@ -4,13 +4,13 @@ use anyctx::AnyCtx;
 use anyhow::Context;
 use xirtam_crypt::dh::DhSecret;
 use xirtam_crypt::signing::Signable;
-use xirtam_structs::gateway::SignedMediumPk;
+use xirtam_structs::server::SignedMediumPk;
 use xirtam_structs::timestamp::Timestamp;
 
 use crate::Config;
 use crate::database::DATABASE;
 use crate::directory::DIR_CLIENT;
-use crate::gateway::get_gateway_client;
+use crate::server::get_server_client;
 use crate::identity::Identity;
 
 const MEDIUM_ROTATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -29,12 +29,12 @@ async fn rotate_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let identity = Identity::load(db).await?;
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir
-        .get_handle_descriptor(&identity.handle)
+        .get_user_descriptor(&identity.username)
         .await?
-        .context("identity handle not in directory")?;
-    let gateway = get_gateway_client(ctx, &descriptor.gateway_name).await?;
-    let auth = gateway
-        .v1_device_auth(identity.handle.clone(), identity.cert_chain.clone())
+        .context("identity username not in directory")?;
+    let server = get_server_client(ctx, &descriptor.server_name).await?;
+    let auth = server
+        .v1_device_auth(identity.username.clone(), identity.cert_chain.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let new_sk = DhSecret::random();
@@ -53,7 +53,7 @@ async fn rotate_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     .bind(bcs::to_bytes(&new_sk)?)
     .execute(db)
     .await?;
-    gateway
+    server
         .v1_device_add_medium_pk(auth, signed)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;

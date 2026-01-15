@@ -13,10 +13,10 @@ pub struct AddGroup<'a> {
 impl Widget for AddGroup<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let create_group = ui.use_state(PromiseSlot::new, ());
-        let gateway = ui.use_memo(
+        let server = ui.use_memo(
             || {
                 let rpc = self.app.client.rpc();
-                let result = pollster::block_on(rpc.own_gateway());
+                let result = pollster::block_on(rpc.own_server());
                 flatten_rpc(result)
             },
             self.app.state.update_count,
@@ -26,29 +26,29 @@ impl Widget for AddGroup<'_> {
             Modal::new("add_group_modal".into()).show(ui.ctx(), |ui| {
                 ui.heading("New group");
                 let busy = create_group.is_running();
-                match &gateway {
+                match &server {
                     Ok(name) => {
                         ui.horizontal(|ui| {
-                            ui.label("Gateway");
+                            ui.label("Server");
                             ui.label(name.as_str());
                         });
                     }
                     Err(err) => {
-                        ui.label(format!("Gateway lookup failed: {err}"));
+                        ui.label(format!("Server lookup failed: {err}"));
                     }
                 }
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!busy, Button::new("Cancel")).clicked() {
                         *self.open = false;
                     }
-                    let can_create = !busy && gateway.is_ok();
+                    let can_create = !busy && server.is_ok();
                     if ui.add_enabled(can_create, Button::new("Create")).clicked() {
-                        let gateway = gateway.clone().unwrap_or_else(|_| {
-                            unreachable!("gateway must be available when create is enabled")
+                        let server = server.clone().unwrap_or_else(|_| {
+                            unreachable!("server must be available when create is enabled")
                         });
                         let rpc = self.app.client.rpc();
                         let promise = Promise::spawn_async(async move {
-                            flatten_rpc(rpc.group_create(gateway).await)
+                            flatten_rpc(rpc.group_create(server).await)
                         });
                         create_group.start(promise);
                     }

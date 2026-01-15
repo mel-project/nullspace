@@ -4,7 +4,7 @@ use xirtam_crypt::dh::DhSecret;
 use xirtam_structs::Blob;
 use xirtam_structs::certificate::{CertificateChain, DeviceSecret};
 use xirtam_structs::envelope::Envelope;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 use xirtam_structs::msg_content::MessageContent;
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 
@@ -12,8 +12,8 @@ fn dm_benchmarks(c: &mut Criterion) {
     let sender_secret = DeviceSecret::random();
     let sender_cert = sender_secret.self_signed(Timestamp(u64::MAX), true);
     let sender_chain = CertificateChain(vec![sender_cert]);
-    let sender_handle = Handle::parse("@sender01").expect("sender handle");
-    let recipient = Handle::parse("@rcpt01").expect("recipient handle");
+    let sender_username = UserName::parse("@sender01").expect("sender username");
+    let recipient = UserName::parse("@rcpt01").expect("recipient username");
 
     let content = MessageContent {
         recipient,
@@ -46,7 +46,7 @@ fn dm_benchmarks(c: &mut Criterion) {
         b.iter(|| {
             let encrypted = Envelope::encrypt_message(
                 &message,
-                sender_handle.clone(),
+                sender_username.clone(),
                 sender_chain.clone(),
                 &sender_secret,
                 recipients_one.iter().cloned(),
@@ -59,7 +59,7 @@ fn dm_benchmarks(c: &mut Criterion) {
         b.iter(|| {
             let encrypted = Envelope::encrypt_message(
                 &message,
-                sender_handle.clone(),
+                sender_username.clone(),
                 sender_chain.clone(),
                 &sender_secret,
                 recipients_ten.iter().cloned(),

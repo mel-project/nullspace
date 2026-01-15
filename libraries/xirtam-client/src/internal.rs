@@ -15,9 +15,9 @@ use xirtam_crypt::dh::DhSecret;
 use xirtam_crypt::hash::BcsHashExt;
 use xirtam_crypt::signing::{Signable, Signature};
 use xirtam_structs::certificate::{CertificateChain, DeviceSecret};
-use xirtam_structs::gateway::{AuthToken, GatewayClient, GatewayName, SignedMediumPk};
+use xirtam_structs::server::{AuthToken, ServerClient, ServerName, SignedMediumPk};
 use xirtam_structs::group::GroupId;
-use xirtam_structs::handle::{Handle, HandleDescriptor};
+use xirtam_structs::username::{UserDescriptor, UserName};
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 use std::collections::BTreeMap;
 
@@ -25,7 +25,7 @@ use crate::Config;
 use crate::database::{DATABASE, DbNotify, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::dm::queue_dm;
-use crate::gateway::get_gateway_client;
+use crate::server::get_server_client;
 use crate::groups::{
     accept_invite, create_group, invite, load_group, queue_group_message, GroupRoster,
 };
@@ -38,23 +38,23 @@ pub trait InternalProtocol {
     async fn next_event(&self) -> Event;
     async fn register_start(
         &self,
-        handle: Handle,
+        username: UserName,
     ) -> Result<Option<RegisterStartInfo>, InternalRpcError>;
     async fn register_finish(&self, request: RegisterFinish) -> Result<(), InternalRpcError>;
     async fn new_device_bundle(
         &self,
-        can_sign: bool,
+        can_issue: bool,
         expiry: Timestamp,
     ) -> Result<NewDeviceBundle, InternalRpcError>;
     async fn dm_send(
         &self,
-        peer: Handle,
+        peer: UserName,
         mime: SmolStr,
         body: Bytes,
     ) -> Result<i64, InternalRpcError>;
-    async fn group_create(&self, gateway: GatewayName) -> Result<GroupId, InternalRpcError>;
-    async fn own_gateway(&self) -> Result<GatewayName, InternalRpcError>;
-    async fn group_invite(&self, group: GroupId, handle: Handle) -> Result<(), InternalRpcError>;
+    async fn group_create(&self, server: ServerName) -> Result<GroupId, InternalRpcError>;
+    async fn own_server(&self) -> Result<ServerName, InternalRpcError>;
+    async fn group_invite(&self, group: GroupId, username: UserName) -> Result<(), InternalRpcError>;
     async fn group_send(
         &self,
         group: GroupId,
@@ -76,37 +76,37 @@ pub trait InternalProtocol {
     async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError>;
     async fn add_contact(
         &self,
-        handle: Handle,
+        username: UserName,
         init_msg: String,
     ) -> Result<(), InternalRpcError>;
     async fn dm_history(
         &self,
-        peer: Handle,
+        peer: UserName,
         before: Option<i64>,
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<DmMessage>, InternalRpcError>;
-    async fn all_peers(&self) -> Result<BTreeMap<Handle, DmMessage>, InternalRpcError>;
+    async fn all_peers(&self) -> Result<BTreeMap<UserName, DmMessage>, InternalRpcError>;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
     State { logged_in: bool },
-    DmUpdated { peer: Handle },
+    DmUpdated { peer: UserName },
     GroupUpdated { group: GroupId },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegisterStartInfo {
-    pub handle: Handle,
-    pub gateway_name: GatewayName,
+    pub username: UserName,
+    pub server_name: ServerName,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RegisterFinish {
-    BootstrapNewHandle {
-        handle: Handle,
-        gateway_name: GatewayName,
+    BootstrapNewUser {
+        username: UserName,
+        server_name: ServerName,
     },
     AddDevice {
         bundle: NewDeviceBundle,
@@ -123,8 +123,8 @@ pub struct NewDeviceBundle(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DmMessage {
     pub id: i64,
-    pub peer: Handle,
-    pub sender: Handle,
+    pub peer: UserName,
+    pub sender: UserName,
     pub direction: DmDirection,
     pub mime: SmolStr,
     pub body: Bytes,
@@ -141,7 +141,7 @@ pub enum DmDirection {
 pub struct GroupMessage {
     pub id: i64,
     pub group: GroupId,
-    pub sender: Handle,
+    pub sender: UserName,
     pub direction: DmDirection,
     pub mime: SmolStr,
     pub body: Bytes,
@@ -150,7 +150,7 @@ pub struct GroupMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GroupMember {
-    pub handle: Handle,
+    pub username: UserName,
     pub is_admin: bool,
     pub status: GroupMemberStatus,
 }
@@ -200,22 +200,22 @@ impl InternalProtocol for InternalImpl {
 
     async fn register_start(
         &self,
-        handle: Handle,
+        username: UserName,
     ) -> Result<Option<RegisterStartInfo>, InternalRpcError> {
-        tracing::debug!(handle = %handle, "register_start begin");
+        tracing::debug!(username = %username, "register_start begin");
         let dir = self.ctx.get(DIR_CLIENT);
         let descriptor = dir
-            .get_handle_descriptor(&handle)
+            .get_user_descriptor(&username)
             .await
             .map_err(internal_err)?;
         let Some(descriptor) = descriptor else {
-            tracing::debug!(handle = %handle, "register_start not found");
+            tracing::debug!(username = %username, "register_start not found");
             return Ok(None);
         };
-        tracing::debug!(handle = %handle, gateway = %descriptor.gateway_name, "register_start found");
+        tracing::debug!(username = %username, server = %descriptor.server_name, "register_start found");
         Ok(Some(RegisterStartInfo {
-            handle,
-            gateway_name: descriptor.gateway_name,
+            username,
+            server_name: descriptor.server_name,
         }))
     }
 
@@ -225,10 +225,10 @@ impl InternalProtocol for InternalImpl {
             return Err(InternalRpcError::NotReady);
         }
         match request {
-            RegisterFinish::BootstrapNewHandle {
-                handle,
-                gateway_name,
-            } => register_bootstrap(self.ctx.clone(), handle, gateway_name).await,
+            RegisterFinish::BootstrapNewUser {
+                username,
+                server_name,
+            } => register_bootstrap(self.ctx.clone(), username, server_name).await,
             RegisterFinish::AddDevice { bundle } => {
                 register_add_device(self.ctx.clone(), bundle).await
             }
@@ -237,29 +237,29 @@ impl InternalProtocol for InternalImpl {
 
     async fn new_device_bundle(
         &self,
-        can_sign: bool,
+        can_issue: bool,
         expiry: Timestamp,
     ) -> Result<NewDeviceBundle, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db).await.map_err(internal_err)?;
-        let can_issue = identity
+        let issuer_can_issue = identity
             .cert_chain
             .0
             .iter()
             .find(|cert| cert.pk == identity.device_secret.public())
-            .map(|cert| cert.can_sign)
+            .map(|cert| cert.can_issue)
             .unwrap_or(false);
-        if !can_issue {
+        if !issuer_can_issue {
             return Err(InternalRpcError::AccessDenied);
         }
         let new_secret = DeviceSecret::random();
         let cert = identity
             .device_secret
-            .issue_certificate(&new_secret.public(), expiry, can_sign);
+            .issue_certificate(&new_secret.public(), expiry, can_issue);
         let mut chain = identity.cert_chain.clone();
         chain.0.push(cert);
         let bundle = BundleInner {
-            handle: identity.handle,
+            username: identity.username,
             device_secret: new_secret,
             cert_chain: chain,
         };
@@ -269,7 +269,7 @@ impl InternalProtocol for InternalImpl {
 
     async fn dm_send(
         &self,
-        peer: Handle,
+        peer: UserName,
         mime: smol_str::SmolStr,
         body: Bytes,
     ) -> Result<i64, InternalRpcError> {
@@ -277,35 +277,35 @@ impl InternalProtocol for InternalImpl {
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let id = queue_dm(db, &identity.handle, &peer, &mime, &body)
+        let id = queue_dm(db, &identity.username, &peer, &mime, &body)
             .await
             .map_err(internal_err)?;
         DbNotify::touch();
         Ok(id)
     }
 
-    async fn group_create(&self, gateway: GatewayName) -> Result<GroupId, InternalRpcError> {
+    async fn group_create(&self, server: ServerName) -> Result<GroupId, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         if !identity_exists(db).await.map_err(internal_err)? {
             return Err(InternalRpcError::NotReady);
         }
-        create_group(&self.ctx, gateway).await.map_err(internal_err)
+        create_group(&self.ctx, server).await.map_err(internal_err)
     }
 
-    async fn own_gateway(&self) -> Result<GatewayName, InternalRpcError> {
+    async fn own_server(&self) -> Result<ServerName, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db).await.map_err(internal_err)?;
         identity
-            .gateway_name
-            .ok_or_else(|| InternalRpcError::Other("gateway name not available".into()))
+            .server_name
+            .ok_or_else(|| InternalRpcError::Other("server name not available".into()))
     }
 
-    async fn group_invite(&self, group: GroupId, handle: Handle) -> Result<(), InternalRpcError> {
+    async fn group_invite(&self, group: GroupId, username: UserName) -> Result<(), InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         if !identity_exists(db).await.map_err(internal_err)? {
             return Err(InternalRpcError::NotReady);
         }
-        invite(&self.ctx, group, handle).await.map_err(internal_err)
+        invite(&self.ctx, group, username).await.map_err(internal_err)
     }
 
     async fn group_send(
@@ -318,7 +318,7 @@ impl InternalProtocol for InternalImpl {
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let id = queue_group_message(db, &group, &identity.handle, &mime, &body)
+        let id = queue_group_message(db, &group, &identity.username, &mime, &body)
             .await
             .map_err(internal_err)?;
         DbNotify::touch();
@@ -339,7 +339,7 @@ impl InternalProtocol for InternalImpl {
         let before = before.unwrap_or(i64::MAX);
         let after = after.unwrap_or(i64::MIN);
         let mut rows = sqlx::query_as::<_, (i64, String, String, Vec<u8>, Option<i64>)>(
-            "SELECT id, sender_handle, mime, body, received_at \
+            "SELECT id, sender_username, mime, body, received_at \
              FROM group_messages \
              WHERE group_id = ? AND id <= ? AND id >= ? \
              ORDER BY id DESC \
@@ -354,9 +354,9 @@ impl InternalProtocol for InternalImpl {
         .map_err(internal_err)?;
         rows.reverse();
         let mut out = Vec::with_capacity(rows.len());
-        for (id, sender_handle, mime, body, received_at) in rows {
-            let sender = Handle::parse(sender_handle).map_err(internal_err)?;
-            let direction = if sender == identity.handle {
+        for (id, sender_username, mime, body, received_at) in rows {
+            let sender = UserName::parse(sender_username).map_err(internal_err)?;
+            let direction = if sender == identity.username {
                 DmDirection::Outgoing
             } else {
                 DmDirection::Incoming
@@ -412,7 +412,7 @@ impl InternalProtocol for InternalImpl {
         let out = members
             .into_iter()
             .map(|member| GroupMember {
-                handle: member.handle,
+                username: member.username,
                 is_admin: member.is_admin,
                 status: member.status,
             })
@@ -428,24 +428,24 @@ impl InternalProtocol for InternalImpl {
         accept_invite(&self.ctx, dm_id).await.map_err(internal_err)
     }
 
-    async fn add_contact(&self, handle: Handle, init_msg: String) -> Result<(), InternalRpcError> {
+    async fn add_contact(&self, username: UserName, init_msg: String) -> Result<(), InternalRpcError> {
         let dir = self.ctx.get(DIR_CLIENT);
         if dir
-            .get_handle_descriptor(&handle)
+            .get_user_descriptor(&username)
             .await
             .map_err(internal_err)?
             .is_none()
         {
-            return Err(InternalRpcError::Other("handle not found".into()));
+            return Err(InternalRpcError::Other("username not found".into()));
         }
-        self.dm_send(handle, SmolStr::new("text/plain"), Bytes::from(init_msg))
+        self.dm_send(username, SmolStr::new("text/plain"), Bytes::from(init_msg))
             .await
             .map(|_| ())
     }
 
     async fn dm_history(
         &self,
-        peer: Handle,
+        peer: UserName,
         before: Option<i64>,
         after: Option<i64>,
         limit: u16,
@@ -457,9 +457,9 @@ impl InternalProtocol for InternalImpl {
         let before = before.unwrap_or(i64::MAX);
         let after = after.unwrap_or(i64::MIN);
         let mut rows = sqlx::query_as::<_, (i64, String, String, Vec<u8>, Option<i64>)>(
-            "SELECT id, sender_handle, mime, body, received_at \
+            "SELECT id, sender_username, mime, body, received_at \
              FROM dm_messages \
-             WHERE peer_handle = ? AND id <= ? AND id >= ? \
+             WHERE peer_username = ? AND id <= ? AND id >= ? \
              ORDER BY id DESC \
              LIMIT ?",
         )
@@ -472,9 +472,9 @@ impl InternalProtocol for InternalImpl {
         .map_err(internal_err)?;
         rows.reverse();
         let mut out = Vec::with_capacity(rows.len());
-        for (id, sender_handle, mime, body, received_at) in rows {
-            let sender = Handle::parse(sender_handle).map_err(internal_err)?;
-            let direction = if sender == identity.handle {
+        for (id, sender_username, mime, body, received_at) in rows {
+            let sender = UserName::parse(sender_username).map_err(internal_err)?;
+            let direction = if sender == identity.username {
                 DmDirection::Outgoing
             } else {
                 DmDirection::Incoming
@@ -492,13 +492,13 @@ impl InternalProtocol for InternalImpl {
         Ok(out)
     }
 
-    async fn all_peers(&self) -> Result<BTreeMap<Handle, DmMessage>, InternalRpcError> {
+    async fn all_peers(&self) -> Result<BTreeMap<UserName, DmMessage>, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
         let rows = sqlx::query_as::<_, (i64, String, String, String, Vec<u8>, Option<i64>)>(
-            "SELECT id, peer_handle, sender_handle, mime, body, received_at \
+            "SELECT id, peer_username, sender_username, mime, body, received_at \
              FROM dm_messages \
              ORDER BY id DESC",
         )
@@ -506,13 +506,13 @@ impl InternalProtocol for InternalImpl {
         .await
         .map_err(internal_err)?;
         let mut out = BTreeMap::new();
-        for (id, peer_handle, sender_handle, mime, body, received_at) in rows {
-            let peer = Handle::parse(peer_handle).map_err(internal_err)?;
+        for (id, peer_username, sender_username, mime, body, received_at) in rows {
+            let peer = UserName::parse(peer_username).map_err(internal_err)?;
             if out.contains_key(&peer) {
                 continue;
             }
-            let sender = Handle::parse(sender_handle).map_err(internal_err)?;
-            let direction = if sender == identity.handle {
+            let sender = UserName::parse(sender_username).map_err(internal_err)?;
+            let direction = if sender == identity.username {
                 DmDirection::Outgoing
             } else {
                 DmDirection::Incoming
@@ -530,13 +530,13 @@ impl InternalProtocol for InternalImpl {
                 },
             );
         }
-        if !out.contains_key(&identity.handle) {
+        if !out.contains_key(&identity.username) {
             out.insert(
-                identity.handle.clone(),
+                identity.username.clone(),
                 DmMessage {
                     id: 0,
-                    peer: identity.handle.clone(),
-                    sender: identity.handle,
+                    peer: identity.username.clone(),
+                    sender: identity.username,
                     direction: DmDirection::Outgoing,
                     mime: smol_str::SmolStr::new(""),
                     body: Bytes::new(),
@@ -550,44 +550,44 @@ impl InternalProtocol for InternalImpl {
 
 async fn register_bootstrap(
     ctx: AnyCtx<Config>,
-    handle: Handle,
-    gateway_name: GatewayName,
+    username: UserName,
+    server_name: ServerName,
 ) -> Result<(), InternalRpcError> {
     let dir = ctx.get(DIR_CLIENT);
     if dir
-        .get_handle_descriptor(&handle)
+        .get_user_descriptor(&username)
         .await
         .map_err(internal_err)?
         .is_some()
     {
-        return Err(InternalRpcError::Other("handle already exists".into()));
+        return Err(InternalRpcError::Other("username already exists".into()));
     }
     let device_secret = DeviceSecret::random();
     let root_cert = device_secret.self_signed(Timestamp(u64::MAX), true);
     let cert_chain = CertificateChain(vec![root_cert.clone()]);
-    let handle_descriptor = HandleDescriptor {
-        gateway_name: gateway_name.clone(),
+    let user_descriptor = UserDescriptor {
+        server_name: server_name.clone(),
         root_cert_hash: root_cert.pk.bcs_hash(),
     };
     dir.add_owner(
-        &handle,
+        &username,
         device_secret.public().signing_public(),
         &device_secret,
     )
     .await
     .map_err(internal_err)?;
-    dir.insert_handle_descriptor(&handle, &handle_descriptor, &device_secret)
+    dir.insert_user_descriptor(&username, &user_descriptor, &device_secret)
         .await
         .map_err(internal_err)?;
 
-    let gateway = gateway_from_name(&ctx, &gateway_name).await?;
-    let auth = device_auth(&gateway, &handle, &cert_chain).await?;
-    let medium_sk = register_medium_key(&gateway, auth, &device_secret).await?;
+    let server = server_from_name(&ctx, &server_name).await?;
+    let auth = device_auth(&server, &username, &cert_chain).await?;
+    let medium_sk = register_medium_key(&server, auth, &device_secret).await?;
 
     persist_identity(
         ctx.get(DATABASE),
-        handle,
-        gateway_name,
+        username,
+        server_name,
         device_secret,
         cert_chain,
         medium_sk,
@@ -603,22 +603,22 @@ async fn register_add_device(
 ) -> Result<(), InternalRpcError> {
     let bundle: BundleInner = bcs::from_bytes(&bundle.0).map_err(internal_err)?;
     let dir = ctx.get(DIR_CLIENT);
-    let handle_descriptor = dir
-        .get_handle_descriptor(&bundle.handle)
+    let user_descriptor = dir
+        .get_user_descriptor(&bundle.username)
         .await
         .map_err(internal_err)?
-        .ok_or_else(|| InternalRpcError::Other("handle not found".into()))?;
+        .ok_or_else(|| InternalRpcError::Other("username not found".into()))?;
     bundle
         .cert_chain
-        .verify(handle_descriptor.root_cert_hash)
+        .verify(user_descriptor.root_cert_hash)
         .map_err(internal_err)?;
-    let gateway = gateway_from_name(&ctx, &handle_descriptor.gateway_name).await?;
-    let auth = device_auth(&gateway, &bundle.handle, &bundle.cert_chain).await?;
-    let medium_sk = register_medium_key(&gateway, auth, &bundle.device_secret).await?;
+    let server = server_from_name(&ctx, &user_descriptor.server_name).await?;
+    let auth = device_auth(&server, &bundle.username, &bundle.cert_chain).await?;
+    let medium_sk = register_medium_key(&server, auth, &bundle.device_secret).await?;
     persist_identity(
         ctx.get(DATABASE),
-        bundle.handle,
-        handle_descriptor.gateway_name.clone(),
+        bundle.username,
+        user_descriptor.server_name.clone(),
         bundle.device_secret,
         bundle.cert_chain,
         medium_sk,
@@ -628,36 +628,36 @@ async fn register_add_device(
     Ok(())
 }
 
-async fn gateway_from_name(
+async fn server_from_name(
     ctx: &AnyCtx<Config>,
-    gateway_name: &GatewayName,
-) -> Result<Arc<GatewayClient>, InternalRpcError> {
+    server_name: &ServerName,
+) -> Result<Arc<ServerClient>, InternalRpcError> {
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir
-        .get_gateway_descriptor(gateway_name)
+        .get_server_descriptor(server_name)
         .await
         .map_err(internal_err)?
-        .ok_or_else(|| InternalRpcError::Other("gateway not found".into()))?;
+        .ok_or_else(|| InternalRpcError::Other("server not found".into()))?;
     let _ = descriptor;
-    get_gateway_client(ctx, gateway_name)
+    get_server_client(ctx, server_name)
         .await
         .map_err(internal_err)
 }
 
 async fn device_auth(
-    gateway: &GatewayClient,
-    handle: &Handle,
+    server: &ServerClient,
+    username: &UserName,
     cert_chain: &CertificateChain,
 ) -> Result<AuthToken, InternalRpcError> {
-    gateway
-        .v1_device_auth(handle.clone(), cert_chain.clone())
+    server
+        .v1_device_auth(username.clone(), cert_chain.clone())
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))
 }
 
 async fn register_medium_key(
-    gateway: &GatewayClient,
+    server: &ServerClient,
     auth: AuthToken,
     device_secret: &DeviceSecret,
 ) -> Result<DhSecret, InternalRpcError> {
@@ -668,7 +668,7 @@ async fn register_medium_key(
         signature: Signature::from_bytes([0u8; 64]),
     };
     signed.sign(device_secret);
-    gateway
+    server
         .v1_device_add_medium_pk(auth, signed)
         .await
         .map_err(internal_err)?
@@ -678,19 +678,19 @@ async fn register_medium_key(
 
 async fn persist_identity(
     db: &sqlx::SqlitePool,
-    handle: Handle,
-    gateway_name: GatewayName,
+    username: UserName,
+    server_name: ServerName,
     device_secret: DeviceSecret,
     cert_chain: CertificateChain,
     medium_sk: DhSecret,
 ) -> Result<(), InternalRpcError> {
     sqlx::query(
         "INSERT INTO client_identity \
-         (id, handle, gateway_name, device_secret, cert_chain, medium_sk_current, medium_sk_prev) \
+         (id, username, server_name, device_secret, cert_chain, medium_sk_current, medium_sk_prev) \
          VALUES (1, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(handle.as_str())
-    .bind(gateway_name.as_str())
+    .bind(username.as_str())
+    .bind(server_name.as_str())
     .bind(bcs::to_bytes(&device_secret).map_err(internal_err)?)
     .bind(bcs::to_bytes(&cert_chain).map_err(internal_err)?)
     .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
@@ -703,7 +703,7 @@ async fn persist_identity(
 
 #[derive(Serialize, Deserialize)]
 struct BundleInner {
-    handle: Handle,
+    username: UserName,
     device_secret: DeviceSecret,
     cert_chain: CertificateChain,
 }

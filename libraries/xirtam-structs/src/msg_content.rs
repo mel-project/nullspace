@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use smol_str::SmolStr;
 use thiserror::Error;
 
-use crate::{handle::Handle, timestamp::NanoTimestamp};
+use crate::{username::UserName, timestamp::NanoTimestamp};
 
 /// A decoded message payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageContent {
-    pub recipient: Handle,
+    pub recipient: UserName,
     pub sent_at: NanoTimestamp,
     pub mime: SmolStr,
     pub body: Bytes,
@@ -36,7 +36,7 @@ impl MessageContent {
     }
 
     pub fn from_json_payload<T: MessagePayload>(
-        recipient: Handle,
+        recipient: UserName,
         sent_at: NanoTimestamp,
         payload: &T,
     ) -> Result<Self, MessagePayloadError> {

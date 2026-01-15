@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let app = Router::new()
-        .route("/", post(server::handle_rpc))
+        .route("/", post(server::rpc_handler))
         .with_state(state);
 
     let listener = TcpListener::bind(args.listen).await?;

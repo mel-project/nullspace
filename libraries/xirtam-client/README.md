@@ -1,16 +1,16 @@
 # xirtam-client
 
 `xirtam-client` is a TDLib-like local service for Xirtam. It owns identity, storage,
-encryption, and networking so that UIs never need to speak crypto or gateway APIs
+encryption, and networking so that UIs never need to speak crypto or server APIs
 directly. The UI only uses a small JSON-RPC surface and renders events.
 
 ## What the GUI talks to
 
 The GUI calls the internal JSON-RPC methods on a local `Client` instance:
 
-- `register_start(handle) -> Option<RegisterStartInfo>`
+- `register_start(username) -> Option<RegisterStartInfo>`
 - `register_finish(RegisterFinish) -> Result<()>`
-- `new_device_bundle(can_sign, expiry) -> NewDeviceBundle`
+- `new_device_bundle(can_issue, expiry) -> NewDeviceBundle`
 - `dm_send(peer, mime, body) -> message_id`
 - `dm_history(peer, before, after, limit) -> [DmMessage]`
 - `next_event() -> Event` (infallible, long-polling)
@@ -34,15 +34,15 @@ sequenceDiagram
   participant Client as xirtam-client
   participant DB as sqlite
   participant Dir as directory
-  participant GW as gateway
+  participant GW as server
 
   GUI->>Client: register_start(@alice)
-  Client->>Dir: lookup handle
+  Client->>Dir: lookup username
   Dir-->>Client: descriptor or none
   Client-->>GUI: Option<RegisterStartInfo>
 
   GUI->>Client: register_finish(...)
-  Client->>Dir: add owner + set handle descriptor
+  Client->>Dir: add owner + set user descriptor
   Client->>GW: device_auth + add_medium_pk
   Client->>DB: persist identity
   Client-->>GUI: ok
@@ -59,20 +59,20 @@ There are only two states: logged out and logged in. On startup, the client chec
 - If present, it starts the worker loop and emits `Event::State { logged_in: true }`.
 - If absent, it emits `Event::State { logged_in: false }`.
 
-### Register a new handle
+### Register a new username
 
-1. GUI picks a handle and gateway name.
-2. GUI calls `register_finish(RegisterFinish::BootstrapNewHandle { .. })`.
-3. Client creates device identity, registers the handle in the directory, and
-   registers the device on the gateway.
+1. GUI picks a username and server name.
+2. GUI calls `register_finish(RegisterFinish::BootstrapNewUser { .. })`.
+3. Client creates device identity, registers the username in the directory, and
+   registers the device on the server.
 4. Client persists identity and emits `Event::State { logged_in: true }`.
 
 ### Add a new device
 
-1. An existing, logged-in device calls `new_device_bundle(can_sign, expiry)` and
+1. An existing, logged-in device calls `new_device_bundle(can_issue, expiry)` and
    renders the opaque bundle (e.g., QR).
 2. The new device calls `register_finish(RegisterFinish::AddDevice { bundle })`.
-3. Client registers the device on the gateway, stores identity, and emits
+3. Client registers the device on the server, stores identity, and emits
    `Event::State { logged_in: true }`.
 
 The bundle is opaque to the UI. Crypto is handled internally.
@@ -84,13 +84,13 @@ sequenceDiagram
   participant Client1 as client (existing)
   participant Client2 as client (new)
   participant Dir as directory
-  participant GW as gateway
+  participant GW as server
 
-  GUI1->>Client1: new_device_bundle(can_sign, expiry)
+  GUI1->>Client1: new_device_bundle(can_issue, expiry)
   Client1-->>GUI1: bundle (opaque)
   GUI1-->>GUI2: QR / transfer
   GUI2->>Client2: register_finish(AddDevice { bundle })
-  Client2->>Dir: lookup handle descriptor
+  Client2->>Dir: lookup user descriptor
   Client2->>GW: device_auth + add_medium_pk
   Client2->>Client2: persist identity
   Client2-->>GUI2: ok
@@ -101,7 +101,7 @@ sequenceDiagram
 DM sending and receiving are fully automated:
 
 - `dm_send(peer, mime, body)` inserts into `dm_messages` with `received_at = NULL`.
-- `send_loop` sees pending rows and sends encrypted envelopes to the gateway.
+- `send_loop` sees pending rows and sends encrypted envelopes to the server.
 - `recv_loop` long-polls the mailbox, decrypts, verifies, and inserts new rows.
 - The event loop emits `Event::DmUpdated { peer }` for new rows.
 
@@ -110,7 +110,7 @@ sequenceDiagram
   participant GUI
   participant Client
   participant DB
-  participant GW as gateway
+  participant GW as server
 
   GUI->>Client: dm_send(@bob, "text/plain", "hi")
   Client->>DB: insert pending dm
@@ -127,7 +127,7 @@ late messages can be decrypted. These keys are never exposed to the UI.
 
 ## Data model (sqlite)
 
-- `client_identity`: one row holding identity + key material (including cached gateway name).
+- `client_identity`: one row holding identity + key material (including cached server name).
 - `dm_messages`: plaintext history (incoming + outgoing).
 - `mailbox_state`: mailbox cursor for long-polling.
 

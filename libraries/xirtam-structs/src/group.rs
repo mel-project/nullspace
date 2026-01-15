@@ -6,8 +6,8 @@ use xirtam_crypt::{aead::AeadKey, hash::Hash, signing::Signature};
 
 use crate::{
     certificate::{CertificateChain, DeviceSecret},
-    gateway::{AuthToken, GatewayName},
-    handle::Handle,
+    server::{AuthToken, ServerName},
+    username::UserName,
     msg_content::MessagePayload,
     timestamp::Timestamp,
     Blob,
@@ -17,13 +17,13 @@ use crate::{
 #[serde(transparent)]
 pub struct GroupId(Hash);
 
-/// A group descriptor. Describes a group as it exists on a particular gateway.
+/// A group descriptor. Describes a group as it exists on a particular server.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct GroupDescriptor {
     pub nonce: Hash,
-    pub init_admin: Handle,
+    pub init_admin: UserName,
     pub created_at: Timestamp,
-    pub gateway: GatewayName,
+    pub server: ServerName,
     pub management_key: AeadKey,
 }
 
@@ -44,7 +44,7 @@ pub struct GroupMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignedGroupMessage {
     pub group: GroupId,
-    pub sender: Handle,
+    pub sender: UserName,
     pub sender_chain: CertificateChain,
     pub message: Blob,
     pub signature: Signature,
@@ -86,16 +86,16 @@ impl GroupMessage {
     pub fn encrypt_message(
         group: GroupId,
         message: &Blob,
-        sender_handle: Handle,
+        sender_username: UserName,
         sender_chain: CertificateChain,
         sender_device: &DeviceSecret,
         key: &AeadKey,
     ) -> Result<Self, GroupMessageError> {
-        let signed = signed_bytes(&group, &sender_handle, message)?;
+        let signed = signed_bytes(&group, &sender_username, message)?;
         let signature = sender_device.sign(&signed);
         let plaintext = SignedGroupMessage {
             group,
-            sender: sender_handle,
+            sender: sender_username,
             sender_chain,
             message: message.clone(),
             signature,
@@ -121,7 +121,7 @@ impl GroupMessage {
 }
 
 impl SignedGroupMessage {
-    pub fn handle(&self) -> &Handle {
+    pub fn username(&self) -> &UserName {
         &self.sender
     }
 
@@ -140,7 +140,7 @@ impl SignedGroupMessage {
     }
 }
 
-fn signed_bytes(group: &GroupId, sender: &Handle, message: &Blob) -> Result<Vec<u8>, GroupMessageError> {
+fn signed_bytes(group: &GroupId, sender: &UserName, message: &Blob) -> Result<Vec<u8>, GroupMessageError> {
     bcs::to_bytes(&(group, sender, message)).map_err(|_| GroupMessageError::Encode)
 }
 
@@ -154,13 +154,13 @@ impl MessagePayload for GroupInviteMsg {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupManageMsg {
-    InviteSent(Handle),
+    InviteSent(UserName),
     InviteAccepted,
-    Ban(Handle),
-    Unban(Handle),
+    Ban(UserName),
+    Unban(UserName),
     Leave,
-    AddAdmin(Handle),
-    RemoveAdmin(Handle),
+    AddAdmin(UserName),
+    RemoveAdmin(UserName),
 }
 
 impl MessagePayload for GroupManageMsg {

@@ -23,7 +23,7 @@ where
     loop {
         let (stream, _) = listener.accept().await?;
         let service = service.clone();
-        tokio::spawn(async move { handle_connection(service, stream).await });
+        tokio::spawn(async move { rpc_connection(service, stream).await });
     }
 }
 
@@ -36,7 +36,7 @@ where
     loop {
         let (stream, _) = listener.accept().await?;
         let service = service.clone();
-        tokio::spawn(async move { handle_lz4_connection(service, stream).await });
+        tokio::spawn(async move { rpc_lz4_connection(service, stream).await });
     }
 }
 
@@ -234,22 +234,22 @@ fn fail_in_flight(
     }
 }
 
-async fn handle_connection<S>(service: std::sync::Arc<S>, stream: TcpStream)
+async fn rpc_connection<S>(service: std::sync::Arc<S>, stream: TcpStream)
 where
     S: RpcService,
 {
     let (reader, writer) = stream.into_split();
-    handle_connection_io(service, reader, writer, false).await;
+    rpc_connection_io(service, reader, writer, false).await;
 }
 
-async fn handle_lz4_connection<S>(service: std::sync::Arc<S>, stream: TcpStream)
+async fn rpc_lz4_connection<S>(service: std::sync::Arc<S>, stream: TcpStream)
 where
     S: RpcService,
 {
     let (reader, writer) = stream.into_split();
     let reader = Lz4Decoder::new(BufReader::new(reader));
     let writer = Lz4Encoder::new(writer);
-    handle_connection_io(service, reader, writer, true).await;
+    rpc_connection_io(service, reader, writer, true).await;
 }
 
 async fn connect_with_io<R, W>(
@@ -341,7 +341,7 @@ where
     (write_tx, event_rx)
 }
 
-async fn handle_connection_io<S, R, W>(
+async fn rpc_connection_io<S, R, W>(
     service: std::sync::Arc<S>,
     reader: R,
     mut writer: W,

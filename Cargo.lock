@@ -7697,36 +7697,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xirtam-gateway"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-event",
- "async-trait",
- "axum",
- "bcs",
- "bytes",
- "clap",
- "futures-concurrency",
- "moka",
- "nanorpc",
- "pollster",
- "rand 0.9.2",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "url",
- "xirtam-crypt",
- "xirtam-dirclient",
- "xirtam-nanorpc",
- "xirtam-structs",
-]
-
-[[package]]
 name = "xirtam-multitool"
 version = "0.0.1"
 dependencies = [
@@ -7758,6 +7728,36 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "xirtam-server"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-event",
+ "async-trait",
+ "axum",
+ "bcs",
+ "bytes",
+ "clap",
+ "futures-concurrency",
+ "moka",
+ "nanorpc",
+ "pollster",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "xirtam-crypt",
+ "xirtam-dirclient",
+ "xirtam-nanorpc",
+ "xirtam-structs",
 ]
 
 [[package]]

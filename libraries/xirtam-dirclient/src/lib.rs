@@ -13,8 +13,8 @@ use xirtam_structs::directory::{
 };
 use xirtam_structs::{
     Blob,
-    gateway::{GatewayDescriptor, GatewayName},
-    handle::{Handle, HandleDescriptor},
+    server::{ServerDescriptor, ServerName},
+    username::{UserName, UserDescriptor},
 };
 mod header_sync;
 mod pow;
@@ -78,48 +78,48 @@ impl DirClient {
         Ok(listing)
     }
 
-    /// Fetch and decode the handle descriptor for a user handle.
-    pub async fn get_handle_descriptor(
+    /// Fetch and decode the user descriptor for a username.
+    pub async fn get_user_descriptor(
         &self,
-        handle: &Handle,
-    ) -> anyhow::Result<Option<HandleDescriptor>> {
-        let listing = self.query_raw(handle.as_str()).await?;
+        username: &UserName,
+    ) -> anyhow::Result<Option<UserDescriptor>> {
+        let listing = self.query_raw(username.as_str()).await?;
         let latest = match listing.latest {
             Some(latest) => latest,
             None => return Ok(None),
         };
-        if latest.kind != Blob::V1_HANDLE_DESCRIPTOR {
+        if latest.kind != Blob::V1_USER_DESCRIPTOR {
             anyhow::bail!("unexpected message kind: {}", latest.kind);
         }
-        let descriptor: HandleDescriptor = bcs::from_bytes(&latest.inner)?;
+        let descriptor: UserDescriptor = bcs::from_bytes(&latest.inner)?;
         Ok(Some(descriptor))
     }
 
-    /// Fetch and decode the gateway descriptor for a gateway name.
-    pub async fn get_gateway_descriptor(
+    /// Fetch and decode the server descriptor for a server name.
+    pub async fn get_server_descriptor(
         &self,
-        gateway_name: &GatewayName,
-    ) -> anyhow::Result<Option<GatewayDescriptor>> {
-        let listing = self.query_raw(gateway_name.as_str()).await?;
+        server_name: &ServerName,
+    ) -> anyhow::Result<Option<ServerDescriptor>> {
+        let listing = self.query_raw(server_name.as_str()).await?;
         let latest = match listing.latest {
             Some(latest) => latest,
             None => return Ok(None),
         };
-        if latest.kind != Blob::V1_GATEWAY_DESCRIPTOR {
+        if latest.kind != Blob::V1_SERVER_DESCRIPTOR {
             anyhow::bail!("unexpected message kind: {}", latest.kind);
         }
-        let descriptor: GatewayDescriptor = bcs::from_bytes(&latest.inner)?;
+        let descriptor: ServerDescriptor = bcs::from_bytes(&latest.inner)?;
         Ok(Some(descriptor))
     }
 
-    /// Build and submit a handle descriptor update for a user handle.
-    pub async fn insert_handle_descriptor(
+    /// Build and submit a user descriptor update for a username.
+    pub async fn insert_user_descriptor(
         &self,
-        handle: &Handle,
-        descriptor: &HandleDescriptor,
+        username: &UserName,
+        descriptor: &UserDescriptor,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(handle.as_str()).await?;
+        let response = self.fetch_verified_response(username.as_str()).await?;
         response
             .history
             .iter()
@@ -129,23 +129,23 @@ impl DirClient {
         let update = signed_update(
             prev_update_hash,
             DirectoryUpdateInner::Update(Blob {
-                kind: Blob::V1_HANDLE_DESCRIPTOR.into(),
+                kind: Blob::V1_USER_DESCRIPTOR.into(),
                 inner: bcs::to_bytes(descriptor)?.into(),
             }),
             signer,
         );
-        self.insert_raw(handle.as_str(), update).await?;
+        self.insert_raw(username.as_str(), update).await?;
         Ok(())
     }
 
-    /// Build and submit a gateway descriptor update for a gateway name.
-    pub async fn insert_gateway_descriptor(
+    /// Build and submit a server descriptor update for a server name.
+    pub async fn insert_server_descriptor(
         &self,
-        gateway_name: &GatewayName,
-        descriptor: &GatewayDescriptor,
+        server_name: &ServerName,
+        descriptor: &ServerDescriptor,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(gateway_name.as_str()).await?;
+        let response = self.fetch_verified_response(server_name.as_str()).await?;
         response
             .history
             .iter()
@@ -155,23 +155,23 @@ impl DirClient {
         let update = signed_update(
             prev_update_hash,
             DirectoryUpdateInner::Update(Blob {
-                kind: Blob::V1_GATEWAY_DESCRIPTOR.into(),
+                kind: Blob::V1_SERVER_DESCRIPTOR.into(),
                 inner: bcs::to_bytes(descriptor)?.into(),
             }),
             signer,
         );
-        self.insert_raw(gateway_name.as_str(), update).await?;
+        self.insert_raw(server_name.as_str(), update).await?;
         Ok(())
     }
 
-    /// Add an owner to a user handle.
+    /// Add an owner to a username.
     pub async fn add_owner(
         &self,
-        handle: &Handle,
+        username: &UserName,
         owner: SigningPublic,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(handle.as_str()).await?;
+        let response = self.fetch_verified_response(username.as_str()).await?;
         response
             .history
             .iter()
@@ -183,18 +183,18 @@ impl DirClient {
             DirectoryUpdateInner::AddOwner(owner),
             signer,
         );
-        self.insert_raw(handle.as_str(), update).await?;
+        self.insert_raw(username.as_str(), update).await?;
         Ok(())
     }
 
-    /// Add an owner to a gateway name.
-    pub async fn add_gateway_owner(
+    /// Add an owner to a server name.
+    pub async fn add_server_owner(
         &self,
-        gateway_name: &GatewayName,
+        server_name: &ServerName,
         owner: SigningPublic,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(gateway_name.as_str()).await?;
+        let response = self.fetch_verified_response(server_name.as_str()).await?;
         response
             .history
             .iter()
@@ -206,18 +206,18 @@ impl DirClient {
             DirectoryUpdateInner::AddOwner(owner),
             signer,
         );
-        self.insert_raw(gateway_name.as_str(), update).await?;
+        self.insert_raw(server_name.as_str(), update).await?;
         Ok(())
     }
 
-    /// Remove an owner from a user handle.
+    /// Remove an owner from a username.
     pub async fn del_owner(
         &self,
-        handle: &Handle,
+        username: &UserName,
         owner: SigningPublic,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(handle.as_str()).await?;
+        let response = self.fetch_verified_response(username.as_str()).await?;
         response
             .history
             .iter()
@@ -229,18 +229,18 @@ impl DirClient {
             DirectoryUpdateInner::DelOwner(owner),
             signer,
         );
-        self.insert_raw(handle.as_str(), update).await?;
+        self.insert_raw(username.as_str(), update).await?;
         Ok(())
     }
 
-    /// Remove an owner from a gateway name.
-    pub async fn del_gateway_owner(
+    /// Remove an owner from a server name.
+    pub async fn del_server_owner(
         &self,
-        gateway_name: &GatewayName,
+        server_name: &ServerName,
         owner: SigningPublic,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(gateway_name.as_str()).await?;
+        let response = self.fetch_verified_response(server_name.as_str()).await?;
         response
             .history
             .iter()
@@ -252,7 +252,7 @@ impl DirClient {
             DirectoryUpdateInner::DelOwner(owner),
             signer,
         );
-        self.insert_raw(gateway_name.as_str(), update).await?;
+        self.insert_raw(server_name.as_str(), update).await?;
         Ok(())
     }
 

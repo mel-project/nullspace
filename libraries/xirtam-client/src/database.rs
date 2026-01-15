@@ -5,9 +5,9 @@ use async_channel::Sender as AsyncSender;
 use futures_concurrency::future::Race;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use xirtam_structs::gateway::MailboxId;
+use xirtam_structs::server::MailboxId;
 use xirtam_structs::group::GroupId;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 use xirtam_structs::timestamp::NanoTimestamp;
 
 use crate::Config;
@@ -205,9 +205,9 @@ async fn current_max_received_at(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
 async fn new_message_peers(
     db: &sqlx::SqlitePool,
     last_seen_id: i64,
-) -> anyhow::Result<(i64, Vec<Handle>)> {
+) -> anyhow::Result<(i64, Vec<UserName>)> {
     let rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT id, peer_handle FROM dm_messages WHERE id > ? ORDER BY id",
+        "SELECT id, peer_username FROM dm_messages WHERE id > ? ORDER BY id",
     )
     .bind(last_seen_id)
     .fetch_all(db)
@@ -217,9 +217,9 @@ async fn new_message_peers(
     }
     let mut peers = HashSet::new();
     let mut max_id = last_seen_id;
-    for (id, peer_handle) in rows {
+    for (id, peer_username) in rows {
         max_id = max_id.max(id);
-        if let Ok(peer) = Handle::parse(peer_handle) {
+        if let Ok(peer) = UserName::parse(peer_username) {
             peers.insert(peer);
         }
     }
@@ -229,9 +229,9 @@ async fn new_message_peers(
 async fn new_received_peers(
     db: &sqlx::SqlitePool,
     last_seen_received_at: i64,
-) -> anyhow::Result<(i64, Vec<Handle>)> {
+) -> anyhow::Result<(i64, Vec<UserName>)> {
     let rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT received_at, peer_handle FROM dm_messages \
+        "SELECT received_at, peer_username FROM dm_messages \
          WHERE received_at IS NOT NULL AND received_at > ? \
          ORDER BY received_at",
     )
@@ -243,9 +243,9 @@ async fn new_received_peers(
     }
     let mut peers = HashSet::new();
     let mut max_received_at = last_seen_received_at;
-    for (received_at, peer_handle) in rows {
+    for (received_at, peer_username) in rows {
         max_received_at = max_received_at.max(received_at);
-        if let Ok(peer) = Handle::parse(peer_handle) {
+        if let Ok(peer) = UserName::parse(peer_username) {
             peers.insert(peer);
         }
     }
@@ -357,15 +357,15 @@ async fn updated_group_versions(
 
 pub async fn ensure_mailbox_state(
     db: &sqlx::SqlitePool,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
+    server_name: &xirtam_structs::server::ServerName,
     mailbox: MailboxId,
     initial_after: NanoTimestamp,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT OR IGNORE INTO mailbox_state (gateway_name, mailbox_id, after_timestamp) \
+        "INSERT OR IGNORE INTO mailbox_state (server_name, mailbox_id, after_timestamp) \
          VALUES (?, ?, ?)",
     )
-    .bind(gateway_name.as_str())
+    .bind(server_name.as_str())
     .bind(mailbox.to_bytes().to_vec())
     .bind(initial_after.0 as i64)
     .execute(db)
@@ -375,14 +375,14 @@ pub async fn ensure_mailbox_state(
 
 pub async fn load_mailbox_after(
     db: &sqlx::SqlitePool,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
+    server_name: &xirtam_structs::server::ServerName,
     mailbox: MailboxId,
 ) -> anyhow::Result<NanoTimestamp> {
     let row = sqlx::query_as::<_, (i64,)>(
         "SELECT after_timestamp FROM mailbox_state \
-         WHERE gateway_name = ? AND mailbox_id = ?",
+         WHERE server_name = ? AND mailbox_id = ?",
     )
-    .bind(gateway_name.as_str())
+    .bind(server_name.as_str())
     .bind(mailbox.to_bytes().to_vec())
     .fetch_optional(db)
     .await?;
@@ -393,16 +393,16 @@ pub async fn load_mailbox_after(
 
 pub async fn update_mailbox_after(
     db: &sqlx::SqlitePool,
-    gateway_name: &xirtam_structs::gateway::GatewayName,
+    server_name: &xirtam_structs::server::ServerName,
     mailbox: MailboxId,
     after: NanoTimestamp,
 ) -> anyhow::Result<()> {
     sqlx::query(
         "UPDATE mailbox_state SET after_timestamp = ? \
-         WHERE gateway_name = ? AND mailbox_id = ?",
+         WHERE server_name = ? AND mailbox_id = ?",
     )
     .bind(after.0 as i64)
-    .bind(gateway_name.as_str())
+    .bind(server_name.as_str())
     .bind(mailbox.to_bytes().to_vec())
     .execute(db)
     .await?;

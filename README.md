@@ -5,8 +5,8 @@ What is a confederal protocol? [Read this blogpost first](https://nullchinchilla
 ## Implementation progress
 
 - [x] Directory RPC + PoW updates + header sync (server + dirclient)
-- [x] Gateway RPC + mailbox storage/ACLs + device auth
-- [x] Core structs: handles, gateway descriptors, certificates, message kinds
+- [x] Server RPC + mailbox storage/ACLs + device auth
+- [x] Core structs: usernames, server descriptors, certificates, message kinds
 - [x] DM encryption format (encrypted headers + signed medium keys)
 - [ ] Group protocol (group IDs, rekeying, membership control)
 - [ ] Directory privacy improvements (PIR/bucketed lookup)
@@ -22,7 +22,7 @@ What is a confederal protocol? [Read this blogpost first](https://nullchinchilla
 	- Clients avoid holding DB transactions across network fetches during header sync
 - Internal RPC has a short timeout to surface UI hangs during development (except `next_event`)
 - Confederal architecture
-	- No gateway-to-gateway protocol (other than convenience proxies)
+	- No server-to-server protocol (other than convenience proxies)
 
 ## Identity
 
@@ -30,25 +30,25 @@ Basic structure: directory + certificate chain.
 
 | Term | Meaning |
 | --- | --- |
-| handle | User identifier like `@user_01`. |
-| gateway name | Gateway identifier like `~gate_01`. |
-| handle descriptor | Directory entry: handle -> gateway name + root cert hash. |
-| gateway descriptor | Directory entry: gateway name -> public URLs + gateway pk. |
-| root cert hash | Hash of the root signing key for a handle's device chain. |
+| username | User identifier like `@user_01`. |
+| server name | Server identifier like `~serv_01`. |
+| user descriptor | Directory entry: username -> server name + root cert hash. |
+| server descriptor | Directory entry: server name -> public URLs + server pk. |
+| root cert hash | Hash of the root signing key for a username's device chain. |
 | certificate chain | Ordered device certificates establishing authorized devices. |
-| device certificate | Signed device key with expiry + can_sign flag. |
+| device certificate | Signed device key with expiry + can_issue (issue child certs). |
 
-- Directory stores handle descriptors: handle -> gateway name + root cert hash
-- Directory stores gateway descriptors: gateway name -> public URLs + gateway pk
-- Gateway serves the certificate chain for a handle; device certs have expiry + can_sign
+- Directory stores user descriptors: username -> server name + root cert hash
+- Directory stores server descriptors: server name -> public URLs + server pk
+- Server serves the certificate chain for a username; device certs have expiry + can_issue (issue child certs)
 
 ```
-@nullchinchilla -> root cert hash, ~gate_01
+@nullchinchilla -> root cert hash, ~serv_01
 
-~gate_01 -> https://gateway.example, gateway pk
+~serv_01 -> https://server.example, server pk
 
 root pk -> device 1
-         -> device 2 (can_sign) -> device 3 (time-limited)
+         -> device 2 (can_issue) -> device 3 (time-limited)
 ```
 
 **Problem**: revocation
@@ -58,15 +58,15 @@ root pk -> device 1
 - Easiest approach: full directory sync. This is not *too* bad:
 	- All signal users: ~200M
 	- 32 bytes of hash for each user: ~6 GB
-- This is especially not bad if the *gateway* syncs this. The gateway can see a lot of metadata anyway.
-- Eventually we could move to some sort of PIR system run by the individual gateway.
+- This is especially not bad if the *server* syncs this. The server can see a lot of metadata anyway.
+- Eventually we could move to some sort of PIR system run by the individual server.
 	- A compromise between PIR and direct lookups: bucket-based lookup (give me all certificates within this bucket, which is guaranteed to contain at least *k* other entries, for k-anonymity)
 
 ## Mailboxes
 
 The most basic *underlying* protocol is the "mailbox protocol". It's a loosely SimpleX-like 1-to-1 DM protocol with a somewhat email like interface.
 
-Each handle has a DM mailbox at its gateway. Device auth tokens get ACL entries (and optionally an anonymous ACL for public inboxes).
+Each username has a DM mailbox at its server. Device auth tokens get ACL entries (and optionally an anonymous ACL for public inboxes).
 
 When reading from a mailbox, each item in the mailbox comes attached with the *hash* of the sender auth token used to push it there (if any).
 
@@ -81,15 +81,15 @@ Each header is encrypted using a sender ephemeral DH key to the recipient medium
 
 ```
 {
-  sender_handle,
+  sender_username,
   sender_chain, // full certificate chain for sender device
   key,          // symmetric key K
   key_sig       // signature over K by sender device signing key
 }
 ```
 
-Senders fetch signed medium-term keys from the gateway (`v1_device_medium_pks`) and use them to encrypt headers. Recipients use their own medium-term secret to open the envelope. They then:
-- verify the sender chain against the handle's root cert hash from the directory
+Senders fetch signed medium-term keys from the server (`v1_device_medium_pks`) and use them to encrypt headers. Recipients use their own medium-term secret to open the envelope. They then:
+- verify the sender chain against the username's root cert hash from the directory
 - verify `key_sig` against the sender device signing key
 - decrypt the body with `K` to recover `MessageContent { mime, body }`
 
@@ -97,7 +97,7 @@ Each mailbox has an ACL of auth token hashes, used by anybody wishing to subscri
 
 ## DMs
 
-DMs are routed to the handle's DM mailbox, with the kind `v1.direct_message` (or `v1.plaintext_direct_message`). There is no abstraction that represents a two-party conversation.
+DMs are routed to the username's DM mailbox, with the kind `v1.direct_message` (or `v1.plaintext_direct_message`). There is no abstraction that represents a two-party conversation.
 
 ## Groups
 
@@ -105,7 +105,7 @@ Groups are uniquely identified by a **group ID**, which is the hash of the initi
 - a nonce
 - an initial admin
 - a creation time
-- the gateway name
+- the server name
 - a static management key (used only for the management mailbox)
 
 Each group has two mailboxes (both derived from the group ID):

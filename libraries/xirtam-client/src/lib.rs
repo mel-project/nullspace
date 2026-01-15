@@ -3,7 +3,7 @@ mod config;
 mod database;
 mod directory;
 mod dm;
-mod gateway;
+mod server;
 mod groups;
 mod identity;
 pub mod internal;

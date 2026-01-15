@@ -17,37 +17,37 @@ use xirtam_crypt::{hash::Hash, signing::SigningPublic};
 use crate::certificate::CertificateChain;
 use crate::group::GroupId;
 use crate::timestamp::Timestamp;
-use crate::{Blob, handle::Handle, timestamp::NanoTimestamp};
+use crate::{Blob, username::UserName, timestamp::NanoTimestamp};
 
-/// The RPC protocol implemented by gateway servers.
+/// The RPC protocol implemented by servers.
 #[nanorpc_derive]
 #[async_trait]
-pub trait GatewayProtocol {
-    /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this gateway is proper to the handle, the certificate chain served to others is also updated by "merging".
+pub trait ServerProtocol {
+    /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this server is proper to the username, the certificate chain served to others is also updated by "merging".
     async fn v1_device_auth(
         &self,
-        handle: Handle,
+        username: UserName,
         cert: CertificateChain,
-    ) -> Result<AuthToken, GatewayServerError>;
+    ) -> Result<AuthToken, ServerError>;
 
-    /// Retrieve the devices for a given handle.
+    /// Retrieve the devices for a given username.
     async fn v1_device_certs(
         &self,
-        handle: Handle,
-    ) -> Result<Option<CertificateChain>, GatewayServerError>;
+        username: UserName,
+    ) -> Result<Option<CertificateChain>, ServerError>;
 
-    /// Retrieve the medium-term keys for a given handle.
+    /// Retrieve the medium-term keys for a given username.
     async fn v1_device_medium_pks(
         &self,
-        handle: Handle,
-    ) -> Result<BTreeMap<Hash, SignedMediumPk>, GatewayServerError>;
+        username: UserName,
+    ) -> Result<BTreeMap<Hash, SignedMediumPk>, ServerError>;
 
     /// Store a device's medium-term public key.
     async fn v1_device_add_medium_pk(
         &self,
         auth: AuthToken,
         medium_pk: SignedMediumPk,
-    ) -> Result<(), GatewayServerError>;
+    ) -> Result<(), ServerError>;
 
     /// Send a message into a mailbox.
     async fn v1_mailbox_send(
@@ -55,14 +55,14 @@ pub trait GatewayProtocol {
         auth: AuthToken,
         mailbox: MailboxId,
         message: Blob,
-    ) -> Result<NanoTimestamp, GatewayServerError>;
+    ) -> Result<NanoTimestamp, ServerError>;
 
-    /// Receive one or more messages, from one or many mailboxes. This is batched to make long-polling more efficient. The gateway may choose to limit the number of messages in the response, so clients should be prepared to repeat until getting an empty "page".
+    /// Receive one or more messages, from one or many mailboxes. This is batched to make long-polling more efficient. The server may choose to limit the number of messages in the response, so clients should be prepared to repeat until getting an empty "page".
     async fn v1_mailbox_multirecv(
         &self,
         args: Vec<MailboxRecvArgs>,
         timeout_ms: u64,
-    ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError>;
+    ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerError>;
 
     /// Edit the mailbox ACL.
     async fn v1_mailbox_acl_edit(
@@ -70,14 +70,14 @@ pub trait GatewayProtocol {
         auth: AuthToken,
         mailbox: MailboxId,
         arg: MailboxAcl,
-    ) -> Result<(), GatewayServerError>;
+    ) -> Result<(), ServerError>;
 
     /// Create group mailboxes and grant the caller full ACL rights.
     async fn v1_register_group(
         &self,
         auth: AuthToken,
         group: GroupId,
-    ) -> Result<(), GatewayServerError>;
+    ) -> Result<(), ServerError>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -109,20 +109,20 @@ pub struct MailboxRecvArgs {
     pub after: NanoTimestamp,
 }
 
-/// A gateway name that matches the rules for gateway names.
+/// A server name that matches the rules for server names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord)]
 #[serde(transparent)]
-pub struct GatewayName(SmolStr);
+pub struct ServerName(SmolStr);
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
-#[error("invalid gateway name")]
-pub struct GatewayNameError;
+#[error("invalid server name")]
+pub struct ServerNameError;
 
-impl GatewayName {
-    pub fn parse(name: impl AsRef<str>) -> Result<Self, GatewayNameError> {
+impl ServerName {
+    pub fn parse(name: impl AsRef<str>) -> Result<Self, ServerNameError> {
         let name = name.as_ref();
-        if !GATEWAY_NAME_RE.is_match(name) {
-            return Err(GatewayNameError);
+        if !SERVER_NAME_RE.is_match(name) {
+            return Err(ServerNameError);
         }
         Ok(Self(SmolStr::new(name)))
     }
@@ -132,64 +132,64 @@ impl GatewayName {
     }
 }
 
-impl FromStr for GatewayName {
-    type Err = GatewayNameError;
+impl FromStr for ServerName {
+    type Err = ServerNameError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
     }
 }
 
-impl fmt::Display for GatewayName {
+impl fmt::Display for ServerName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl TryFrom<SmolStr> for GatewayName {
-    type Error = GatewayNameError;
+impl TryFrom<SmolStr> for ServerName {
+    type Error = ServerNameError;
 
     fn try_from(value: SmolStr) -> Result<Self, Self::Error> {
-        if !GATEWAY_NAME_RE.is_match(value.as_str()) {
-            return Err(GatewayNameError);
+        if !SERVER_NAME_RE.is_match(value.as_str()) {
+            return Err(ServerNameError);
         }
         Ok(Self(value))
     }
 }
 
-impl<'de> Deserialize<'de> for GatewayName {
+impl<'de> Deserialize<'de> for ServerName {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = SmolStr::deserialize(deserializer)?;
-        GatewayName::try_from(value).map_err(serde::de::Error::custom)
+        ServerName::try_from(value).map_err(serde::de::Error::custom)
     }
 }
 
-static GATEWAY_NAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^~[A-Za-z0-9_]{5,15}$").expect("valid gateway name regex"));
+static SERVER_NAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^~[A-Za-z0-9_]{5,15}$").expect("valid server name regex"));
 
-/// A gateway descriptor stored at the directory.
+/// A server descriptor stored at the directory.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct GatewayDescriptor {
-    /// All the *publicly* available URLs for this gateway.
+pub struct ServerDescriptor {
+    /// All the *publicly* available URLs for this server.
     pub public_urls: Vec<Url>,
-    /// The public key of the gateway, used for authentication.
-    pub gateway_pk: SigningPublic,
+    /// The public key of the server, used for authentication.
+    pub server_pk: SigningPublic,
 }
 
-/// A mailbox ID at a gateway, wrapping a hash value.
+/// A mailbox ID at a server, wrapping a hash value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct MailboxId(Hash);
 
 impl MailboxId {
-    /// Gets the mailbox ID for DMs to the given handle
-    pub fn direct(handle: &Handle) -> Self {
+    /// Gets the mailbox ID for DMs to the given username
+    pub fn direct(username: &UserName) -> Self {
         Self(Hash::keyed_digest(
             b"direct-mailbox",
-            handle.as_str().as_bytes(),
+            username.as_str().as_bytes(),
         ))
     }
 
@@ -213,7 +213,7 @@ impl MailboxId {
     }
 }
 
-/// An entry stored in a mailbox, with metadata added by the gateway.
+/// An entry stored in a mailbox, with metadata added by the server.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MailboxEntry {
     pub message: Blob,
@@ -251,10 +251,10 @@ impl AuthToken {
     }
 }
 
-/// An error from the gateway server.
+/// An error from the server.
 #[derive(Error, Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum GatewayServerError {
+pub enum ServerError {
     #[error("access denied")]
     AccessDenied,
     #[error("rate limited, retry later")]
@@ -263,11 +263,11 @@ pub enum GatewayServerError {
 
 #[cfg(test)]
 mod tests {
-    use super::GatewayName;
+    use super::ServerName;
 
     #[test]
-    fn gateway_name_roundtrip() {
-        let name = GatewayName::parse("~gate_01").expect("valid gateway name");
-        assert_eq!(name.as_str(), "~gate_01");
+    fn server_name_roundtrip() {
+        let name = ServerName::parse("~serv_01").expect("valid server name");
+        assert_eq!(name.as_str(), "~serv_01");
     }
 }

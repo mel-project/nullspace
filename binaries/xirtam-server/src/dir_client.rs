@@ -7,7 +7,7 @@ use rand::RngCore;
 use xirtam_crypt::signing::SigningSecret;
 use xirtam_dirclient::DirClient;
 use xirtam_nanorpc::Transport;
-use xirtam_structs::gateway::GatewayDescriptor;
+use xirtam_structs::server::ServerDescriptor;
 
 use crate::config::CONFIG;
 use crate::database::DATABASE;
@@ -24,36 +24,36 @@ pub static DIR_CLIENT: LazyLock<DirClient> = LazyLock::new(|| {
 
 pub async fn init_name() -> anyhow::Result<()> {
     let signing_sk = load_signing_secret(&CONFIG.signing_sk)?;
-    let gateway_pk = signing_sk.public_key();
-    let descriptor = GatewayDescriptor {
+    let server_pk = signing_sk.public_key();
+    let descriptor = ServerDescriptor {
         public_urls: CONFIG.public_urls.clone(),
-        gateway_pk,
+        server_pk,
     };
 
     let client = &*DIR_CLIENT;
 
-    if let Some(existing) = client.get_gateway_descriptor(&CONFIG.gateway_name).await? {
+    if let Some(existing) = client.get_server_descriptor(&CONFIG.server_name).await? {
         if existing != descriptor {
             anyhow::bail!(
-                "gateway descriptor mismatch for {}",
-                CONFIG.gateway_name.as_str()
+                "server descriptor mismatch for {}",
+                CONFIG.server_name.as_str()
             );
         }
     } else {
-        tracing::info!("registering name step 1: adding gateway owner...");
+        tracing::info!("registering name step 1: adding server owner...");
         client
-            .add_gateway_owner(&CONFIG.gateway_name, gateway_pk, &signing_sk)
+            .add_server_owner(&CONFIG.server_name, server_pk, &signing_sk)
             .await?;
-        tracing::info!("registering name step 1: inserting gateway descriptor...");
+        tracing::info!("registering name step 1: inserting server descriptor...");
         client
-            .insert_gateway_descriptor(&CONFIG.gateway_name, &descriptor, &signing_sk)
+            .insert_server_descriptor(&CONFIG.server_name, &descriptor, &signing_sk)
             .await?;
         tracing::info!(
             "registering name step 1: done! Registered {}",
-            CONFIG.gateway_name
+            CONFIG.server_name
         );
     }
-    tracing::info!("validated gateway name {}", CONFIG.gateway_name);
+    tracing::info!("validated server name {}", CONFIG.server_name);
     Ok(())
 }
 

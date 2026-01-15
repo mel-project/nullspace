@@ -8,7 +8,7 @@ use std::{
 
 use async_event::Event;
 use moka::sync::{Cache, CacheBuilder};
-use xirtam_structs::gateway::MailboxId;
+use xirtam_structs::server::MailboxId;
 
 pub struct PubSub {
     inner: Cache<MailboxId, Arc<(AtomicU64, Event)>>,

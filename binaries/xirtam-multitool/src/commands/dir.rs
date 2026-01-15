@@ -5,8 +5,8 @@ use xirtam_crypt::{
     signing::{SigningPublic, SigningSecret},
 };
 use xirtam_structs::{
-    gateway::{GatewayDescriptor, GatewayName},
-    handle::{Handle, HandleDescriptor},
+    server::{ServerDescriptor, ServerName},
+    username::{UserDescriptor, UserName},
 };
 
 use crate::shared::{GlobalArgs, build_dir_client, print_json};
@@ -19,52 +19,52 @@ pub struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    HandleQuery {
-        handle: Handle,
+    UsernameQuery {
+        username: UserName,
     },
-    HandleInsert {
-        handle: Handle,
-        gateway_name: GatewayName,
+    UsernameInsert {
+        username: UserName,
+        server_name: ServerName,
         #[arg(long)]
         roothash: Hash,
         #[arg(long)]
         secret_key: SigningSecret,
     },
-    HandleAddOwner {
-        handle: Handle,
+    UsernameAddOwner {
+        username: UserName,
         #[arg(long)]
         owner: SigningPublic,
         #[arg(long)]
         secret_key: SigningSecret,
     },
-    HandleDelOwner {
-        handle: Handle,
+    UsernameDelOwner {
+        username: UserName,
         #[arg(long)]
         owner: SigningPublic,
         #[arg(long)]
         secret_key: SigningSecret,
     },
-    GatewayQuery {
-        gateway_name: GatewayName,
+    ServerQuery {
+        server_name: ServerName,
     },
-    GatewayInsert {
-        gateway_name: GatewayName,
+    ServerInsert {
+        server_name: ServerName,
         #[arg(long = "public-url", required = true)]
         public_urls: Vec<url::Url>,
-        #[arg(long = "gateway-pk")]
-        gateway_pk: SigningPublic,
+        #[arg(long = "server-pk")]
+        server_pk: SigningPublic,
         #[arg(long)]
         secret_key: SigningSecret,
     },
-    GatewayAddOwner {
-        gateway_name: GatewayName,
+    ServerAddOwner {
+        server_name: ServerName,
         #[arg(long)]
         owner: SigningPublic,
         #[arg(long)]
         secret_key: SigningSecret,
     },
-    GatewayDelOwner {
-        gateway_name: GatewayName,
+    ServerDelOwner {
+        server_name: ServerName,
         #[arg(long)]
         owner: SigningPublic,
         #[arg(long)]
@@ -81,88 +81,88 @@ struct QueryOutput<T> {
 pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
     let client = build_dir_client(global).await?;
     match args.command {
-        Command::HandleQuery { handle } => {
-            let descriptor = client.get_handle_descriptor(&handle).await?;
+        Command::UsernameQuery { username } => {
+            let descriptor = client.get_user_descriptor(&username).await?;
             let output = QueryOutput {
                 found: descriptor.is_some(),
                 descriptor,
             };
             print_json(&output)?;
         }
-        Command::HandleInsert {
-            handle,
-            gateway_name,
+        Command::UsernameInsert {
+            username,
+            server_name,
             roothash,
             secret_key,
         } => {
-            let descriptor = HandleDescriptor {
-                gateway_name,
+            let descriptor = UserDescriptor {
+                server_name,
                 root_cert_hash: roothash,
             };
-            if let Some(existing) = client.get_handle_descriptor(&handle).await?
+            if let Some(existing) = client.get_user_descriptor(&username).await?
                 && existing == descriptor {
                     return Ok(());
                 }
             client
-                .insert_handle_descriptor(&handle, &descriptor, &secret_key)
+                .insert_user_descriptor(&username, &descriptor, &secret_key)
                 .await?;
         }
-        Command::HandleAddOwner {
-            handle,
+        Command::UsernameAddOwner {
+            username,
             owner,
             secret_key,
         } => {
-            let listing = client.query_raw(handle.as_str()).await?;
+            let listing = client.query_raw(username.as_str()).await?;
             if listing.owners.contains(&owner) {
                 return Ok(());
             }
-            client.add_owner(&handle, owner, &secret_key).await?;
+            client.add_owner(&username, owner, &secret_key).await?;
         }
-        Command::HandleDelOwner {
-            handle,
+        Command::UsernameDelOwner {
+            username,
             owner,
             secret_key,
         } => {
-            client.del_owner(&handle, owner, &secret_key).await?;
+            client.del_owner(&username, owner, &secret_key).await?;
         }
-        Command::GatewayQuery { gateway_name } => {
-            let descriptor = client.get_gateway_descriptor(&gateway_name).await?;
+        Command::ServerQuery { server_name } => {
+            let descriptor = client.get_server_descriptor(&server_name).await?;
             let output = QueryOutput {
                 found: descriptor.is_some(),
                 descriptor,
             };
             print_json(&output)?;
         }
-        Command::GatewayInsert {
-            gateway_name,
+        Command::ServerInsert {
+            server_name,
             public_urls,
-            gateway_pk,
+            server_pk,
             secret_key,
         } => {
-            let descriptor = GatewayDescriptor {
+            let descriptor = ServerDescriptor {
                 public_urls,
-                gateway_pk,
+                server_pk,
             };
             client
-                .insert_gateway_descriptor(&gateway_name, &descriptor, &secret_key)
+                .insert_server_descriptor(&server_name, &descriptor, &secret_key)
                 .await?;
         }
-        Command::GatewayAddOwner {
-            gateway_name,
+        Command::ServerAddOwner {
+            server_name,
             owner,
             secret_key,
         } => {
             client
-                .add_gateway_owner(&gateway_name, owner, &secret_key)
+                .add_server_owner(&server_name, owner, &secret_key)
                 .await?;
         }
-        Command::GatewayDelOwner {
-            gateway_name,
+        Command::ServerDelOwner {
+            server_name,
             owner,
             secret_key,
         } => {
             client
-                .del_gateway_owner(&gateway_name, owner, &secret_key)
+                .del_server_owner(&server_name, owner, &secret_key)
                 .await?;
         }
     }

@@ -3,7 +3,7 @@ use egui::{Align, Button, Layout};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use xirtam_structs::group::GroupId;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -105,7 +105,7 @@ impl<'a> SteadyState<'a> {
     fn render_left(
         &mut self,
         ui: &mut eframe::egui::Ui,
-        all_chats: &Result<BTreeMap<Handle, xirtam_client::internal::DmMessage>, String>,
+        all_chats: &Result<BTreeMap<UserName, xirtam_client::internal::DmMessage>, String>,
         all_groups: &Result<Vec<GroupId>, String>,
         selected_chat: &mut Option<ChatSelection>,
         show_add_contact: &mut bool,
@@ -123,12 +123,12 @@ impl<'a> SteadyState<'a> {
         match all_chats {
             Ok(lst) => {
                 ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
-                    for handle in lst.keys() {
-                        let selection = ChatSelection::Dm(handle.clone());
+                    for username in lst.keys() {
+                        let selection = ChatSelection::Dm(username.clone());
                         if ui
                             .selectable_label(
                                 *selected_chat == Some(selection.clone()),
-                                handle.to_string(),
+                                username.to_string(),
                             )
                             .clicked()
                         {

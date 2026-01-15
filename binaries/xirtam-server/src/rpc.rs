@@ -7,18 +7,18 @@ use axum::{
 use bytes::Bytes;
 use nanorpc::{JrpcRequest, RpcService};
 use xirtam_structs::certificate::CertificateChain;
-use xirtam_structs::gateway::{
-    AuthToken, GatewayProtocol, GatewayServerError, GatewayService, MailboxAcl, MailboxEntry,
+use xirtam_structs::server::{
+    AuthToken, ServerProtocol, ServerError, ServerService, MailboxAcl, MailboxEntry,
     MailboxId, MailboxRecvArgs, SignedMediumPk,
 };
-use xirtam_structs::{Blob, handle::Handle, timestamp::NanoTimestamp};
+use xirtam_structs::{Blob, username::UserName, timestamp::NanoTimestamp};
 
 use crate::{device, mailbox};
 
 #[derive(Clone, Default)]
-pub struct GatewayServer;
+pub struct ServerRpc;
 
-pub async fn handle_rpc(body: Bytes) -> impl IntoResponse {
+pub async fn rpc_handler(body: Bytes) -> impl IntoResponse {
     let Ok(req) = serde_json::from_slice::<JrpcRequest>(&body) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -26,7 +26,7 @@ pub async fn handle_rpc(body: Bytes) -> impl IntoResponse {
             Vec::new(),
         );
     };
-    let service = GatewayService(GatewayServer);
+    let service = ServerService(ServerRpc);
     let response = service.respond_raw(req).await;
     (
         StatusCode::OK,
@@ -36,20 +36,20 @@ pub async fn handle_rpc(body: Bytes) -> impl IntoResponse {
 }
 
 #[async_trait::async_trait]
-impl GatewayProtocol for GatewayServer {
+impl ServerProtocol for ServerRpc {
     async fn v1_device_auth(
         &self,
-        handle: Handle,
+        username: UserName,
         cert: CertificateChain,
-    ) -> Result<AuthToken, GatewayServerError> {
-        device::device_auth(handle, cert).await
+    ) -> Result<AuthToken, ServerError> {
+        device::device_auth(username, cert).await
     }
 
     async fn v1_device_certs(
         &self,
-        handle: Handle,
-    ) -> Result<Option<CertificateChain>, GatewayServerError> {
-        device::device_list(handle).await
+        username: UserName,
+    ) -> Result<Option<CertificateChain>, ServerError> {
+        device::device_list(username).await
     }
 
     async fn v1_mailbox_send(
@@ -57,22 +57,22 @@ impl GatewayProtocol for GatewayServer {
         auth: AuthToken,
         mailbox_id: MailboxId,
         message: Blob,
-    ) -> Result<NanoTimestamp, GatewayServerError> {
+    ) -> Result<NanoTimestamp, ServerError> {
         mailbox::mailbox_send(auth, mailbox_id, message).await
     }
 
     async fn v1_device_medium_pks(
         &self,
-        handle: Handle,
-    ) -> Result<BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>, GatewayServerError> {
-        device::device_medium_pks(handle).await
+        username: UserName,
+    ) -> Result<BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>, ServerError> {
+        device::device_medium_pks(username).await
     }
 
     async fn v1_device_add_medium_pk(
         &self,
         auth: AuthToken,
         medium_pk: SignedMediumPk,
-    ) -> Result<(), GatewayServerError> {
+    ) -> Result<(), ServerError> {
         device::device_add_medium_pk(auth, medium_pk).await
     }
 
@@ -80,7 +80,7 @@ impl GatewayProtocol for GatewayServer {
         &self,
         args: Vec<MailboxRecvArgs>,
         timeout_ms: u64,
-    ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError> {
+    ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerError> {
         mailbox::mailbox_multirecv(args, timeout_ms).await
     }
 
@@ -89,7 +89,7 @@ impl GatewayProtocol for GatewayServer {
         auth: AuthToken,
         mailbox_id: MailboxId,
         arg: MailboxAcl,
-    ) -> Result<(), GatewayServerError> {
+    ) -> Result<(), ServerError> {
         mailbox::mailbox_acl_edit(auth, mailbox_id, arg).await
     }
 
@@ -97,7 +97,7 @@ impl GatewayProtocol for GatewayServer {
         &self,
         auth: AuthToken,
         group: xirtam_structs::group::GroupId,
-    ) -> Result<(), GatewayServerError> {
+    ) -> Result<(), ServerError> {
         mailbox::register_group(auth, group).await
     }
 }

@@ -10,8 +10,8 @@ use xirtam_crypt::signing::Signable;
 use xirtam_structs::Blob;
 use xirtam_structs::certificate::DevicePublic;
 use xirtam_structs::envelope::Envelope;
-use xirtam_structs::gateway::{AuthToken, GatewayClient, GatewayName, MailboxId, SignedMediumPk};
-use xirtam_structs::handle::Handle;
+use xirtam_structs::server::{AuthToken, ServerClient, ServerName, MailboxId, SignedMediumPk};
+use xirtam_structs::username::UserName;
 use xirtam_structs::msg_content::MessageContent;
 use xirtam_structs::timestamp::NanoTimestamp;
 
@@ -20,8 +20,8 @@ use crate::database::{
     DATABASE, DbNotify, ensure_mailbox_state, load_mailbox_after, update_mailbox_after,
 };
 use crate::directory::DIR_CLIENT;
-use crate::gateway::get_gateway_client;
-use crate::identity::{Identity, store_gateway_name};
+use crate::server::get_server_client;
+use crate::identity::{Identity, store_server_name};
 use crate::long_poll::LONG_POLLER;
 use crate::peer::{PeerInfo, get_peer_info};
 
@@ -62,8 +62,8 @@ async fn send_dm(
     };
 
     let _peer_received_at = send_dm_once(ctx, &identity, &pending.peer, &message).await?;
-    let self_received_at = if identity.handle != pending.peer {
-        send_dm_once(ctx, &identity, &identity.handle, &message).await?
+    let self_received_at = if identity.username != pending.peer {
+        send_dm_once(ctx, &identity, &identity.username, &message).await?
     } else {
         _peer_received_at
     };
@@ -86,13 +86,13 @@ async fn send_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
 
 pub async fn queue_dm(
     db: &sqlx::SqlitePool,
-    sender: &Handle,
-    peer: &Handle,
+    sender: &UserName,
+    peer: &UserName,
     mime: &SmolStr,
     body: &Bytes,
 ) -> anyhow::Result<i64> {
     let row = sqlx::query_as::<_, (i64,)>(
-        "INSERT INTO dm_messages (peer_handle, sender_handle, mime, body, received_at) \
+        "INSERT INTO dm_messages (peer_username, sender_username, mime, body, received_at) \
          VALUES (?, ?, ?, ?, NULL) \
          RETURNING id",
     )
@@ -138,24 +138,24 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
 async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
-    let gateway_name = match refresh_own_gateway_name(ctx, db, &identity).await {
+    let server_name = match refresh_own_server_name(ctx, db, &identity).await {
         Ok(name) => name,
-        Err(err) => match identity.gateway_name.clone() {
+        Err(err) => match identity.server_name.clone() {
             Some(name) => {
-                tracing::warn!(error = %err, "failed to refresh gateway name");
+                tracing::warn!(error = %err, "failed to refresh server name");
                 name
             }
             None => return Err(err),
         },
     };
-    let gateway = get_gateway_client(ctx, &gateway_name).await?;
-    let auth = device_auth(gateway.as_ref(), &identity).await?;
-    let mailbox = MailboxId::direct(&identity.handle);
-    ensure_mailbox_state(db, &gateway_name, mailbox, NanoTimestamp(0)).await?;
-    let mut after = load_mailbox_after(db, &gateway_name, mailbox).await?;
+    let server = get_server_client(ctx, &server_name).await?;
+    let auth = device_auth(server.as_ref(), &identity).await?;
+    let mailbox = MailboxId::direct(&identity.username);
+    ensure_mailbox_state(db, &server_name, mailbox, NanoTimestamp(0)).await?;
+    let mut after = load_mailbox_after(db, &server_name, mailbox).await?;
     let poller = ctx.get(LONG_POLLER);
     loop {
-        let entry = match poller.recv(gateway.clone(), auth, mailbox, after).await {
+        let entry = match poller.recv(server.clone(), auth, mailbox, after).await {
             Ok(entry) => entry,
             Err(err) => {
                 tracing::warn!(error = %err, "mailbox recv error");
@@ -163,7 +163,7 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
             }
         };
         after = entry.received_at;
-        if let Err(err) = process_mailbox_entry(ctx, &gateway_name, mailbox, entry).await {
+        if let Err(err) = process_mailbox_entry(ctx, &server_name, mailbox, entry).await {
             tracing::warn!(error = %err, "failed to process mailbox entry");
         }
         // notify once to prevent thrashing
@@ -174,28 +174,28 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
 async fn send_dm_once(
     ctx: &anyctx::AnyCtx<Config>,
     identity: &Identity,
-    target: &Handle,
+    target: &UserName,
     message: &Blob,
 ) -> anyhow::Result<NanoTimestamp> {
     let peer = get_peer_info(ctx, target).await?;
-    let own_gateway = own_gateway_name(ctx, identity).await?;
+    let own_server = own_server_name(ctx, identity).await?;
     let recipients = recipients_from_peer(peer.as_ref())?;
 
-    let auth = if peer.gateway_name == own_gateway {
-        device_auth(peer.gateway.as_ref(), identity).await?
+    let auth = if peer.server_name == own_server {
+        device_auth(peer.server.as_ref(), identity).await?
     } else {
         AuthToken::anonymous()
     };
     let envelope = Envelope::encrypt_message(
         message,
-        identity.handle.clone(),
+        identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
         recipients,
     )
     .map_err(|_| anyhow::anyhow!("failed to encrypt DM for {target}"))?;
     let received_at = send_envelope(
-        peer.gateway.as_ref(),
+        peer.server.as_ref(),
         auth,
         MailboxId::direct(target),
         envelope,
@@ -205,7 +205,7 @@ async fn send_dm_once(
 }
 
 fn collect_recipients(
-    handle: &Handle,
+    username: &UserName,
     chain: &[xirtam_structs::certificate::DeviceCertificate],
     medium_pks: &BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
@@ -213,17 +213,17 @@ fn collect_recipients(
     for cert in chain {
         let device_hash = cert.pk.bcs_hash();
         let Some(medium_pk) = medium_pks.get(&device_hash) else {
-            warn!(handle = %handle, device_hash = %device_hash, "missing medium-term key");
+            warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
         if medium_pk.verify(cert.pk.signing_public()).is_err() {
-            warn!(handle = %handle, device_hash = %device_hash, "invalid medium-term key signature");
+            warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
         recipients.push((cert.pk.clone(), medium_pk.medium_pk.clone()));
     }
     if recipients.is_empty() {
-        anyhow::bail!("no medium-term keys available for {handle}");
+        anyhow::bail!("no medium-term keys available for {username}");
     }
     Ok(recipients)
 }
@@ -231,43 +231,43 @@ fn collect_recipients(
 fn recipients_from_peer(
     peer: &PeerInfo,
 ) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
-    collect_recipients(&peer.handle, &peer.certs, &peer.medium_pks)
+    collect_recipients(&peer.username, &peer.certs, &peer.medium_pks)
 }
 
-async fn device_auth(client: &GatewayClient, identity: &Identity) -> anyhow::Result<AuthToken> {
+async fn device_auth(client: &ServerClient, identity: &Identity) -> anyhow::Result<AuthToken> {
     client
-        .v1_device_auth(identity.handle.clone(), identity.cert_chain.clone())
+        .v1_device_auth(identity.username.clone(), identity.cert_chain.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
 
-async fn own_gateway_name(
+async fn own_server_name(
     ctx: &anyctx::AnyCtx<Config>,
     identity: &Identity,
-) -> anyhow::Result<xirtam_structs::gateway::GatewayName> {
-    if let Some(gateway_name) = identity.gateway_name.clone() {
-        return Ok(gateway_name);
+) -> anyhow::Result<xirtam_structs::server::ServerName> {
+    if let Some(server_name) = identity.server_name.clone() {
+        return Ok(server_name);
     }
     let db = ctx.get(DATABASE);
-    refresh_own_gateway_name(ctx, db, identity).await
+    refresh_own_server_name(ctx, db, identity).await
 }
 
-pub(crate) async fn refresh_own_gateway_name(
+pub(crate) async fn refresh_own_server_name(
     ctx: &anyctx::AnyCtx<Config>,
     db: &sqlx::SqlitePool,
     identity: &Identity,
-) -> anyhow::Result<xirtam_structs::gateway::GatewayName> {
+) -> anyhow::Result<xirtam_structs::server::ServerName> {
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir
-        .get_handle_descriptor(&identity.handle)
+        .get_user_descriptor(&identity.username)
         .await?
-        .context("identity handle not in directory")?;
-    store_gateway_name(db, &descriptor.gateway_name).await?;
-    Ok(descriptor.gateway_name)
+        .context("identity username not in directory")?;
+    store_server_name(db, &descriptor.server_name).await?;
+    Ok(descriptor.server_name)
 }
 
 async fn send_envelope(
-    client: &GatewayClient,
+    client: &ServerClient,
     auth: AuthToken,
     mailbox: MailboxId,
     envelope: Envelope,
@@ -284,14 +284,14 @@ async fn send_envelope(
 
 async fn process_mailbox_entry(
     ctx: &anyctx::AnyCtx<Config>,
-    gateway_name: &GatewayName,
+    server_name: &ServerName,
     mailbox: MailboxId,
-    entry: xirtam_structs::gateway::MailboxEntry,
+    entry: xirtam_structs::server::MailboxEntry,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let dir = ctx.get(DIR_CLIENT);
     let identity = Identity::load(db).await?;
-    update_mailbox_after(db, gateway_name, mailbox, entry.received_at).await?;
+    update_mailbox_after(db, server_name, mailbox, entry.received_at).await?;
     let message = entry.message;
     if message.kind != Blob::V1_DIRECT_MESSAGE {
         warn!(kind = %message.kind, "ignoring non-dm mailbox entry");
@@ -328,11 +328,11 @@ async fn process_mailbox_entry(
             }
         }
     };
-    let sender_handle = decrypted.handle().clone();
+    let sender_username = decrypted.username().clone();
     let sender_descriptor = dir
-        .get_handle_descriptor(&sender_handle)
+        .get_user_descriptor(&sender_username)
         .await?
-        .context("sender handle not in directory")?;
+        .context("sender username not in directory")?;
     let message = decrypted
         .verify(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify envelope"))?;
@@ -341,27 +341,27 @@ async fn process_mailbox_entry(
         return Ok(());
     }
     let content: MessageContent = bcs::from_bytes(&message.inner)?;
-    if content.recipient != identity.handle && sender_handle != identity.handle {
+    if content.recipient != identity.username && sender_username != identity.username {
         warn!(
-            sender = %sender_handle,
+            sender = %sender_username,
             recipient = %content.recipient,
             "ignoring dm with mismatched recipient",
         );
         return Ok(());
     }
-    let peer_handle = if sender_handle == identity.handle {
+    let peer_username = if sender_username == identity.username {
         content.recipient.clone()
     } else {
-        sender_handle.clone()
+        sender_username.clone()
     };
     let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT OR IGNORE INTO dm_messages \
-         (peer_handle, sender_handle, mime, body, received_at) \
+         (peer_username, sender_username, mime, body, received_at) \
          VALUES (?, ?, ?, ?, ?)",
     )
-    .bind(peer_handle.as_str())
-    .bind(sender_handle.as_str())
+    .bind(peer_username.as_str())
+    .bind(sender_username.as_str())
     .bind(content.mime.as_str())
     .bind(content.body.to_vec())
     .bind(entry.received_at.0 as i64)
@@ -369,10 +369,10 @@ async fn process_mailbox_entry(
     .await?;
     sqlx::query(
         "UPDATE mailbox_state SET after_timestamp = ? \
-         WHERE gateway_name = ? AND mailbox_id = ?",
+         WHERE server_name = ? AND mailbox_id = ?",
     )
     .bind(entry.received_at.0 as i64)
-    .bind(gateway_name.as_str())
+    .bind(server_name.as_str())
     .bind(mailbox.to_bytes().to_vec())
     .execute(tx.as_mut())
     .await?;
@@ -382,14 +382,14 @@ async fn process_mailbox_entry(
 
 struct PendingDm {
     id: i64,
-    peer: Handle,
+    peer: UserName,
     mime: SmolStr,
     body: Bytes,
 }
 
 async fn next_pending_dm(db: &sqlx::SqlitePool) -> anyhow::Result<Option<PendingDm>> {
     let row = sqlx::query_as::<_, (i64, String, String, Vec<u8>)>(
-        "SELECT id, peer_handle, mime, body \
+        "SELECT id, peer_username, mime, body \
          FROM dm_messages \
          WHERE received_at IS NULL \
          ORDER BY id \
@@ -397,10 +397,10 @@ async fn next_pending_dm(db: &sqlx::SqlitePool) -> anyhow::Result<Option<Pending
     )
     .fetch_optional(db)
     .await?;
-    let Some((id, peer_handle, mime, body)) = row else {
+    let Some((id, peer_username, mime, body)) = row else {
         return Ok(None);
     };
-    let peer = Handle::parse(peer_handle).context("invalid peer handle in dm_messages")?;
+    let peer = UserName::parse(peer_username).context("invalid peer username in dm_messages")?;
     Ok(Some(PendingDm {
         id,
         peer,

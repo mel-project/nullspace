@@ -1,12 +1,12 @@
 use bytes::Bytes;
 use xirtam_client::internal::{DmMessage, GroupMessage};
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 use xirtam_structs::timestamp::NanoTimestamp;
 
 pub(super) trait ChatRecord {
     fn id(&self) -> i64;
     fn received_at(&self) -> Option<NanoTimestamp>;
-    fn sender(&self) -> &Handle;
+    fn sender(&self) -> &UserName;
     fn mime(&self) -> &smol_str::SmolStr;
     fn body(&self) -> &Bytes;
 }
@@ -20,7 +20,7 @@ impl ChatRecord for DmMessage {
         self.received_at
     }
 
-    fn sender(&self) -> &Handle {
+    fn sender(&self) -> &UserName {
         &self.sender
     }
 
@@ -42,7 +42,7 @@ impl ChatRecord for GroupMessage {
         self.received_at
     }
 
-    fn sender(&self) -> &Handle {
+    fn sender(&self) -> &UserName {
         &self.sender
     }
 

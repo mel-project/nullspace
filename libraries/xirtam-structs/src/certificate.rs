@@ -28,12 +28,12 @@ impl DeviceSecret {
     }
 
     /// Create a self-signed certificate for this device.
-    pub fn self_signed(&self, expiry: Timestamp, can_sign: bool) -> DeviceCertificate {
+    pub fn self_signed(&self, expiry: Timestamp, can_issue: bool) -> DeviceCertificate {
         let pk = self.public();
         let mut cert = DeviceCertificate {
             pk,
             expiry,
-            can_sign,
+            can_issue,
             signature: Signature::from_bytes([0u8; 64]),
         };
         cert.sign(&self.0);
@@ -45,12 +45,12 @@ impl DeviceSecret {
         &self,
         subject: &DevicePublic,
         expiry: Timestamp,
-        can_sign: bool,
+        can_issue: bool,
     ) -> DeviceCertificate {
         let mut cert = DeviceCertificate {
             pk: subject.clone(),
             expiry,
-            can_sign,
+            can_issue,
             signature: Signature::from_bytes([0u8; 64]),
         };
         cert.sign(&self.0);
@@ -85,7 +85,7 @@ impl std::ops::Deref for DeviceSecret {
 pub struct DeviceCertificate {
     pub pk: DevicePublic,
     pub expiry: Timestamp,
-    pub can_sign: bool,
+    pub can_issue: bool,
     pub signature: Signature,
 }
 
@@ -96,7 +96,7 @@ pub struct CertificateChain(pub Vec<DeviceCertificate>);
 
 impl Signable for DeviceCertificate {
     fn signed_value(&self) -> Vec<u8> {
-        bcs::to_bytes(&(&self.pk, &self.expiry, &self.can_sign))
+        bcs::to_bytes(&(&self.pk, &self.expiry, &self.can_issue))
             .expect("bcs serialization failed")
     }
 
@@ -131,6 +131,7 @@ impl CertificateChain {
         let mut trusted_signers: Vec<SigningPublic> = Vec::new();
         let mut valid = Vec::new();
         let mut pending = self.0.clone();
+        let mut trusted_root_found = false;
 
         let mut idx = 0;
         while idx < pending.len() {
@@ -139,7 +140,10 @@ impl CertificateChain {
                 cert.verify(cert.pk.signing_public())
                     .map_err(|err| anyhow::anyhow!(err.to_string()))?;
                 if cert.expiry > now {
-                    trusted_signers.push(cert.pk.signing_public());
+                    trusted_root_found = true;
+                    if cert.can_issue {
+                        trusted_signers.push(cert.pk.signing_public());
+                    }
                     valid.push(cert);
                 }
             } else {
@@ -147,7 +151,7 @@ impl CertificateChain {
             }
         }
 
-        if trusted_signers.is_empty() {
+        if !trusted_root_found {
             bail!("certificate chain does not include trusted root");
         }
 
@@ -157,18 +161,15 @@ impl CertificateChain {
             let mut i = 0;
             while i < pending.len() {
                 let cert = &pending[i];
-                let signer = trusted_signers
-                    .iter()
-                    .find(|pk| cert.verify(**pk).is_ok())
-                    .copied();
-                let Some(signer) = signer else {
+                if !trusted_signers.iter().any(|pk| cert.verify(*pk).is_ok()) {
                     i += 1;
                     continue;
                 };
                 let cert = pending.remove(i);
                 if cert.expiry > now {
-                    trusted_signers.push(signer);
-                    trusted_signers.push(cert.pk.signing_public());
+                    if cert.can_issue {
+                        trusted_signers.push(cert.pk.signing_public());
+                    }
                     valid.push(cert);
                 }
                 progress = true;
@@ -190,4 +191,74 @@ fn unix_time() -> Timestamp {
         .unwrap_or_default()
         .as_secs();
     Timestamp(seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xirtam_crypt::hash::BcsHashExt;
+
+    #[test]
+    fn verify_allows_root_without_issue_rights() {
+        let root_secret = DeviceSecret::random();
+        let root_cert = root_secret.self_signed(Timestamp(u64::MAX), false);
+        let root_hash = root_cert.pk.bcs_hash();
+        let chain = CertificateChain(vec![root_cert.clone()]);
+
+        let verified = chain.verify(root_hash).expect("verify root");
+        assert_eq!(verified, vec![root_cert]);
+    }
+
+    #[test]
+    fn verify_rejects_leaf_signed_by_non_issuer() {
+        let root_secret = DeviceSecret::random();
+        let root_cert = root_secret.self_signed(Timestamp(u64::MAX), true);
+        let root_hash = root_cert.pk.bcs_hash();
+
+        let intermediate_secret = DeviceSecret::random();
+        let leaf_secret = DeviceSecret::random();
+
+        let intermediate_cert = root_secret.issue_certificate(
+            &intermediate_secret.public(),
+            Timestamp(u64::MAX),
+            false,
+        );
+        let leaf_cert = intermediate_secret.issue_certificate(
+            &leaf_secret.public(),
+            Timestamp(u64::MAX),
+            true,
+        );
+
+        let chain = CertificateChain(vec![root_cert, intermediate_cert, leaf_cert]);
+        assert!(chain.verify(root_hash).is_err());
+    }
+
+    #[test]
+    fn verify_allows_leaf_signed_by_issuer() {
+        let root_secret = DeviceSecret::random();
+        let root_cert = root_secret.self_signed(Timestamp(u64::MAX), true);
+        let root_hash = root_cert.pk.bcs_hash();
+
+        let intermediate_secret = DeviceSecret::random();
+        let leaf_secret = DeviceSecret::random();
+
+        let intermediate_cert = root_secret.issue_certificate(
+            &intermediate_secret.public(),
+            Timestamp(u64::MAX),
+            true,
+        );
+        let leaf_cert = intermediate_secret.issue_certificate(
+            &leaf_secret.public(),
+            Timestamp(u64::MAX),
+            true,
+        );
+
+        let chain = CertificateChain(vec![
+            root_cert,
+            intermediate_cert,
+            leaf_cert.clone(),
+        ]);
+        let verified = chain.verify(root_hash).expect("verify chain");
+        assert!(verified.contains(&leaf_cert));
+    }
 }

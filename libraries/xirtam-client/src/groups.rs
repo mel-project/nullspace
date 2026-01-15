@@ -15,11 +15,11 @@ use xirtam_crypt::signing::Signable;
 use xirtam_structs::Blob;
 use xirtam_structs::certificate::DevicePublic;
 use xirtam_structs::envelope::Envelope;
-use xirtam_structs::gateway::{AuthToken, GatewayName, MailboxAcl, MailboxId, SignedMediumPk};
+use xirtam_structs::server::{AuthToken, ServerName, MailboxAcl, MailboxId, SignedMediumPk};
 use xirtam_structs::group::{
     GroupDescriptor, GroupId, GroupInviteMsg, GroupManageMsg, GroupMessage,
 };
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 use xirtam_structs::msg_content::{MessageContent, MessagePayload};
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 
@@ -32,7 +32,7 @@ use crate::database::{
     DATABASE, DbNotify, ensure_mailbox_state, load_mailbox_after, update_mailbox_after,
 };
 use crate::dm::queue_dm;
-use crate::gateway::get_gateway_client;
+use crate::server::get_server_client;
 use crate::identity::Identity;
 use crate::long_poll::LONG_POLLER;
 use crate::peer::get_peer_info;
@@ -44,7 +44,7 @@ const GROUP_REKEY_MEAN_SECS: f64 = 60.0 * 60.0;
 pub struct GroupRecord {
     pub group_id: GroupId,
     pub descriptor: GroupDescriptor,
-    pub gateway_name: GatewayName,
+    pub server_name: ServerName,
     pub token: AuthToken,
     pub group_key_current: AeadKey,
     pub group_key_prev: AeadKey,
@@ -66,10 +66,10 @@ enum GroupMailboxKind {
 
 type GroupRecvResult = (
     GroupId,
-    GatewayName,
+    ServerName,
     GroupMailboxKind,
     MailboxId,
-    xirtam_structs::gateway::MailboxEntry,
+    xirtam_structs::server::MailboxEntry,
 );
 type GroupRecvFuture = Pin<Box<dyn Future<Output = anyhow::Result<GroupRecvResult>> + Send>>;
 
@@ -103,36 +103,36 @@ pub async fn group_rekey_loop(ctx: &AnyCtx<Config>) {
 
 pub async fn create_group(
     ctx: &AnyCtx<Config>,
-    gateway_name: GatewayName,
+    server_name: ServerName,
 ) -> anyhow::Result<GroupId> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
     let dir = ctx.get(crate::directory::DIR_CLIENT);
-    let handle_descriptor = dir
-        .get_handle_descriptor(&identity.handle)
+    let user_descriptor = dir
+        .get_user_descriptor(&identity.username)
         .await?
-        .context("identity handle not in directory")?;
-    if handle_descriptor.gateway_name != gateway_name {
-        anyhow::bail!("group gateway must match handle gateway");
+        .context("identity username not in directory")?;
+    if user_descriptor.server_name != server_name {
+        anyhow::bail!("group server must match username server");
     }
 
     let descriptor = GroupDescriptor {
         nonce: Hash::random(),
-        init_admin: identity.handle.clone(),
+        init_admin: identity.username.clone(),
         created_at: Timestamp::now(),
-        gateway: gateway_name.clone(),
+        server: server_name.clone(),
         management_key: AeadKey::random(),
     };
     let group_id = descriptor.id();
     let group_key = AeadKey::random();
     let token = AuthToken::random();
 
-    let gateway = get_gateway_client(ctx, &gateway_name).await?;
-    let auth = gateway
-        .v1_device_auth(identity.handle.clone(), identity.cert_chain.clone())
+    let server = get_server_client(ctx, &server_name).await?;
+    let auth = server
+        .v1_device_auth(identity.username.clone(), identity.cert_chain.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    gateway
+    server
         .v1_register_group(auth, group_id)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -142,11 +142,11 @@ pub async fn create_group(
         can_send: true,
         can_recv: true,
     };
-    gateway
+    server
         .v1_mailbox_acl_edit(auth, MailboxId::group_messages(&group_id), acl.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    gateway
+    server
         .v1_mailbox_acl_edit(auth, MailboxId::group_management(&group_id), acl)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -154,31 +154,31 @@ pub async fn create_group(
     let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT INTO groups \
-         (group_id, descriptor, gateway_name, token, group_key_current, group_key_prev, roster_version) \
+         (group_id, descriptor, server_name, token, group_key_current, group_key_prev, roster_version) \
          VALUES (?, ?, ?, ?, ?, ?, 0)",
     )
     .bind(group_id.as_bytes().to_vec())
     .bind(bcs::to_bytes(&descriptor)?)
-    .bind(gateway_name.as_str())
+    .bind(server_name.as_str())
     .bind(bcs::to_bytes(&token)?)
     .bind(bcs::to_bytes(&group_key)?)
     .bind(bcs::to_bytes(&group_key)?)
     .execute(tx.as_mut())
     .await?;
-    let roster = GroupRoster::load(tx.as_mut(), group_id, identity.handle.clone()).await?;
+    let roster = GroupRoster::load(tx.as_mut(), group_id, identity.username.clone()).await?;
     let _ = roster.list(tx.as_mut()).await?;
     tx.commit().await?;
 
     ensure_mailbox_state(
         db,
-        &gateway_name,
+        &server_name,
         MailboxId::group_management(&group_id),
         NanoTimestamp(0),
     )
     .await?;
     ensure_mailbox_state(
         db,
-        &gateway_name,
+        &server_name,
         MailboxId::group_messages(&group_id),
         NanoTimestamp::now(),
     )
@@ -187,10 +187,10 @@ pub async fn create_group(
     Ok(group_id)
 }
 
-pub async fn invite(ctx: &AnyCtx<Config>, group_id: GroupId, handle: Handle) -> anyhow::Result<()> {
+pub async fn invite(ctx: &AnyCtx<Config>, group_id: GroupId, username: UserName) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
-    if handle == identity.handle {
+    if username == identity.username {
         anyhow::bail!("cannot invite self");
     }
     let group = load_group(db, group_id).await?.context("group not found")?;
@@ -201,8 +201,8 @@ pub async fn invite(ctx: &AnyCtx<Config>, group_id: GroupId, handle: Handle) -> 
         can_send: true,
         can_recv: true,
     };
-    let gateway = get_gateway_client(ctx, &group.gateway_name).await?;
-    gateway
+    let server = get_server_client(ctx, &group.server_name).await?;
+    server
         .v1_mailbox_acl_edit(
             group.token,
             MailboxId::group_messages(&group.group_id),
@@ -210,7 +210,7 @@ pub async fn invite(ctx: &AnyCtx<Config>, group_id: GroupId, handle: Handle) -> 
         )
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    gateway
+    server
         .v1_mailbox_acl_edit(
             group.token,
             MailboxId::group_management(&group.group_id),
@@ -219,7 +219,7 @@ pub async fn invite(ctx: &AnyCtx<Config>, group_id: GroupId, handle: Handle) -> 
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
-    let manage = GroupManageMsg::InviteSent(handle.clone());
+    let manage = GroupManageMsg::InviteSent(username.clone());
     send_management_message(ctx, &identity, &group, manage).await?;
 
     let invite = GroupInviteMsg {
@@ -227,8 +227,8 @@ pub async fn invite(ctx: &AnyCtx<Config>, group_id: GroupId, handle: Handle) -> 
         group_key: group.group_key_current.clone(),
         token: invite_token,
     };
-    let content = MessageContent::from_json_payload(handle.clone(), NanoTimestamp::now(), &invite)?;
-    queue_dm(db, &identity.handle, &handle, &content.mime, &content.body).await?;
+    let content = MessageContent::from_json_payload(username.clone(), NanoTimestamp::now(), &invite)?;
+    queue_dm(db, &identity.username, &username, &content.mime, &content.body).await?;
     DbNotify::touch();
     Ok(())
 }
@@ -237,13 +237,13 @@ pub async fn accept_invite(ctx: &AnyCtx<Config>, invite_id: i64) -> anyhow::Resu
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
     let row = sqlx::query_as::<_, (String, String, Vec<u8>)>(
-        "SELECT sender_handle, mime, body FROM dm_messages WHERE id = ?",
+        "SELECT sender_username, mime, body FROM dm_messages WHERE id = ?",
     )
     .bind(invite_id)
     .fetch_optional(db)
     .await?
     .context("invite not found")?;
-    let (_sender_handle, mime, body) = row;
+    let (_sender_username, mime, body) = row;
     if mime != GroupInviteMsg::mime() {
         anyhow::bail!("message is not a group invite");
     }
@@ -261,12 +261,12 @@ pub async fn accept_invite(ctx: &AnyCtx<Config>, invite_id: i64) -> anyhow::Resu
     if existing.is_none() {
         sqlx::query(
             "INSERT INTO groups \
-             (group_id, descriptor, gateway_name, token, group_key_current, group_key_prev, roster_version) \
+             (group_id, descriptor, server_name, token, group_key_current, group_key_prev, roster_version) \
              VALUES (?, ?, ?, ?, ?, ?, 0)",
         )
         .bind(group_id.as_bytes().to_vec())
         .bind(bcs::to_bytes(&descriptor)?)
-        .bind(descriptor.gateway.as_str())
+        .bind(descriptor.server.as_str())
         .bind(bcs::to_bytes(&token)?)
         .bind(bcs::to_bytes(&group_key)?)
         .bind(bcs::to_bytes(&group_key)?)
@@ -277,7 +277,7 @@ pub async fn accept_invite(ctx: &AnyCtx<Config>, invite_id: i64) -> anyhow::Resu
     let _changed = roster
         .apply_manage_message(
             tx.as_mut(),
-            &identity.handle,
+            &identity.username,
             GroupManageMsg::InviteAccepted,
         )
         .await?;
@@ -285,14 +285,14 @@ pub async fn accept_invite(ctx: &AnyCtx<Config>, invite_id: i64) -> anyhow::Resu
 
     ensure_mailbox_state(
         db,
-        &descriptor.gateway,
+        &descriptor.server,
         MailboxId::group_management(&group_id),
         NanoTimestamp(0),
     )
     .await?;
     ensure_mailbox_state(
         db,
-        &descriptor.gateway,
+        &descriptor.server,
         MailboxId::group_messages(&group_id),
         NanoTimestamp::now(),
     )
@@ -310,12 +310,12 @@ pub async fn accept_invite(ctx: &AnyCtx<Config>, invite_id: i64) -> anyhow::Resu
 pub async fn queue_group_message(
     db: &sqlx::SqlitePool,
     group_id: &GroupId,
-    sender: &Handle,
+    sender: &UserName,
     mime: &SmolStr,
     body: &Bytes,
 ) -> anyhow::Result<i64> {
     let row = sqlx::query_as::<_, (i64,)>(
-        "INSERT INTO group_messages (group_id, sender_handle, mime, body, received_at) \
+        "INSERT INTO group_messages (group_id, sender_username, mime, body, received_at) \
          VALUES (?, ?, ?, ?, NULL) \
          RETURNING id",
     )
@@ -333,13 +333,13 @@ pub async fn load_group(
     group_id: GroupId,
 ) -> anyhow::Result<Option<GroupRecord>> {
     let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>)>(
-        "SELECT group_id, descriptor, gateway_name, token, group_key_current, group_key_prev \
+        "SELECT group_id, descriptor, server_name, token, group_key_current, group_key_prev \
          FROM groups WHERE group_id = ?",
     )
     .bind(group_id.as_bytes().to_vec())
     .fetch_optional(db)
     .await?;
-    let Some((group_id_bytes, descriptor, gateway_name, token, key_current, key_prev)) = row else {
+    let Some((group_id_bytes, descriptor, server_name, token, key_current, key_prev)) = row else {
         return Ok(None);
     };
     let group_id = GroupId::from_bytes(
@@ -355,7 +355,7 @@ pub async fn load_group(
     Ok(Some(GroupRecord {
         group_id,
         descriptor,
-        gateway_name: GatewayName::parse(gateway_name)?,
+        server_name: ServerName::parse(server_name)?,
         token,
         group_key_current,
         group_key_prev,
@@ -364,13 +364,13 @@ pub async fn load_group(
 
 pub async fn load_groups(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<GroupRecord>> {
     let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>)>(
-        "SELECT group_id, descriptor, gateway_name, token, group_key_current, group_key_prev \
+        "SELECT group_id, descriptor, server_name, token, group_key_current, group_key_prev \
          FROM groups",
     )
     .fetch_all(db)
     .await?;
     let mut out = Vec::with_capacity(rows.len());
-    for (group_id_bytes, descriptor, gateway_name, token, key_current, key_prev) in rows {
+    for (group_id_bytes, descriptor, server_name, token, key_current, key_prev) in rows {
         let group_id = GroupId::from_bytes(
             group_id_bytes
                 .as_slice()
@@ -384,7 +384,7 @@ pub async fn load_groups(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<GroupRecor
         out.push(GroupRecord {
             group_id,
             descriptor,
-            gateway_name: GatewayName::parse(gateway_name)?,
+            server_name: ServerName::parse(server_name)?,
             token,
             group_key_current,
             group_key_prev,
@@ -420,23 +420,23 @@ async fn group_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     for group in groups {
         let message_box = MailboxId::group_messages(&group.group_id);
         let manage_box = MailboxId::group_management(&group.group_id);
-        ensure_mailbox_state(db, &group.gateway_name, message_box, NanoTimestamp(0)).await?;
-        ensure_mailbox_state(db, &group.gateway_name, manage_box, NanoTimestamp(0)).await?;
-        let message_after = load_mailbox_after(db, &group.gateway_name, message_box).await?;
-        let manage_after = load_mailbox_after(db, &group.gateway_name, manage_box).await?;
-        let gateway = get_gateway_client(ctx, &group.gateway_name).await?;
+        ensure_mailbox_state(db, &group.server_name, message_box, NanoTimestamp(0)).await?;
+        ensure_mailbox_state(db, &group.server_name, manage_box, NanoTimestamp(0)).await?;
+        let message_after = load_mailbox_after(db, &group.server_name, message_box).await?;
+        let manage_after = load_mailbox_after(db, &group.server_name, manage_box).await?;
+        let server = get_server_client(ctx, &group.server_name).await?;
         let poller_messages = poller.clone();
-        let gateway_messages = gateway.clone();
-        let gateway_name = group.gateway_name.clone();
+        let server_messages = server.clone();
+        let server_name = group.server_name.clone();
         let token = group.token;
         let group_id = group.group_id;
         futs.push(Box::pin(async move {
             let entry = poller_messages
-                .recv(gateway_messages, token, message_box, message_after)
+                .recv(server_messages, token, message_box, message_after)
                 .await?;
             Ok::<_, anyhow::Error>((
                 group_id,
-                gateway_name,
+                server_name,
                 GroupMailboxKind::Messages,
                 message_box,
                 entry,
@@ -444,16 +444,16 @@ async fn group_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         }));
 
         let poller = poller.clone();
-        let gateway_name = group.gateway_name.clone();
+        let server_name = group.server_name.clone();
         let token = group.token;
         let group_id = group.group_id;
         futs.push(Box::pin(async move {
             let entry = poller
-                .recv(gateway, token, manage_box, manage_after)
+                .recv(server, token, manage_box, manage_after)
                 .await?;
             Ok::<_, anyhow::Error>((
                 group_id,
-                gateway_name,
+                server_name,
                 GroupMailboxKind::Management,
                 manage_box,
                 entry,
@@ -461,8 +461,8 @@ async fn group_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         }));
     }
 
-    let (group_id, gateway_name, kind, mailbox, entry) = futs.race().await?;
-    update_mailbox_after(db, &gateway_name, mailbox, entry.received_at).await?;
+    let (group_id, server_name, kind, mailbox, entry) = futs.race().await?;
+    update_mailbox_after(db, &server_name, mailbox, entry.received_at).await?;
     let Some(group) = load_group(db, group_id).await? else {
         return Ok(());
     };
@@ -501,7 +501,7 @@ async fn group_rekey_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         }
         if !members
             .iter()
-            .any(|member| member.handle == identity.handle && member.is_admin && member.is_active())
+            .any(|member| member.username == identity.username && member.is_admin && member.is_active())
         {
             continue;
         }
@@ -525,7 +525,7 @@ async fn send_group_message(
         .await?
         .context("group not found")?;
     let content = MessageContent {
-        recipient: Handle::placeholder(),
+        recipient: UserName::placeholder(),
         sent_at: NanoTimestamp::now(),
         mime: pending.mime.clone(),
         body: pending.body.clone(),
@@ -537,7 +537,7 @@ async fn send_group_message(
     let group_message = GroupMessage::encrypt_message(
         group.group_id.clone(),
         &message,
-        identity.handle.clone(),
+        identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
         &group.group_key_current,
@@ -563,7 +563,7 @@ async fn send_management_message(
     manage: GroupManageMsg,
 ) -> anyhow::Result<NanoTimestamp> {
     let content =
-        MessageContent::from_json_payload(Handle::placeholder(), NanoTimestamp::now(), &manage)?;
+        MessageContent::from_json_payload(UserName::placeholder(), NanoTimestamp::now(), &manage)?;
     let message = Blob {
         kind: Blob::V1_MESSAGE_CONTENT.into(),
         inner: Bytes::from(bcs::to_bytes(&content)?),
@@ -571,7 +571,7 @@ async fn send_management_message(
     let group_message = GroupMessage::encrypt_message(
         group.group_id.clone(),
         &message,
-        identity.handle.clone(),
+        identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
         &group.descriptor.management_key,
@@ -603,7 +603,7 @@ async fn send_group_rekey(
     };
     let envelope = Envelope::encrypt_message(
         &key_blob,
-        identity.handle.clone(),
+        identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
         recipients,
@@ -637,8 +637,8 @@ async fn send_to_group_mailbox(
     mailbox: MailboxId,
     message: Blob,
 ) -> anyhow::Result<NanoTimestamp> {
-    let gateway = get_gateway_client(ctx, &group.gateway_name).await?;
-    gateway
+    let server = get_server_client(ctx, &group.server_name).await?;
+    server
         .v1_mailbox_send(group.token, mailbox, message)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
@@ -647,7 +647,7 @@ async fn send_to_group_mailbox(
 async fn process_group_message_entry(
     ctx: &AnyCtx<Config>,
     group: &GroupRecord,
-    entry: xirtam_structs::gateway::MailboxEntry,
+    entry: xirtam_structs::server::MailboxEntry,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let message = entry.message;
@@ -670,9 +670,9 @@ async fn process_group_message_entry(
     let sender = signed.sender.clone();
     let sender_descriptor = ctx
         .get(crate::directory::DIR_CLIENT)
-        .get_handle_descriptor(&sender)
+        .get_user_descriptor(&sender)
         .await?
-        .context("sender handle not in directory")?;
+        .context("sender username not in directory")?;
     let message = signed
         .verify(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify group message"))?;
@@ -684,7 +684,7 @@ async fn process_group_message_entry(
     let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT OR IGNORE INTO group_messages \
-         (group_id, sender_handle, mime, body, received_at) \
+         (group_id, sender_username, mime, body, received_at) \
          VALUES (?, ?, ?, ?, ?)",
     )
     .bind(group.group_id.as_bytes().to_vec())
@@ -701,7 +701,7 @@ async fn process_group_message_entry(
 async fn process_group_management_entry(
     ctx: &AnyCtx<Config>,
     group: &GroupRecord,
-    entry: xirtam_structs::gateway::MailboxEntry,
+    entry: xirtam_structs::server::MailboxEntry,
 ) -> anyhow::Result<()> {
     let message = entry.message;
     if message.kind != Blob::V1_GROUP_MESSAGE {
@@ -717,9 +717,9 @@ async fn process_group_management_entry(
     let sender = signed.sender.clone();
     let sender_descriptor = ctx
         .get(crate::directory::DIR_CLIENT)
-        .get_handle_descriptor(&sender)
+        .get_user_descriptor(&sender)
         .await?
-        .context("sender handle not in directory")?;
+        .context("sender username not in directory")?;
     let message = signed
         .verify(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify management message"))?;
@@ -764,7 +764,7 @@ async fn process_group_rekey_entry(
         Ok(decrypted) => decrypted,
         Err(_) => envelope.decrypt_message(&device_pk, &identity.medium_sk_prev)?,
     };
-    let sender_handle = decrypted.handle().clone();
+    let sender_username = decrypted.username().clone();
     let mut tx = db.begin().await?;
     let roster = GroupRoster::load(
         tx.as_mut(),
@@ -772,20 +772,20 @@ async fn process_group_rekey_entry(
         group.descriptor.init_admin.clone(),
     )
     .await?;
-    let sender_member = roster.get(tx.as_mut(), &sender_handle).await?;
+    let sender_member = roster.get(tx.as_mut(), &sender_username).await?;
     tx.commit().await?;
     if !sender_member
         .as_ref()
         .is_some_and(|member| member.is_admin && member.is_active())
     {
-        warn!(sender = %sender_handle, "ignoring group rekey from non-admin");
+        warn!(sender = %sender_username, "ignoring group rekey from non-admin");
         return Ok(());
     }
     let sender_descriptor = ctx
         .get(crate::directory::DIR_CLIENT)
-        .get_handle_descriptor(&sender_handle)
+        .get_user_descriptor(&sender_username)
         .await?
-        .context("sender handle not in directory")?;
+        .context("sender username not in directory")?;
     let inner = decrypted
         .verify(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify rekey envelope"))?;
@@ -885,9 +885,9 @@ async fn collect_group_recipients(
     let members = roster.list(tx.as_mut()).await?;
     tx.commit().await?;
     for member in members.into_iter().filter(RosterMember::is_active) {
-        let handle = member.handle;
-        let peer = get_peer_info(ctx, &handle).await?;
-        recipients.extend(collect_recipients(&handle, &peer.certs, &peer.medium_pks)?);
+        let username = member.username;
+        let peer = get_peer_info(ctx, &username).await?;
+        recipients.extend(collect_recipients(&username, &peer.certs, &peer.medium_pks)?);
     }
     if recipients.is_empty() {
         anyhow::bail!("no recipients available for group");
@@ -896,7 +896,7 @@ async fn collect_group_recipients(
 }
 
 fn collect_recipients(
-    handle: &Handle,
+    username: &UserName,
     chain: &[xirtam_structs::certificate::DeviceCertificate],
     medium_pks: &BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
@@ -904,11 +904,11 @@ fn collect_recipients(
     for cert in chain {
         let device_hash = cert.pk.bcs_hash();
         let Some(medium_pk) = medium_pks.get(&device_hash) else {
-            warn!(handle = %handle, device_hash = %device_hash, "missing medium-term key");
+            warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
         if medium_pk.verify(cert.pk.signing_public()).is_err() {
-            warn!(handle = %handle, device_hash = %device_hash, "invalid medium-term key signature");
+            warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
         recipients.push((cert.pk.clone(), medium_pk.medium_pk.clone()));

@@ -4,27 +4,27 @@ use eframe::egui::{Button, Response, Spinner, Widget};
 use egui::{Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
 use poll_promise::Promise;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 
 use crate::XirtamApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
-use crate::utils::color::handle_color;
+use crate::utils::color::username_color;
 use crate::utils::markdown::layout_md;
 
 pub struct Login<'a>(pub &'a mut XirtamApp);
 
 #[derive(Clone, Copy)]
 enum LoginStep {
-    EnterHandle,
+    EnterUsername,
     FinishBootstrap,
     FinishAddDevice,
 }
 
 impl Widget for Login<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let step = ui.use_state(|| LoginStep::EnterHandle, ());
-        let mut handle_str = ui.use_state(|| "".to_string(), ()).into_var();
-        let mut gateway_str = ui.use_state(|| "".to_string(), ()).into_var();
+        let step = ui.use_state(|| LoginStep::EnterUsername, ());
+        let mut username_str = ui.use_state(|| "".to_string(), ()).into_var();
+        let mut server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut bundle_str = ui.use_state(String::new, ()).into_var();
         let register_info = ui.use_state(|| None::<xirtam_client::internal::RegisterStartInfo>, ());
         let register_start = ui.use_state(PromiseSlot::new, ());
@@ -34,24 +34,24 @@ impl Widget for Login<'_> {
             ui.heading("Login or register");
             ui.separator();
             match *step {
-                LoginStep::EnterHandle => {
+                LoginStep::EnterUsername => {
                     ui.add(
-                        TextEdit::singleline(&mut *handle_str).hint_text("Enter a @user_handle"),
+                        TextEdit::singleline(&mut *username_str).hint_text("Enter a @username"),
                     );
 
                     if register_start.is_running() {
                         ui.add(Spinner::new());
                     } else if ui.add(Button::new("Next")).clicked() {
-                        let handle = match handle_str.parse::<xirtam_structs::handle::Handle>() {
-                            Ok(handle) => handle,
+                        let username = match username_str.parse::<xirtam_structs::username::UserName>() {
+                            Ok(username) => username,
                             Err(err) => {
-                                self.0.state.error_dialog = Some(format!("invalid handle: {err}"));
+                                self.0.state.error_dialog = Some(format!("invalid username: {err}"));
                                 return;
                             }
                         };
                         let rpc = self.0.client.rpc();
                         let promise = Promise::spawn_async(async move {
-                            flatten_rpc(rpc.register_start(handle).await)
+                            flatten_rpc(rpc.register_start(username).await)
                         });
                         register_start.start(promise);
                     }
@@ -59,7 +59,7 @@ impl Widget for Login<'_> {
                         match result {
                             Ok(Some(info)) => {
                                 register_info.set_next(Some(info.clone()));
-                                *gateway_str = info.gateway_name.as_str().to_string();
+                                *server_str = info.server_name.as_str().to_string();
                                 step.set_next(LoginStep::FinishAddDevice);
                             }
                             Ok(None) => {
@@ -73,15 +73,15 @@ impl Widget for Login<'_> {
                     }
                 }
                 LoginStep::FinishBootstrap => {
-                    let handle: Handle = handle_str.parse().unwrap();
+                    let username: UserName = username_str.parse().unwrap();
                     ui.label(layout_md(ui, "You are registering a **new user**:"));
-                    ui.colored_label(handle_color(&handle), handle.as_str());
+                    ui.colored_label(username_color(&username), username.as_str());
                     ui.add(
-                        TextEdit::singleline(&mut *gateway_str).hint_text("Enter a ~gateway_id"),
+                        TextEdit::singleline(&mut *server_str).hint_text("Enter a ~server_id"),
                     );
                     ui.label(
                         RichText::new(
-                            "Hint: ~public_test is the test gateway run by the Xirtam developers",
+                            "Hint: ~public_test is the test server run by the Xirtam developers",
                         )
                         .size(10.0),
                     );
@@ -91,18 +91,18 @@ impl Widget for Login<'_> {
                         .add_enabled(register_enabled, eframe::egui::Button::new("Register"))
                         .clicked()
                     {
-                        let gateway_name = match gateway_str
-                            .parse::<xirtam_structs::gateway::GatewayName>()
+                        let server_name = match server_str
+                            .parse::<xirtam_structs::server::ServerName>()
                         {
-                            Ok(gateway_name) => gateway_name,
+                            Ok(server_name) => server_name,
                             Err(err) => {
-                                self.0.state.error_dialog = Some(format!("invalid gateway: {err}"));
+                                self.0.state.error_dialog = Some(format!("invalid server: {err}"));
                                 return;
                             }
                         };
-                        let request = xirtam_client::internal::RegisterFinish::BootstrapNewHandle {
-                            handle,
-                            gateway_name,
+                        let request = xirtam_client::internal::RegisterFinish::BootstrapNewUser {
+                            username,
+                            server_name,
                         };
                         let rpc = self.0.client.rpc();
                         let promise = Promise::spawn_async(async move {
@@ -129,10 +129,10 @@ impl Widget for Login<'_> {
                     let info = (*register_info).clone();
                     let Some(_info) = info else {
                         self.0.state.error_dialog = Some("missing register info".to_string());
-                        step.set_next(LoginStep::EnterHandle);
+                        step.set_next(LoginStep::EnterUsername);
                         return;
                     };
-                    ui.label(layout_md(ui, &format!("The user **{handle_str}** exists!")));
+                    ui.label(layout_md(ui, &format!("The user **{username_str}** exists!")));
                     ui.label(layout_md(
                         ui,
                         "You need to export a **device bundle** from an existing device:",

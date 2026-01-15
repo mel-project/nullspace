@@ -10,8 +10,8 @@ use xirtam_nanorpc::Transport;
 use xirtam_structs::{
     Blob,
     certificate::{CertificateChain, DeviceCertificate, DeviceSecret},
-    gateway::{AuthToken, GatewayClient, MailboxId, MailboxRecvArgs},
-    handle::Handle,
+    server::{AuthToken, ServerClient, MailboxId, MailboxRecvArgs},
+    username::UserName,
     timestamp::{NanoTimestamp, Timestamp},
 };
 
@@ -26,10 +26,10 @@ pub struct Args {
 #[derive(Subcommand)]
 enum Command {
     List {
-        handle: Handle,
+        username: UserName,
     },
     Auth {
-        handle: Handle,
+        username: UserName,
         #[arg(long)]
         chain: PathBuf,
     },
@@ -66,13 +66,13 @@ enum Command {
         chain: PathBuf,
     },
     MailboxSend {
-        handle: Handle,
+        username: UserName,
         #[arg(long)]
         chain: PathBuf,
         message: String,
     },
     MailboxRecv {
-        handle: Handle,
+        username: UserName,
         #[arg(long)]
         chain: PathBuf,
         #[arg(long, default_value_t = 30000)]
@@ -100,11 +100,11 @@ struct ChainDumpEntry {
 
 pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
     match args.command {
-        Command::List { handle } => {
-            let endpoint = resolve_gateway_endpoint(global, &handle).await?;
-            let client = GatewayClient::from(Transport::new(endpoint));
+        Command::List { username } => {
+            let endpoint = resolve_server_endpoint(global, &username).await?;
+            let client = ServerClient::from(Transport::new(endpoint));
             let chain = client
-                .v1_device_certs(handle)
+                .v1_device_certs(username)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             let output = ChainListOutput {
@@ -113,12 +113,12 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             };
             print_json(&output)?;
         }
-        Command::Auth { handle, chain } => {
+        Command::Auth { username, chain } => {
             let chain = read_bcs::<CertificateChain>(&chain)?;
-            let endpoint = resolve_gateway_endpoint(global, &handle).await?;
-            let client = GatewayClient::from(Transport::new(endpoint));
+            let endpoint = resolve_server_endpoint(global, &username).await?;
+            let client = ServerClient::from(Transport::new(endpoint));
             let auth_token = client
-                .v1_device_auth(handle, chain)
+                .v1_device_auth(username, chain)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             let output = AuthOutput {
@@ -172,18 +172,18 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             print_json(&dump)?;
         }
         Command::MailboxSend {
-            handle,
+            username,
             chain,
             message,
         } => {
-            let endpoint = resolve_gateway_endpoint(global, &handle).await?;
-            let client = GatewayClient::from(Transport::new(endpoint));
+            let endpoint = resolve_server_endpoint(global, &username).await?;
+            let client = ServerClient::from(Transport::new(endpoint));
             let chain = read_bcs::<CertificateChain>(&chain)?;
             let auth = client
-                .v1_device_auth(handle.clone(), chain)
+                .v1_device_auth(username.clone(), chain)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-            let mailbox = MailboxId::direct(&handle);
+            let mailbox = MailboxId::direct(&username);
             let msg = Blob {
                 kind: Blob::V1_PLAINTEXT_DIRECT_MESSAGE.into(),
                 inner: Bytes::from(message.into_bytes()),
@@ -194,18 +194,18 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         }
         Command::MailboxRecv {
-            handle,
+            username,
             chain,
             timeout_ms,
         } => {
-            let endpoint = resolve_gateway_endpoint(global, &handle).await?;
-            let client = GatewayClient::from(Transport::new(endpoint));
+            let endpoint = resolve_server_endpoint(global, &username).await?;
+            let client = ServerClient::from(Transport::new(endpoint));
             let chain = read_bcs::<CertificateChain>(&chain)?;
             let auth = client
-                .v1_device_auth(handle.clone(), chain)
+                .v1_device_auth(username.clone(), chain)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-            let mailbox = MailboxId::direct(&handle);
+            let mailbox = MailboxId::direct(&username);
             let mut after = NanoTimestamp(0);
             loop {
                 let args = vec![MailboxRecvArgs {
@@ -231,22 +231,22 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn resolve_gateway_endpoint(global: &GlobalArgs, handle: &Handle) -> anyhow::Result<Url> {
+async fn resolve_server_endpoint(global: &GlobalArgs, username: &UserName) -> anyhow::Result<Url> {
     let client = build_dir_client(global).await?;
     let descriptor = client
-        .get_handle_descriptor(handle)
+        .get_user_descriptor(username)
         .await?
-        .with_context(|| format!("handle not found: {}", handle.as_str()))?;
-    let gateway_name = descriptor.gateway_name;
-    let gateway = client
-        .get_gateway_descriptor(&gateway_name)
+        .with_context(|| format!("username not found: {}", username.as_str()))?;
+    let server_name = descriptor.server_name;
+    let server = client
+        .get_server_descriptor(&server_name)
         .await?
-        .with_context(|| format!("gateway not found: {}", gateway_name.as_str()))?;
-    let url = gateway
+        .with_context(|| format!("server not found: {}", server_name.as_str()))?;
+    let url = server
         .public_urls
         .first()
         .cloned()
-        .context("gateway has no public URLs")?;
+        .context("server has no public URLs")?;
     Ok(url)
 }
 

@@ -1,9 +1,9 @@
 pub mod certificate;
 pub mod directory;
 pub mod envelope;
-pub mod gateway;
+pub mod server;
 pub mod group;
-pub mod handle;
+pub mod username;
 pub mod msg_content;
 pub mod timestamp;
 
@@ -35,8 +35,8 @@ macro_rules! v1_kind {
 }
 
 impl Blob {
-    v1_kind!(handle_descriptor);
-    v1_kind!(gateway_descriptor);
+    v1_kind!(user_descriptor);
+    v1_kind!(server_descriptor);
 
     v1_kind!(message_content);
     v1_kind!(plaintext_direct_message);

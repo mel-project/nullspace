@@ -7,8 +7,8 @@ use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
 use futures_concurrency::future::Race;
 use tokio::sync::oneshot;
-use xirtam_structs::gateway::{
-    AuthToken, GatewayClient, GatewayServerError, MailboxEntry, MailboxId, MailboxRecvArgs,
+use xirtam_structs::server::{
+    AuthToken, ServerClient, ServerError, MailboxEntry, MailboxId, MailboxRecvArgs,
 };
 use xirtam_structs::timestamp::NanoTimestamp;
 
@@ -22,7 +22,7 @@ const LONG_POLL_DEC_FACTOR: f64 = 0.5;
 pub static LONG_POLLER: Ctx<Arc<LongPoller>> = |_ctx| Arc::new(LongPoller::new());
 
 pub struct LongPoller {
-    workers: DashMap<usize, GatewayWorker>,
+    workers: DashMap<usize, ServerWorker>,
 }
 
 impl LongPoller {
@@ -34,12 +34,12 @@ impl LongPoller {
 
     pub async fn recv(
         &self,
-        gateway: Arc<GatewayClient>,
+        server: Arc<ServerClient>,
         auth: AuthToken,
         mailbox: MailboxId,
         after: NanoTimestamp,
     ) -> anyhow::Result<MailboxEntry> {
-        let worker = self.worker_for_gateway(gateway);
+        let worker = self.worker_for_server(server);
         let (tx, rx) = oneshot::channel();
         let request = PollRequest {
             auth,
@@ -55,14 +55,14 @@ impl LongPoller {
         rx.await.context("long poller worker closed")?
     }
 
-    fn worker_for_gateway(&self, gateway: Arc<GatewayClient>) -> GatewayWorker {
-        let key = Arc::as_ptr(&gateway) as usize;
+    fn worker_for_server(&self, server: Arc<ServerClient>) -> ServerWorker {
+        let key = Arc::as_ptr(&server) as usize;
         if let Some(existing) = self.workers.get(&key) {
             return existing.clone();
         }
         let (sender, receiver) = async_channel::unbounded();
-        let worker = GatewayWorker { sender };
-        let task = run_gateway_worker(gateway, receiver);
+        let worker = ServerWorker { sender };
+        let task = run_server_worker(server, receiver);
         tokio::spawn(task);
         self.workers.insert(key, worker.clone());
         worker
@@ -70,7 +70,7 @@ impl LongPoller {
 }
 
 #[derive(Clone)]
-struct GatewayWorker {
+struct ServerWorker {
     sender: Sender<PollRequest>,
 }
 
@@ -81,7 +81,7 @@ struct PollRequest {
     respond_to: oneshot::Sender<anyhow::Result<MailboxEntry>>,
 }
 
-async fn run_gateway_worker(gateway: Arc<GatewayClient>, receiver: Receiver<PollRequest>) {
+async fn run_server_worker(server: Arc<ServerClient>, receiver: Receiver<PollRequest>) {
     let mut pending: Vec<PollRequest> = Vec::new();
     let mut timeout_ms = LONG_POLL_MIN_MS;
     loop {
@@ -102,7 +102,7 @@ async fn run_gateway_worker(gateway: Arc<GatewayClient>, receiver: Receiver<Poll
             }
         };
         let poll_fut = async {
-            let response = gateway
+            let response = server
                 .v1_mailbox_multirecv(args, timeout_ms)
                 .await
                 .map_err(|err| anyhow::anyhow!(err.to_string()));
@@ -132,7 +132,7 @@ async fn run_gateway_worker(gateway: Arc<GatewayClient>, receiver: Receiver<Poll
                     }
                     Ok(Err(_)) => {}
                 }
-                if let Err(err) = handle_poll_response(response, &mailbox_keys, &mut pending).await
+                if let Err(err) = username_poll_response(response, &mailbox_keys, &mut pending).await
                 {
                     tracing::warn!(error = %err, "long poller error");
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -145,7 +145,7 @@ async fn run_gateway_worker(gateway: Arc<GatewayClient>, receiver: Receiver<Poll
 enum WorkerEvent {
     NewRequest(PollRequest),
     PollResponse(
-        Result<Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError>, anyhow::Error>,
+        Result<Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerError>, anyhow::Error>,
     ),
     Shutdown,
 }
@@ -181,9 +181,9 @@ fn build_args(
     (args, indices)
 }
 
-async fn handle_poll_response(
+async fn username_poll_response(
     response: Result<
-        Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError>,
+        Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerError>,
         anyhow::Error,
     >,
     mailbox_keys: &HashMap<(MailboxId, AuthToken), Vec<usize>>,

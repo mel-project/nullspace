@@ -4,7 +4,7 @@ use egui_hooks::hook::state::Var;
 use pollster::FutureExt;
 use smol_str::SmolStr;
 use xirtam_client::internal::DmMessage;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 
 use crate::XirtamApp;
 use crate::promises::flatten_rpc;
@@ -12,7 +12,7 @@ use crate::promises::flatten_rpc;
 use super::{ConvoKind, ConvoStateKey, render_row};
 
 pub struct DirectConvo {
-    pub peer: Handle,
+    pub peer: UserName,
 }
 
 impl ConvoKind for DirectConvo {

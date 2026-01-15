@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_FILE="$ROOT/demo/gateway.toml"
+CONFIG_FILE="$ROOT/demo/server.toml"
 
 cd "$ROOT"
 
-exec cargo run -p xirtam-gateway -- --config "$CONFIG_FILE"
+exec cargo run -p xirtam-server -- --config "$CONFIG_FILE"

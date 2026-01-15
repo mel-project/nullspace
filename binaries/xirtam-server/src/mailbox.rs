@@ -8,14 +8,14 @@ use futures_concurrency::future::Race;
 use sqlx::{Sqlite, Transaction};
 use tokio::time::{Duration, timeout};
 use xirtam_crypt::hash::{BcsHashExt, Hash};
-use xirtam_structs::gateway::{
-    AuthToken, GatewayServerError, MailboxAcl, MailboxId, MailboxRecvArgs,
+use xirtam_structs::server::{
+    AuthToken, ServerError, MailboxAcl, MailboxId, MailboxRecvArgs,
 };
 use xirtam_structs::{
     Blob,
-    gateway::MailboxEntry,
+    server::MailboxEntry,
     group::GroupId,
-    handle::Handle,
+    username::UserName,
     timestamp::NanoTimestamp,
 };
 
@@ -29,12 +29,12 @@ pub async fn mailbox_send(
     auth: AuthToken,
     mailbox: MailboxId,
     message: Blob,
-) -> Result<NanoTimestamp, GatewayServerError> {
+) -> Result<NanoTimestamp, ServerError> {
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
     let acl = acl_for_token(&mut tx, &mailbox, auth).await?;
     if !acl.can_send {
         tracing::debug!(auth = ?auth, mailbox = ?mailbox, "mailbox send denied");
-        return Err(GatewayServerError::AccessDenied);
+        return Err(ServerError::AccessDenied);
     }
     let received_at = NanoTimestamp::now();
     let sender_hash = auth.bcs_hash();
@@ -61,7 +61,7 @@ pub async fn mailbox_send(
 pub async fn mailbox_multirecv(
     args: Vec<MailboxRecvArgs>,
     timeout_ms: u64,
-) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, GatewayServerError> {
+) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerError> {
     tracing::debug!(args = args.len(), timeout_ms, "mailbox multirecv");
     let mut futs = vec![];
     for arg in args.iter() {
@@ -72,7 +72,7 @@ pub async fn mailbox_multirecv(
                 let acl = acl_for_token(&mut tx, &arg.mailbox, arg.auth).await?;
                 if !acl.can_recv {
                     tracing::debug!(auth = ?arg.auth, mailbox = ?arg.mailbox, "mailbox recv denied");
-                    return Err(GatewayServerError::AccessDenied);
+                    return Err(ServerError::AccessDenied);
                 }
                 let rows = sqlx::query_as::<_, (i64, String, Vec<u8>, Option<Vec<u8>>)>(
                     "SELECT received_at, message_kind, message_body, sender_auth_token_hash \
@@ -130,7 +130,7 @@ pub async fn mailbox_acl_edit(
     auth: AuthToken,
     mailbox: MailboxId,
     arg: MailboxAcl,
-) -> Result<(), GatewayServerError> {
+) -> Result<(), ServerError> {
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
     let caller_hash = auth.bcs_hash();
     if arg.token_hash == caller_hash && acl_is_empty(&arg) {
@@ -163,7 +163,7 @@ pub async fn mailbox_acl_edit(
     let can_add_subset = existing.is_none() && acl_is_subset(&arg, &acl);
     if !acl.can_edit_acl && !can_add_subset {
         tracing::debug!(auth = ?auth, mailbox = ?mailbox, "mailbox acl edit denied");
-        return Err(GatewayServerError::AccessDenied);
+        return Err(ServerError::AccessDenied);
     }
     insert_acl(&mut tx, &mailbox, &arg).await?;
     tx.commit().await.map_err(fatal_retry_later)?;
@@ -173,10 +173,10 @@ pub async fn mailbox_acl_edit(
 
 pub async fn update_dm_mailbox(
     tx: &mut Transaction<'_, Sqlite>,
-    handle: &Handle,
+    username: &UserName,
     new_token: Option<AuthToken>,
-) -> Result<(), GatewayServerError> {
-    let mailbox_id = MailboxId::direct(handle);
+) -> Result<(), ServerError> {
+    let mailbox_id = MailboxId::direct(username);
     let created_at = NanoTimestamp::now().0 as i64;
     sqlx::query("INSERT OR IGNORE INTO mailboxes (mailbox_id, created_at) VALUES (?, ?)")
         .bind(mailbox_id.to_bytes().to_vec())
@@ -209,11 +209,11 @@ pub async fn update_dm_mailbox(
 pub async fn register_group(
     auth: AuthToken,
     group: GroupId,
-) -> Result<(), GatewayServerError> {
+) -> Result<(), ServerError> {
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
     if !auth_token_exists(&mut tx, auth).await? {
         tracing::debug!(auth = ?auth, "group mailbox create denied: unknown auth token");
-        return Err(GatewayServerError::AccessDenied);
+        return Err(ServerError::AccessDenied);
     }
     let created_at = NanoTimestamp::now().0 as i64;
     let mailboxes = [
@@ -244,7 +244,7 @@ async fn acl_for_token(
     tx: &mut Transaction<'_, Sqlite>,
     mailbox_id: &MailboxId,
     token: AuthToken,
-) -> Result<MailboxAcl, GatewayServerError> {
+) -> Result<MailboxAcl, ServerError> {
     if let Some(acl) = load_acl(tx, mailbox_id, token).await? {
         return Ok(acl);
     }
@@ -260,7 +260,7 @@ async fn insert_acl(
     tx: &mut Transaction<'_, Sqlite>,
     mailbox_id: &MailboxId,
     acl: &MailboxAcl,
-) -> Result<(), GatewayServerError> {
+) -> Result<(), ServerError> {
     sqlx::query(
         "INSERT OR REPLACE INTO mailbox_acl \
          (mailbox_id, token_hash, can_edit_acl, can_send, can_recv) \
@@ -281,7 +281,7 @@ async fn load_acl(
     tx: &mut Transaction<'_, Sqlite>,
     mailbox_id: &MailboxId,
     token: AuthToken,
-) -> Result<Option<MailboxAcl>, GatewayServerError> {
+) -> Result<Option<MailboxAcl>, ServerError> {
     load_acl_hash(tx, mailbox_id, token.bcs_hash()).await
 }
 
@@ -308,7 +308,7 @@ async fn load_acl_hash(
     tx: &mut Transaction<'_, Sqlite>,
     mailbox_id: &MailboxId,
     token_hash: Hash,
-) -> Result<Option<MailboxAcl>, GatewayServerError> {
+) -> Result<Option<MailboxAcl>, ServerError> {
     let row = sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT can_edit_acl, can_send, can_recv \
          FROM mailbox_acl WHERE mailbox_id = ? AND token_hash = ?",
@@ -330,7 +330,7 @@ async fn delete_acl(
     tx: &mut Transaction<'_, Sqlite>,
     mailbox_id: &MailboxId,
     token_hash: &Hash,
-) -> Result<(), GatewayServerError> {
+) -> Result<(), ServerError> {
     sqlx::query("DELETE FROM mailbox_acl WHERE mailbox_id = ? AND token_hash = ?")
         .bind(mailbox_id.to_bytes().to_vec())
         .bind(token_hash.to_bytes().to_vec())
@@ -343,7 +343,7 @@ async fn delete_acl(
 async fn auth_token_exists(
     tx: &mut Transaction<'_, Sqlite>,
     auth: AuthToken,
-) -> Result<bool, GatewayServerError> {
+) -> Result<bool, ServerError> {
     let auth_bytes = bcs::to_bytes(&auth).map_err(fatal_retry_later)?;
     let row = sqlx::query_scalar::<_, i64>(
         "SELECT 1 FROM device_auth_tokens WHERE auth_token = ? LIMIT 1",

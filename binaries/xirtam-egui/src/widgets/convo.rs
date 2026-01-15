@@ -12,13 +12,13 @@ use egui_hooks::hook::state::Var;
 use tracing::debug;
 use xirtam_client::internal::DmMessage;
 use xirtam_structs::group::{GroupId, GroupInviteMsg};
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 use xirtam_structs::msg_content::MessagePayload;
 use xirtam_structs::timestamp::NanoTimestamp;
 
 use crate::XirtamApp;
 use crate::promises::flatten_rpc;
-use crate::utils::color::handle_color;
+use crate::utils::color::username_color;
 use crate::utils::markdown::layout_md_raw;
 use crate::widgets::convo::chat_record::ChatRecord;
 
@@ -31,14 +31,14 @@ const PAGE_LIMIT: u16 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatSelection {
-    Dm(Handle),
+    Dm(UserName),
     Group(GroupId),
 }
 
 impl ChatSelection {
     fn key(&self) -> String {
         match self {
-            ChatSelection::Dm(handle) => format!("dm:{}", handle.as_str()),
+            ChatSelection::Dm(username) => format!("dm:{}", username.as_str()),
             ChatSelection::Group(group) => format!("group:{}", short_group_id(group)),
         }
     }
@@ -48,7 +48,7 @@ pub struct Convo<'a>(pub &'a mut XirtamApp, pub ChatSelection);
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 enum ConvoStateKey {
-    Dm(Handle),
+    Dm(UserName),
     Group(GroupId),
 }
 
@@ -296,7 +296,7 @@ fn render_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M, app: Option<&m
             ..Default::default()
         },
     );
-    let sender_color = handle_color(item.sender());
+    let sender_color = username_color(item.sender());
     job.append(
         &format!("{}: ", item.sender()),
         0.0,

@@ -16,7 +16,7 @@ pub struct AddDevice<'a> {
 
 impl Widget for AddDevice<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let mut can_sign: Var<bool> = ui.use_state(|| true, ()).into_var();
+        let mut can_issue: Var<bool> = ui.use_state(|| true, ()).into_var();
         let mut never_expires: Var<bool> = ui.use_state(|| true, ()).into_var();
         let mut expiry_days: Var<u32> = ui.use_state(|| 365, ()).into_var();
         let mut bundle_str: Var<String> = ui.use_state(String::new, ()).into_var();
@@ -28,7 +28,7 @@ impl Widget for AddDevice<'_> {
                 ui.separator();
                 ui.label("Generate a device bundle here, then paste it into the new device");
                 let busy = bundle_req.is_running();
-                ui.checkbox(&mut can_sign, "Allow this device to sign new devices");
+                ui.checkbox(&mut can_issue, "Allow this device to issue new devices");
                 ui.checkbox(&mut never_expires, "Never expires");
                 ui.add_enabled_ui(!*never_expires, |ui| {
                     ui.horizontal(|ui| {
@@ -49,9 +49,9 @@ impl Widget for AddDevice<'_> {
                         Timestamp(secs)
                     };
                     let rpc = self.app.client.rpc();
-                    let can_sign = *can_sign;
+                    let can_issue = *can_issue;
                     let promise = Promise::spawn_async(async move {
-                        flatten_rpc(rpc.new_device_bundle(can_sign, expiry).await)
+                        flatten_rpc(rpc.new_device_bundle(can_issue, expiry).await)
                     });
                     bundle_req.start(promise);
                 }

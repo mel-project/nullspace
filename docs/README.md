@@ -1,1 +1,1 @@
-# Hello world
+# xirtam: an experimental confederal protocol

@@ -10,7 +10,7 @@ use xirtam_crypt::signing::Signature;
 
 use crate::Blob;
 use crate::certificate::{CertificateChain, DevicePublic, DeviceSecret};
-use crate::handle::Handle;
+use crate::username::UserName;
 
 /// An encrypted payload with per-device key headers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ pub struct Envelope {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct EnvelopeHeader {
-    sender_handle: Handle,
+    sender_username: UserName,
     sender_chain: CertificateChain,
     key: [u8; 32],
     key_sig: Signature,
@@ -29,7 +29,7 @@ struct EnvelopeHeader {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecryptedEnvelope {
-    sender_handle: Handle,
+    sender_username: UserName,
     sender_chain: CertificateChain,
     key: [u8; 32],
     key_sig: Signature,
@@ -43,7 +43,7 @@ pub struct EnvelopeError;
 impl Envelope {
     pub fn encrypt_message<I>(
         message: &Blob,
-        sender_handle: Handle,
+        sender_username: UserName,
         sender_chain: CertificateChain,
         sender_device: &DeviceSecret,
         recipients: I,
@@ -51,11 +51,12 @@ impl Envelope {
     where
         I: IntoIterator<Item = (DevicePublic, DhPublic)>,
     {
+        // Fresh key per message, so using a fixed nonce here does not repeat under the same key.
         let key = AeadKey::random();
         let key_bytes = key.to_bytes();
         let key_sig = sender_device.sign(&key_bytes);
         let header = EnvelopeHeader {
-            sender_handle,
+            sender_username,
             sender_chain,
             key: key_bytes,
             key_sig,
@@ -96,7 +97,7 @@ impl Envelope {
             .decrypt([0u8; 24], &self.body, &[])
             .map_err(|_| EnvelopeError)?;
         Ok(DecryptedEnvelope {
-            sender_handle: header.sender_handle,
+            sender_username: header.sender_username,
             sender_chain: header.sender_chain,
             key: header.key,
             key_sig: header.key_sig,
@@ -106,8 +107,8 @@ impl Envelope {
 }
 
 impl DecryptedEnvelope {
-    pub fn handle(&self) -> &Handle {
-        &self.sender_handle
+    pub fn username(&self) -> &UserName {
+        &self.sender_username
     }
 
     pub fn verify(self, sender_root_hash: Hash) -> Result<Blob, EnvelopeError> {
@@ -126,6 +127,7 @@ impl DecryptedEnvelope {
 }
 
 fn encrypt_header(to: &DhPublic, msg: &[u8]) -> Result<Bytes, EnvelopeError> {
+    // Fresh ephemeral DH keypair per recipient keeps the derived AEAD key unique.
     let eph_sk = DhSecret::random();
     let ss = eph_sk.diffie_hellman(to);
     let ciphertext = AeadKey::from_bytes(ss)
@@ -153,7 +155,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_multiple_recipients() {
         let sender_secret = DeviceSecret::random();
-        let sender_handle = Handle::parse("@sender01").expect("sender handle");
+        let sender_username = UserName::parse("@sender01").expect("sender username");
         let sender_cert = sender_secret.self_signed(Timestamp(u64::MAX), true);
         let sender_chain = CertificateChain(vec![sender_cert.clone()]);
         let sender_root_hash = sender_cert.pk.bcs_hash();
@@ -165,7 +167,7 @@ mod tests {
         let medium_sender = DhSecret::random();
 
         let content = MessageContent {
-            recipient: Handle::parse("@recipient01").expect("recipient handle"),
+            recipient: UserName::parse("@recipient01").expect("recipient username"),
             sent_at: NanoTimestamp(0),
             mime: smol_str::SmolStr::new("text/plain"),
             body: Bytes::from_static(b"hello recipients"),
@@ -177,7 +179,7 @@ mod tests {
 
         let encrypted = Envelope::encrypt_message(
             &message,
-            sender_handle.clone(),
+            sender_username.clone(),
             sender_chain,
             &sender_secret,
             [
@@ -195,8 +197,8 @@ mod tests {
             .decrypt_message(&recipient_b.public(), &medium_b)
             .expect("decrypt b");
 
-        assert_eq!(decrypted_a.handle(), &sender_handle);
-        assert_eq!(decrypted_b.handle(), &sender_handle);
+        assert_eq!(decrypted_a.username(), &sender_username);
+        assert_eq!(decrypted_b.username(), &sender_username);
 
         let message_a = decrypted_a.verify(sender_root_hash).expect("verify a");
         let message_b = decrypted_b.verify(sender_root_hash).expect("verify b");

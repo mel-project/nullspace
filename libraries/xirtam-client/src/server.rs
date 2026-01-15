@@ -5,22 +5,22 @@ use anyhow::Context;
 use moka::future::Cache;
 use xirtam_dirclient::DirClient;
 use xirtam_nanorpc::Transport;
-use xirtam_structs::gateway::{GatewayClient, GatewayName};
+use xirtam_structs::server::{ServerClient, ServerName};
 
 use crate::config::Config;
 use crate::database::DATABASE;
 
-static GATEWAY_CACHE: LazyLock<Cache<GatewayName, Arc<GatewayClient>>> = LazyLock::new(|| {
+static SERVER_CACHE: LazyLock<Cache<ServerName, Arc<ServerClient>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(12 * 60 * 60))
         .build()
 });
 
-pub async fn get_gateway_client(
+pub async fn get_server_client(
     ctx: &anyctx::AnyCtx<Config>,
-    name: &GatewayName,
-) -> anyhow::Result<Arc<GatewayClient>> {
-    GATEWAY_CACHE
+    name: &ServerName,
+) -> anyhow::Result<Arc<ServerClient>> {
+    SERVER_CACHE
         .try_get_with(name.clone(), async {
             let transport = Transport::new(ctx.init().dir_endpoint.clone());
             let dir = DirClient::new(
@@ -30,15 +30,15 @@ pub async fn get_gateway_client(
             )
             .await?;
             let descriptor = dir
-                .get_gateway_descriptor(name)
+                .get_server_descriptor(name)
                 .await?
-                .context("gateway not in directory")?;
+                .context("server not in directory")?;
             let endpoint = descriptor
                 .public_urls
                 .first()
                 .cloned()
-                .context("gateway has no public URLs")?;
-            Ok(Arc::new(GatewayClient::from(Transport::new(endpoint))))
+                .context("server has no public URLs")?;
+            Ok(Arc::new(ServerClient::from(Transport::new(endpoint))))
         })
         .await
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))

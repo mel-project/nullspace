@@ -13,19 +13,19 @@ use axum::{Router, routing::post};
 use futures_concurrency::future::Race;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use xirtam_structs::gateway::{GatewayServerError, GatewayService};
+use xirtam_structs::server::{ServerError, ServerService};
 
 use crate::config::CONFIG;
-use crate::rpc::GatewayServer;
+use crate::rpc::ServerRpc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("xirtam_gateway=debug"));
+        .unwrap_or_else(|_| EnvFilter::new("xirtam_server=debug"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     dir_client::init_name().await?;
-    let app = Router::new().route("/", post(rpc::handle_rpc));
+    let app = Router::new().route("/", post(rpc::rpc_handler));
     let listener = TcpListener::bind(CONFIG.listen).await?;
     let mut servers: Vec<Pin<Box<dyn Future<Output = anyhow::Result<()>>>>> = Vec::new();
 
@@ -34,14 +34,14 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     if let Some(tcp_listen) = CONFIG.tcp_listen {
-        let service = GatewayService(GatewayServer);
+        let service = ServerService(ServerRpc);
         servers.push(Box::pin(async move {
             xirtam_nanorpc::serve_tcp(tcp_listen, service).await
         }));
     }
 
     if let Some(lz4_listen) = CONFIG.lz4_listen {
-        let service = GatewayService(GatewayServer);
+        let service = ServerService(ServerRpc);
         servers.push(Box::pin(async move {
             xirtam_nanorpc::serve_lz4tcp(lz4_listen, service).await
         }));
@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn fatal_retry_later(e: impl Display) -> GatewayServerError {
+fn fatal_retry_later(e: impl Display) -> ServerError {
     tracing::error!("fatal error: {e}");
-    GatewayServerError::RetryLater
+    ServerError::RetryLater
 }

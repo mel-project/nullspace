@@ -6,7 +6,7 @@ use poll_promise::Promise;
 use pollster::block_on;
 use xirtam_client::internal::GroupMemberStatus;
 use xirtam_structs::group::GroupId;
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 
 use crate::XirtamApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
@@ -19,7 +19,7 @@ pub struct GroupRoster<'a> {
 
 impl Widget for GroupRoster<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let mut invite_handle: Var<String> = ui.use_state(String::new, ()).into_var();
+        let mut invite_username: Var<String> = ui.use_state(String::new, ()).into_var();
         let invite_promise = ui.use_state(PromiseSlot::new, ());
 
         if *self.open {
@@ -37,7 +37,7 @@ impl Widget for GroupRoster<'_> {
                 match members {
                     Ok(members) => {
                         for member in members {
-                            let mut label = member.handle.to_string();
+                            let mut label = member.username.to_string();
                             if member.is_admin {
                                 label.push_str(" [admin]");
                             }
@@ -63,21 +63,21 @@ impl Widget for GroupRoster<'_> {
                     ui.label("Invite");
                     ui.add_enabled(
                         !busy,
-                        TextEdit::singleline(&mut *invite_handle).desired_width(200.0),
+                        TextEdit::singleline(&mut *invite_username).desired_width(200.0),
                     );
                     if ui.add_enabled(!busy, Button::new("Send")).clicked() {
-                        let handle = match Handle::parse(invite_handle.trim()) {
-                            Ok(handle) => handle,
+                        let username = match UserName::parse(invite_username.trim()) {
+                            Ok(username) => username,
                             Err(err) => {
                                 self.app.state.error_dialog =
-                                    Some(format!("invalid handle: {err}"));
+                                    Some(format!("invalid username: {err}"));
                                 return;
                             }
                         };
                         let rpc = self.app.client.rpc();
                         let group = self.group;
                         let promise = Promise::spawn_async(async move {
-                            flatten_rpc(rpc.group_invite(group, handle).await)
+                            flatten_rpc(rpc.group_invite(group, username).await)
                         });
                         invite_promise.start(promise);
                     }
@@ -85,7 +85,7 @@ impl Widget for GroupRoster<'_> {
                 if let Some(result) = invite_promise.poll() {
                     match result {
                         Ok(()) => {
-                            invite_handle.clear();
+                            invite_username.clear();
                         }
                         Err(err) => {
                             self.app.state.error_dialog = Some(err);

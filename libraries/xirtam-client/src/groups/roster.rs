@@ -1,12 +1,12 @@
 use anyhow::Context;
 use xirtam_structs::group::{GroupId, GroupManageMsg};
-use xirtam_structs::handle::Handle;
+use xirtam_structs::username::UserName;
 
 use crate::internal::GroupMemberStatus;
 
 #[derive(Clone, Debug)]
 pub struct RosterMember {
-    pub handle: Handle,
+    pub username: UserName,
     pub is_admin: bool,
     pub status: GroupMemberStatus,
 }
@@ -22,14 +22,14 @@ impl RosterMember {
 
 pub struct GroupRoster {
     group_id: GroupId,
-    init_admin: Handle,
+    init_admin: UserName,
 }
 
 impl GroupRoster {
     pub async fn load(
         tx: &mut sqlx::SqliteConnection,
         group_id: GroupId,
-        init_admin: Handle,
+        init_admin: UserName,
     ) -> anyhow::Result<Self> {
         let roster = Self {
             group_id,
@@ -46,15 +46,15 @@ impl GroupRoster {
     pub async fn get(
         &self,
         tx: &mut sqlx::SqliteConnection,
-        handle: &Handle,
+        username: &UserName,
     ) -> anyhow::Result<Option<RosterMember>> {
-        self.get_raw(tx, handle).await
+        self.get_raw(tx, username).await
     }
 
     pub async fn apply_manage_message(
         &self,
         tx: &mut sqlx::SqliteConnection,
-        sender: &Handle,
+        sender: &UserName,
         manage: GroupManageMsg,
     ) -> anyhow::Result<bool> {
         let sender_member = self.get_raw(tx, sender).await?;
@@ -65,11 +65,11 @@ impl GroupRoster {
             .unwrap_or(false);
 
         let changed = match manage {
-            GroupManageMsg::InviteSent(handle) => {
+            GroupManageMsg::InviteSent(username) => {
                 if !sender_active {
                     false
                 } else {
-                    match self.get_raw(tx, &handle).await? {
+                    match self.get_raw(tx, &username).await? {
                         Some(member)
                             if member.status == GroupMemberStatus::Banned
                                 || member.status == GroupMemberStatus::Accepted =>
@@ -81,7 +81,7 @@ impl GroupRoster {
                             self.upsert_member(
                                 tx,
                                 RosterMember {
-                                    handle,
+                                    username,
                                     is_admin: false,
                                     status: GroupMemberStatus::Pending,
                                 },
@@ -99,7 +99,7 @@ impl GroupRoster {
                         self.upsert_member(
                             tx,
                             RosterMember {
-                                handle: sender.clone(),
+                                username: sender.clone(),
                                 is_admin: false,
                                 status: GroupMemberStatus::Accepted,
                             },
@@ -110,7 +110,7 @@ impl GroupRoster {
                     self.upsert_member(
                         tx,
                         RosterMember {
-                            handle: sender.clone(),
+                            username: sender.clone(),
                             is_admin: false,
                             status: GroupMemberStatus::Accepted,
                         },
@@ -123,14 +123,14 @@ impl GroupRoster {
                 Some(_) => self.remove_member(tx, sender).await?,
                 None => false,
             },
-            GroupManageMsg::Ban(handle) => {
+            GroupManageMsg::Ban(username) => {
                 if !sender_admin {
                     false
                 } else {
                     self.upsert_member(
                         tx,
                         RosterMember {
-                            handle,
+                            username,
                             is_admin: false,
                             status: GroupMemberStatus::Banned,
                         },
@@ -138,15 +138,15 @@ impl GroupRoster {
                     .await?
                 }
             }
-            GroupManageMsg::Unban(handle) => {
+            GroupManageMsg::Unban(username) => {
                 if !sender_admin {
                     false
-                } else if let Some(member) = self.get_raw(tx, &handle).await? {
+                } else if let Some(member) = self.get_raw(tx, &username).await? {
                     if member.status == GroupMemberStatus::Banned {
                         self.upsert_member(
                             tx,
                             RosterMember {
-                                handle,
+                                username,
                                 is_admin: false,
                                 status: GroupMemberStatus::Pending,
                             },
@@ -159,15 +159,15 @@ impl GroupRoster {
                     false
                 }
             }
-            GroupManageMsg::AddAdmin(handle) => {
+            GroupManageMsg::AddAdmin(username) => {
                 if !sender_admin {
                     false
-                } else if let Some(member) = self.get_raw(tx, &handle).await? {
+                } else if let Some(member) = self.get_raw(tx, &username).await? {
                     if member.is_active() {
                         self.upsert_member(
                             tx,
                             RosterMember {
-                                handle,
+                                username,
                                 is_admin: true,
                                 status: member.status,
                             },
@@ -180,15 +180,15 @@ impl GroupRoster {
                     false
                 }
             }
-            GroupManageMsg::RemoveAdmin(handle) => {
+            GroupManageMsg::RemoveAdmin(username) => {
                 if !sender_admin {
                     false
-                } else if let Some(member) = self.get_raw(tx, &handle).await? {
+                } else if let Some(member) = self.get_raw(tx, &username).await? {
                     if member.is_active() {
                         self.upsert_member(
                             tx,
                             RosterMember {
-                                handle,
+                                username,
                                 is_admin: false,
                                 status: member.status,
                             },
@@ -225,7 +225,7 @@ impl GroupRoster {
             .upsert_member(
                 tx,
                 RosterMember {
-                    handle: self.init_admin.clone(),
+                    username: self.init_admin.clone(),
                     is_admin: true,
                     status: GroupMemberStatus::Accepted,
                 },
@@ -240,17 +240,17 @@ impl GroupRoster {
 
     async fn list_raw(&self, tx: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<RosterMember>> {
         let rows = sqlx::query_as::<_, (String, i64, String)>(
-            "SELECT handle, is_admin, status FROM group_members WHERE group_id = ? ORDER BY handle",
+            "SELECT username, is_admin, status FROM group_members WHERE group_id = ? ORDER BY username",
         )
         .bind(self.group_id.as_bytes().to_vec())
         .fetch_all(&mut *tx)
         .await?;
         let mut out = Vec::with_capacity(rows.len());
-        for (handle, is_admin, status) in rows {
-            let handle = Handle::parse(handle)?;
+        for (username, is_admin, status) in rows {
+            let username = UserName::parse(username)?;
             let status = status_from_str(&status).context("invalid group member status")?;
             out.push(RosterMember {
-                handle,
+                username,
                 is_admin: is_admin != 0,
                 status,
             });
@@ -261,13 +261,13 @@ impl GroupRoster {
     async fn get_raw(
         &self,
         tx: &mut sqlx::SqliteConnection,
-        handle: &Handle,
+        username: &UserName,
     ) -> anyhow::Result<Option<RosterMember>> {
         let row = sqlx::query_as::<_, (i64, String)>(
-            "SELECT is_admin, status FROM group_members WHERE group_id = ? AND handle = ?",
+            "SELECT is_admin, status FROM group_members WHERE group_id = ? AND username = ?",
         )
         .bind(self.group_id.as_bytes().to_vec())
-        .bind(handle.as_str())
+        .bind(username.as_str())
         .fetch_optional(&mut *tx)
         .await?;
         let Some((is_admin, status)) = row else {
@@ -275,7 +275,7 @@ impl GroupRoster {
         };
         let status = status_from_str(&status).context("invalid group member status")?;
         Ok(Some(RosterMember {
-            handle: handle.clone(),
+            username: username.clone(),
             is_admin: is_admin != 0,
             status,
         }))
@@ -287,10 +287,10 @@ impl GroupRoster {
         member: RosterMember,
     ) -> anyhow::Result<bool> {
         let existing = sqlx::query_as::<_, (i64, String)>(
-            "SELECT is_admin, status FROM group_members WHERE group_id = ? AND handle = ?",
+            "SELECT is_admin, status FROM group_members WHERE group_id = ? AND username = ?",
         )
         .bind(self.group_id.as_bytes().to_vec())
-        .bind(member.handle.as_str())
+        .bind(member.username.as_str())
         .fetch_optional(&mut *tx)
         .await?;
         if let Some((existing_admin, existing_status)) = existing {
@@ -301,13 +301,13 @@ impl GroupRoster {
             }
         }
         sqlx::query(
-            "INSERT INTO group_members (group_id, handle, is_admin, status) \
+            "INSERT INTO group_members (group_id, username, is_admin, status) \
              VALUES (?, ?, ?, ?) \
-             ON CONFLICT(group_id, handle) DO UPDATE SET \
+             ON CONFLICT(group_id, username) DO UPDATE SET \
              is_admin = excluded.is_admin, status = excluded.status",
         )
         .bind(self.group_id.as_bytes().to_vec())
-        .bind(member.handle.as_str())
+        .bind(member.username.as_str())
         .bind(i64::from(member.is_admin))
         .bind(status_as_str(&member.status))
         .execute(&mut *tx)
@@ -318,11 +318,11 @@ impl GroupRoster {
     async fn remove_member(
         &self,
         tx: &mut sqlx::SqliteConnection,
-        handle: &Handle,
+        username: &UserName,
     ) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM group_members WHERE group_id = ? AND handle = ?")
+        let result = sqlx::query("DELETE FROM group_members WHERE group_id = ? AND username = ?")
             .bind(self.group_id.as_bytes().to_vec())
-            .bind(handle.as_str())
+            .bind(username.as_str())
             .execute(&mut *tx)
             .await?;
         Ok(result.rows_affected() > 0)

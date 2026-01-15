@@ -5,11 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 DIR_ENDPOINT="http://127.0.0.1:4000"
 DIR_PUBLIC_KEY="OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124"
-GATEWAY_NAME="~demo01"
-HANDLE="@demo01"
+SERVER_NAME="~demo01"
+USERNAME="@demo01"
 
 STATE_DIR="$ROOT/demo/state"
-HANDLE_KEYS="$STATE_DIR/handle-owner.json"
+USERNAME_KEYS="$STATE_DIR/username-owner.json"
 DEVICE_SECRET="$STATE_DIR/device-secret.bcs"
 DEVICE_CHAIN="$STATE_DIR/device-chain.bcs"
 
@@ -19,15 +19,15 @@ mkdir -p "$STATE_DIR"
 MULTITOOL=(cargo run -p xirtam-multitool --)
 DIR_ARGS=(--endpoint "$DIR_ENDPOINT" --public-key "$DIR_PUBLIC_KEY")
 
-if [[ ! -f "$HANDLE_KEYS" ]]; then
-  "${MULTITOOL[@]}" keygen > "$HANDLE_KEYS"
+if [[ ! -f "$USERNAME_KEYS" ]]; then
+  "${MULTITOOL[@]}" keygen > "$USERNAME_KEYS"
 fi
 
-SIGNING_PUBLIC="$(jq -r '.signing.public' "$HANDLE_KEYS")"
-SIGNING_SECRET="$(jq -r '.signing.secret' "$HANDLE_KEYS")"
+SIGNING_PUBLIC="$(jq -r '.signing.public' "$USERNAME_KEYS")"
+SIGNING_SECRET="$(jq -r '.signing.secret' "$USERNAME_KEYS")"
 
 if [[ -z "$SIGNING_PUBLIC" || "$SIGNING_PUBLIC" == "null" || -z "$SIGNING_SECRET" || "$SIGNING_SECRET" == "null" ]]; then
-  echo "failed to read signing keys from $HANDLE_KEYS" >&2
+  echo "failed to read signing keys from $USERNAME_KEYS" >&2
   exit 1
 fi
 
@@ -46,13 +46,13 @@ if [[ -z "$ROOT_HASH" || "$ROOT_HASH" == "null" ]]; then
   exit 1
 fi
 
-"${MULTITOOL[@]}" "${DIR_ARGS[@]}" dir handle-add-owner "$HANDLE" \
+"${MULTITOOL[@]}" "${DIR_ARGS[@]}" dir username-add-owner "$USERNAME" \
   --owner "$SIGNING_PUBLIC" \
   --secret-key "$SIGNING_SECRET"
 
-"${MULTITOOL[@]}" "${DIR_ARGS[@]}" dir handle-insert "$HANDLE" "$GATEWAY_NAME" \
+"${MULTITOOL[@]}" "${DIR_ARGS[@]}" dir username-insert "$USERNAME" "$SERVER_NAME" \
   --roothash "$ROOT_HASH" \
   --secret-key "$SIGNING_SECRET"
 
-"${MULTITOOL[@]}" "${DIR_ARGS[@]}" device auth "$HANDLE" \
+"${MULTITOOL[@]}" "${DIR_ARGS[@]}" device auth "$USERNAME" \
   --chain "$DEVICE_CHAIN"

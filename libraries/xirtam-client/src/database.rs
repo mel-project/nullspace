@@ -285,7 +285,9 @@ async fn new_group_message_ids(
     let mut max_id = last_seen_id;
     for (id, group_id) in rows {
         max_id = max_id.max(id);
-        let Ok(group_id) = bcs::from_bytes::<GroupId>(&group_id) else {
+        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice())
+            .map(GroupId::from_bytes)
+        else {
             continue;
         };
         groups.insert(group_id);
@@ -312,7 +314,9 @@ async fn new_group_received_ids(
     let mut max_received_at = last_seen_received_at;
     for (received_at, group_id) in rows {
         max_received_at = max_received_at.max(received_at);
-        let Ok(group_id) = bcs::from_bytes::<GroupId>(&group_id) else {
+        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice())
+            .map(GroupId::from_bytes)
+        else {
             continue;
         };
         groups.insert(group_id);
@@ -326,7 +330,9 @@ async fn load_group_versions(db: &sqlx::SqlitePool) -> anyhow::Result<HashMap<Gr
         .await?;
     let mut out = HashMap::new();
     for (group_id, roster_version) in rows {
-        let Ok(group_id) = bcs::from_bytes::<GroupId>(&group_id) else {
+        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice())
+            .map(GroupId::from_bytes)
+        else {
             continue;
         };
         out.insert(group_id, roster_version);

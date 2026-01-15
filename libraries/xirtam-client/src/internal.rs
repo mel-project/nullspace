@@ -35,6 +35,7 @@ pub trait InternalProtocol {
         body: Bytes,
     ) -> Result<i64, InternalRpcError>;
     async fn group_create(&self, gateway: GatewayName) -> Result<GroupId, InternalRpcError>;
+    async fn own_gateway(&self) -> Result<GatewayName, InternalRpcError>;
     async fn group_invite(&self, group: GroupId, handle: Handle) -> Result<(), InternalRpcError>;
     async fn group_send(
         &self,
@@ -49,6 +50,7 @@ pub trait InternalProtocol {
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<GroupMessage>, InternalRpcError>;
+    async fn group_list(&self) -> Result<Vec<GroupId>, InternalRpcError>;
     async fn group_members(
         &self,
         group: GroupId,

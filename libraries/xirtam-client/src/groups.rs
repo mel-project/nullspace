@@ -340,7 +340,12 @@ pub async fn load_group(
     let Some((group_id_bytes, descriptor, gateway_name, token, key_current, key_prev)) = row else {
         return Ok(None);
     };
-    let group_id: GroupId = bcs::from_bytes(&group_id_bytes)?;
+    let group_id = GroupId::from_bytes(
+        group_id_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid group_id bytes"))?,
+    );
     let descriptor: GroupDescriptor = bcs::from_bytes(&descriptor)?;
     let token: AuthToken = bcs::from_bytes(&token)?;
     let group_key_current: AeadKey = bcs::from_bytes(&key_current)?;
@@ -364,7 +369,12 @@ pub async fn load_groups(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<GroupRecor
     .await?;
     let mut out = Vec::with_capacity(rows.len());
     for (group_id_bytes, descriptor, gateway_name, token, key_current, key_prev) in rows {
-        let group_id: GroupId = bcs::from_bytes(&group_id_bytes)?;
+        let group_id = GroupId::from_bytes(
+            group_id_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid group_id bytes"))?,
+        );
         let descriptor: GroupDescriptor = bcs::from_bytes(&descriptor)?;
         let token: AuthToken = bcs::from_bytes(&token)?;
         let group_key_current: AeadKey = bcs::from_bytes(&key_current)?;
@@ -813,7 +823,12 @@ async fn next_pending_group_message(
     let Some((id, group_id, mime, body)) = row else {
         return Ok(None);
     };
-    let group_id: GroupId = bcs::from_bytes(&group_id)?;
+    let group_id = GroupId::from_bytes(
+        group_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid group_id bytes"))?,
+    );
     Ok(Some(PendingGroupMessage {
         id,
         group_id,

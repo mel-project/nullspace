@@ -178,6 +178,18 @@ impl InternalProtocol for InternalImpl {
         create_group(&self.ctx, gateway).await.map_err(internal_err)
     }
 
+    async fn own_gateway(&self) -> Result<GatewayName, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        let identity = Identity::load(db).await.map_err(internal_err)?;
+        let dir = self.ctx.get(DIR_CLIENT);
+        let descriptor = dir
+            .get_handle_descriptor(&identity.handle)
+            .await
+            .map_err(internal_err)?
+            .ok_or_else(|| InternalRpcError::Other("handle not in directory".into()))?;
+        Ok(descriptor.gateway_name)
+    }
+
     async fn group_invite(&self, group: GroupId, handle: Handle) -> Result<(), InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         if !identity_exists(db).await.map_err(internal_err)? {
@@ -248,6 +260,25 @@ impl InternalProtocol for InternalImpl {
                 body: Bytes::from(body),
                 received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
             });
+        }
+        Ok(out)
+    }
+
+    async fn group_list(&self) -> Result<Vec<GroupId>, InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        if !identity_exists(db).await.map_err(internal_err)? {
+            return Err(InternalRpcError::NotReady);
+        }
+        let rows = sqlx::query_as::<_, (Vec<u8>,)>("SELECT group_id FROM groups ORDER BY group_id")
+            .fetch_all(db)
+            .await
+            .map_err(internal_err)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (group_id,) in rows {
+            let group = <[u8; 32]>::try_from(group_id.as_slice())
+                .map(GroupId::from_bytes)
+                .map_err(internal_err)?;
+            out.push(group);
         }
         Ok(out)
     }

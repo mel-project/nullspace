@@ -124,9 +124,12 @@ async fn run_gateway_worker(gateway: Arc<GatewayClient>, receiver: Receiver<Poll
                     Err(_) => {
                         timeout_ms = aimd_decrease(timeout_ms);
                     }
-                    Ok(_) => {
-                        timeout_ms = aimd_increase(timeout_ms);
+                    Ok(Ok(map)) => {
+                        if map.is_empty() {
+                            timeout_ms = aimd_increase(timeout_ms);
+                        }
                     }
+                    Ok(Err(_)) => {}
                 }
                 if let Err(err) = handle_poll_response(response, &mailbox_keys, &mut pending).await
                 {

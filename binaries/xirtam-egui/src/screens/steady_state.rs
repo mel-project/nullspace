@@ -2,6 +2,7 @@ use eframe::egui::{Response, ViewportCommand, Widget};
 use egui::{Align, Button, Layout};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
+use xirtam_structs::group::GroupId;
 use xirtam_structs::handle::Handle;
 
 use std::collections::BTreeMap;
@@ -11,7 +12,8 @@ use crate::XirtamApp;
 use crate::promises::flatten_rpc;
 use crate::widgets::add_contact::AddContact;
 use crate::widgets::add_device::AddDevice;
-use crate::widgets::convo::Convo;
+use crate::widgets::add_group::AddGroup;
+use crate::widgets::convo::{ChatSelection, Convo};
 use crate::widgets::preferences::Preferences;
 
 pub struct SteadyState<'a>(pub &'a mut XirtamApp);
@@ -19,13 +21,22 @@ pub struct SteadyState<'a>(pub &'a mut XirtamApp);
 impl Widget for SteadyState<'_> {
     fn ui(mut self, ui: &mut eframe::egui::Ui) -> Response {
         let rpc = Arc::new(self.0.client.rpc());
-        let mut selected_chat: Var<Option<Handle>> = ui.use_state(|| None, ()).into_var();
+        let mut selected_chat: Var<Option<ChatSelection>> =
+            ui.use_state(|| None, ()).into_var();
         let mut show_add_contact: Var<bool> = ui.use_state(|| false, ()).into_var();
+        let mut show_add_group: Var<bool> = ui.use_state(|| false, ()).into_var();
         let mut show_add_device: Var<bool> = ui.use_state(|| false, ()).into_var();
         let mut show_preferences: Var<bool> = ui.use_state(|| false, ()).into_var();
         let all_chats = ui.use_memo(
             || {
                 let result = pollster::block_on(rpc.all_peers());
+                flatten_rpc(result)
+            },
+            self.0.state.update_count,
+        );
+        let all_groups = ui.use_memo(
+            || {
+                let result = pollster::block_on(rpc.group_list());
                 flatten_rpc(result)
             },
             self.0.state.update_count,
@@ -56,7 +67,14 @@ impl Widget for SteadyState<'_> {
             .exact_width(200.0)
             .frame(frame)
             .show_inside(ui, |ui| {
-                self.render_left(ui, &all_chats, &mut selected_chat, &mut show_add_contact)
+                self.render_left(
+                    ui,
+                    &all_chats,
+                    &all_groups,
+                    &mut selected_chat,
+                    &mut show_add_contact,
+                    &mut show_add_group,
+                )
             });
         eframe::egui::CentralPanel::default()
             .frame(frame)
@@ -66,6 +84,10 @@ impl Widget for SteadyState<'_> {
         ui.add(AddContact {
             app: self.0,
             open: &mut show_add_contact,
+        });
+        ui.add(AddGroup {
+            app: self.0,
+            open: &mut show_add_group,
         });
         ui.add(AddDevice {
             app: self.0,
@@ -84,25 +106,33 @@ impl<'a> SteadyState<'a> {
         &mut self,
         ui: &mut eframe::egui::Ui,
         all_chats: &Result<BTreeMap<Handle, xirtam_client::internal::DmMessage>, String>,
-        selected_chat: &mut Option<Handle>,
+        all_groups: &Result<Vec<GroupId>, String>,
+        selected_chat: &mut Option<ChatSelection>,
         show_add_contact: &mut bool,
+        show_add_group: &mut bool,
     ) {
-        if ui.add(Button::new("Add contact")).clicked() {
-            *show_add_contact = true;
-        }
+        ui.horizontal(|ui| {
+            if ui.add(Button::new("Add contact")).clicked() {
+                *show_add_contact = true;
+            }
+            if ui.add(Button::new("New group")).clicked() {
+                *show_add_group = true;
+            }
+        });
         ui.separator();
         match all_chats {
             Ok(lst) => {
                 ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
                     for handle in lst.keys() {
+                        let selection = ChatSelection::Dm(handle.clone());
                         if ui
                             .selectable_label(
-                                *selected_chat == Some(handle.clone()),
+                                *selected_chat == Some(selection.clone()),
                                 handle.to_string(),
                             )
                             .clicked()
                         {
-                            selected_chat.replace(handle.clone());
+                            selected_chat.replace(selection);
                         }
                     }
                 });
@@ -111,11 +141,48 @@ impl<'a> SteadyState<'a> {
                 self.0.state.error_dialog.replace(err.to_string());
             }
         }
-    }
-
-    fn render_right(&mut self, ui: &mut eframe::egui::Ui, selected_chat: &Option<Handle>) {
-        if let Some(handle) = selected_chat {
-            ui.add(Convo(self.0, handle.clone()));
+        ui.separator();
+        ui.label("Groups");
+        match all_groups {
+            Ok(groups) => {
+                for group in groups {
+                    let selection = ChatSelection::Group(*group);
+                    let label = format_group_label(group);
+                    if ui
+                        .selectable_label(*selected_chat == Some(selection.clone()), label)
+                        .clicked()
+                    {
+                        selected_chat.replace(selection);
+                    }
+                }
+            }
+            Err(err) => {
+                self.0.state.error_dialog.replace(err.to_string());
+            }
         }
     }
+
+    fn render_right(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        selected_chat: &Option<ChatSelection>,
+    ) {
+        if let Some(selection) = selected_chat {
+            ui.add(Convo(self.0, selection.clone()));
+        }
+    }
+}
+
+fn format_group_label(group: &GroupId) -> String {
+    let short = short_group_id(group);
+    format!("Group {short}")
+}
+
+fn short_group_id(group: &GroupId) -> String {
+    let bytes = group.as_bytes();
+    let mut out = String::with_capacity(8);
+    for byte in bytes.iter().take(4) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }

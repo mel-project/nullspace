@@ -78,6 +78,7 @@ pub async fn group_send_loop(ctx: &AnyCtx<Config>) {
         if let Err(err) = group_send_loop_once(ctx).await {
             tracing::error!(error = %err, "group send loop error");
         }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -86,6 +87,7 @@ pub async fn group_recv_loop(ctx: &AnyCtx<Config>) {
         if let Err(err) = group_recv_loop_once(ctx).await {
             tracing::error!(error = %err, "group recv loop error");
         }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 

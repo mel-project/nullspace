@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -19,7 +20,8 @@ use crate::database::{
     DATABASE, DbNotify, ensure_mailbox_state, load_mailbox_after, update_mailbox_after,
 };
 use crate::directory::DIR_CLIENT;
-use crate::identity::Identity;
+use crate::gateway::get_gateway_client;
+use crate::identity::{Identity, store_gateway_name};
 use crate::long_poll::LONG_POLLER;
 use crate::peer::{PeerInfo, get_peer_info};
 
@@ -28,6 +30,7 @@ pub async fn send_loop(ctx: &anyctx::AnyCtx<Config>) {
         if let Err(err) = send_loop_once(ctx).await {
             tracing::error!(error = %err, "dm send loop error");
         }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -36,6 +39,7 @@ pub async fn recv_loop(ctx: &anyctx::AnyCtx<Config>) {
         if let Err(err) = recv_loop_once(ctx).await {
             tracing::error!(error = %err, "dm recv loop error");
         }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -134,12 +138,21 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
 async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
-    let my_info = get_peer_info(ctx, &identity.handle).await?;
-    let gateway = my_info.gateway.clone();
+    let gateway_name = match refresh_own_gateway_name(ctx, db, &identity).await {
+        Ok(name) => name,
+        Err(err) => match identity.gateway_name.clone() {
+            Some(name) => {
+                tracing::warn!(error = %err, "failed to refresh gateway name");
+                name
+            }
+            None => return Err(err),
+        },
+    };
+    let gateway = get_gateway_client(ctx, &gateway_name).await?;
     let auth = device_auth(gateway.as_ref(), &identity).await?;
     let mailbox = MailboxId::direct(&identity.handle);
-    ensure_mailbox_state(db, &my_info.gateway_name, mailbox, NanoTimestamp(0)).await?;
-    let mut after = load_mailbox_after(db, &my_info.gateway_name, mailbox).await?;
+    ensure_mailbox_state(db, &gateway_name, mailbox, NanoTimestamp(0)).await?;
+    let mut after = load_mailbox_after(db, &gateway_name, mailbox).await?;
     let poller = ctx.get(LONG_POLLER);
     loop {
         let entry = match poller.recv(gateway.clone(), auth, mailbox, after).await {
@@ -150,9 +163,7 @@ async fn recv_loop_once(ctx: &anyctx::AnyCtx<Config>) -> anyhow::Result<()> {
             }
         };
         after = entry.received_at;
-        if let Err(err) =
-            process_mailbox_entry(ctx, &my_info.gateway_name, mailbox, entry).await
-        {
+        if let Err(err) = process_mailbox_entry(ctx, &gateway_name, mailbox, entry).await {
             tracing::warn!(error = %err, "failed to process mailbox entry");
         }
         // notify once to prevent thrashing
@@ -234,11 +245,24 @@ async fn own_gateway_name(
     ctx: &anyctx::AnyCtx<Config>,
     identity: &Identity,
 ) -> anyhow::Result<xirtam_structs::gateway::GatewayName> {
+    if let Some(gateway_name) = identity.gateway_name.clone() {
+        return Ok(gateway_name);
+    }
+    let db = ctx.get(DATABASE);
+    refresh_own_gateway_name(ctx, db, identity).await
+}
+
+pub(crate) async fn refresh_own_gateway_name(
+    ctx: &anyctx::AnyCtx<Config>,
+    db: &sqlx::SqlitePool,
+    identity: &Identity,
+) -> anyhow::Result<xirtam_structs::gateway::GatewayName> {
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir
         .get_handle_descriptor(&identity.handle)
         .await?
         .context("identity handle not in directory")?;
+    store_gateway_name(db, &descriptor.gateway_name).await?;
     Ok(descriptor.gateway_name)
 }
 

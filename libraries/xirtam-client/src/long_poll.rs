@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use async_channel::{Receiver, Sender};
@@ -134,6 +135,7 @@ async fn run_gateway_worker(gateway: Arc<GatewayClient>, receiver: Receiver<Poll
                 if let Err(err) = handle_poll_response(response, &mailbox_keys, &mut pending).await
                 {
                     tracing::warn!(error = %err, "long poller error");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
         }

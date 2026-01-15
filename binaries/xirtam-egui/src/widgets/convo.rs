@@ -1,3 +1,7 @@
+mod chat_record;
+pub mod direct;
+pub mod group;
+
 use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
@@ -5,10 +9,8 @@ use egui::text::LayoutJob;
 use egui::{Color32, ScrollArea, TextEdit, TextFormat, TopBottomPanel};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use pollster::FutureExt;
-use smol_str::SmolStr;
 use tracing::debug;
-use xirtam_client::internal::{DmMessage, GroupMessage};
+use xirtam_client::internal::DmMessage;
 use xirtam_structs::group::{GroupId, GroupInviteMsg};
 use xirtam_structs::handle::Handle;
 use xirtam_structs::msg_content::MessagePayload;
@@ -18,7 +20,10 @@ use crate::XirtamApp;
 use crate::promises::flatten_rpc;
 use crate::utils::color::handle_color;
 use crate::utils::markdown::layout_md_raw;
-use crate::widgets::group_roster::GroupRoster;
+use crate::widgets::convo::chat_record::ChatRecord;
+
+use direct::DirectConvo;
+use group::GroupConvo;
 use std::collections::BTreeMap;
 
 const INITIAL_LIMIT: u16 = 100;
@@ -37,61 +42,42 @@ impl ChatSelection {
             ChatSelection::Group(group) => format!("group:{}", short_group_id(group)),
         }
     }
-
 }
 
 pub struct Convo<'a>(pub &'a mut XirtamApp, pub ChatSelection);
 
-trait ChatRecord {
-    fn id(&self) -> i64;
-    fn received_at(&self) -> Option<NanoTimestamp>;
-    fn sender(&self) -> &Handle;
-    fn mime(&self) -> &SmolStr;
-    fn body(&self) -> &Bytes;
+#[derive(Clone, Hash, PartialEq, Eq)]
+enum ConvoStateKey {
+    Dm(Handle),
+    Group(GroupId),
 }
 
-impl ChatRecord for DmMessage {
-    fn id(&self) -> i64 {
-        self.id
-    }
+trait ConvoKind {
+    type Message: ChatRecord + Clone + Send + Sync + 'static;
 
-    fn received_at(&self) -> Option<NanoTimestamp> {
-        self.received_at
-    }
-
-    fn sender(&self) -> &Handle {
-        &self.sender
-    }
-
-    fn mime(&self) -> &SmolStr {
-        &self.mime
-    }
-
-    fn body(&self) -> &Bytes {
-        &self.body
-    }
-}
-
-impl ChatRecord for GroupMessage {
-    fn id(&self) -> i64 {
-        self.id
-    }
-
-    fn received_at(&self) -> Option<NanoTimestamp> {
-        self.received_at
-    }
-
-    fn sender(&self) -> &Handle {
-        &self.sender
-    }
-
-    fn mime(&self) -> &SmolStr {
-        &self.mime
-    }
-
-    fn body(&self) -> &Bytes {
-        &self.body
-    }
+    fn state_key(&self) -> ConvoStateKey;
+    fn header_ui(
+        &self,
+        ui: &mut eframe::egui::Ui,
+        app: &mut XirtamApp,
+        show_roster: &mut Option<Var<bool>>,
+    );
+    fn roster_var(&self, ui: &mut eframe::egui::Ui, key: &ConvoStateKey) -> Option<Var<bool>>;
+    fn roster_ui(
+        &self,
+        ui: &mut eframe::egui::Ui,
+        app: &mut XirtamApp,
+        show_roster: &mut Option<Var<bool>>,
+    );
+    fn history(
+        &self,
+        app: &mut XirtamApp,
+        before: Option<i64>,
+        after: Option<i64>,
+        limit: u16,
+    ) -> Result<Vec<Self::Message>, String>;
+    fn send(&self, ui: &mut eframe::egui::Ui, app: &mut XirtamApp, body: Bytes);
+    fn render_item(&self, ui: &mut eframe::egui::Ui, item: &Self::Message, app: &mut XirtamApp);
 }
 
 #[derive(Clone, Debug)]
@@ -206,215 +192,100 @@ impl<M: ChatRecord> ConvoState<M> {
 }
 
 impl Widget for Convo<'_> {
-    fn ui(mut self, ui: &mut eframe::egui::Ui) -> Response {
+    fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let key = self.1.key();
         let response = ui.push_id(key, |ui| match &self.1 {
-            ChatSelection::Dm(peer) => self.render_dm(ui, peer.clone()),
-            ChatSelection::Group(group) => self.render_group(ui, *group),
+            ChatSelection::Dm(peer) => render_convo(self.0, ui, DirectConvo { peer: peer.clone() }),
+            ChatSelection::Group(group) => render_convo(self.0, ui, GroupConvo { group: *group }),
         });
         response.inner
     }
 }
 
-impl<'a> Convo<'a> {
-    fn render_dm(&mut self, ui: &mut eframe::egui::Ui, peer: Handle) -> Response {
-        let rpc = self.0.client.rpc();
-        let update_count = self.0.state.update_count;
-        let mut draft: Var<String> = ui.use_state(String::new, (peer.clone(), "draft")).into_var();
-        let mut state: Var<ConvoState<DmMessage>> = ui
-            .use_state(ConvoState::default, (peer.clone(), "state"))
-            .into_var();
+fn render_convo<K: ConvoKind>(app: &mut XirtamApp, ui: &mut eframe::egui::Ui, kind: K) -> Response {
+    let update_count = app.state.update_count;
+    let key = kind.state_key();
+    let mut draft: Var<String> = ui.use_state(String::new, (key.clone(), "draft")).into_var();
+    let mut state: Var<ConvoState<K::Message>> = ui
+        .use_state(ConvoState::default, (key.clone(), "state"))
+        .into_var();
+    let mut show_roster = kind.roster_var(ui, &key);
 
-        let mut fetch = |before, after, limit| {
-            let result = rpc.dm_history(peer.clone(), before, after, limit).block_on();
-            flatten_rpc(result)
-        };
-
-        if !state.initialized {
-            state.load_initial(&mut fetch);
-            state.last_update_count_seen = update_count;
-        } else if update_count > state.last_update_count_seen {
-            state.refresh_newer(&mut fetch);
-            state.last_update_count_seen = update_count;
-        }
-
-        ui.heading(peer.to_string());
-        TopBottomPanel::bottom(ui.id().with("bottom"))
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let text_response =
-                        ui.add(TextEdit::singleline(&mut *draft).desired_width(f32::INFINITY));
-
-                    let enter_pressed = text_response.lost_focus()
-                        && text_response
-                            .ctx
-                            .input(|input| input.key_pressed(Key::Enter));
-                    if enter_pressed {
-                        text_response.request_focus();
-                    }
-                    let send_now = enter_pressed;
-                    if send_now && !draft.trim().is_empty() {
-                        let peer = peer.clone();
-                        let body = Bytes::from(draft.clone());
-                        let rpc = self.0.client.rpc();
-                        tokio::spawn(async move {
-                            let _ = flatten_rpc(
-                                rpc.dm_send(peer, SmolStr::new("text/markdown"), body)
-                                    .await,
-                            );
-                        });
-                        draft.clear();
-                        ui.ctx().request_discard("msg sent");
-                    }
-                });
-            });
-
-        CentralPanel::default().show_inside(ui, |ui| {
-            let mut stick_to_bottom: Var<bool> =
-                ui.use_state(|| true, (peer.clone(), "stick")).into_var();
-            let scroll_output = ScrollArea::vertical()
-                .id_salt("scroll")
-                .stick_to_bottom(*stick_to_bottom)
-                .animated(false)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let mut last_date: Option<NaiveDate> = None;
-                    for item in state.messages.values() {
-                        if let Some(date) = date_from_timestamp(item.received_at())
-                            && last_date != Some(date)
-                        {
-                            ui.add_space(4.0);
-                            let label = format!("[{}]", date.format("%A, %d %b %Y"));
-                            ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
-                            ui.add_space(4.0);
-                            last_date = Some(date);
-                        }
-
-                        if item.mime().as_str() == GroupInviteMsg::mime() {
-                            render_invite_row(ui, item, self.0);
-                            continue;
-                        }
-
-                        render_message_row(ui, item);
-                    }
-                });
-            let max_offset =
-                (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
-            let at_bottom = max_offset - scroll_output.state.offset.y <= 2.0;
-            *stick_to_bottom = at_bottom;
-            let at_top = scroll_output.state.offset.y <= 2.0;
-            if at_top {
-                state.load_older(&mut fetch);
-            }
-        });
-
-        ui.response()
+    if !state.initialized {
+        let mut fetch = |before, after, limit| kind.history(app, before, after, limit);
+        state.load_initial(&mut fetch);
+        state.last_update_count_seen = update_count;
+    } else if update_count > state.last_update_count_seen {
+        let mut fetch = |before, after, limit| kind.history(app, before, after, limit);
+        state.refresh_newer(&mut fetch);
+        state.last_update_count_seen = update_count;
     }
 
-    fn render_group(&mut self, ui: &mut eframe::egui::Ui, group: GroupId) -> Response {
-        let rpc = self.0.client.rpc();
-        let update_count = self.0.state.update_count;
-        let mut draft: Var<String> = ui.use_state(String::new, (group, "draft")).into_var();
-        let mut state: Var<ConvoState<GroupMessage>> = ui
-            .use_state(ConvoState::default, (group, "state"))
-            .into_var();
-        let mut show_roster: Var<bool> = ui.use_state(|| false, (group, "roster")).into_var();
+    kind.header_ui(ui, app, &mut show_roster);
+    TopBottomPanel::bottom(ui.id().with("bottom"))
+        .resizable(false)
+        .show_inside(ui, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let text_response =
+                    ui.add(TextEdit::singleline(&mut *draft).desired_width(f32::INFINITY));
 
-        let mut fetch = |before, after, limit| {
-            let result = rpc.group_history(group, before, after, limit).block_on();
-            flatten_rpc(result)
-        };
-
-        if !state.initialized {
-            state.load_initial(&mut fetch);
-            state.last_update_count_seen = update_count;
-        } else if update_count > state.last_update_count_seen {
-            state.refresh_newer(&mut fetch);
-            state.last_update_count_seen = update_count;
-        }
-
-        ui.horizontal(|ui| {
-            ui.heading(format!("Group {}", short_group_id(&group)));
-            if ui.button("Members").clicked() {
-                *show_roster = true;
-            }
-        });
-
-        TopBottomPanel::bottom(ui.id().with("bottom"))
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let text_response =
-                        ui.add(TextEdit::singleline(&mut *draft).desired_width(f32::INFINITY));
-
-                    let enter_pressed = text_response.lost_focus()
-                        && text_response
-                            .ctx
-                            .input(|input| input.key_pressed(Key::Enter));
-                    if enter_pressed {
-                        text_response.request_focus();
-                    }
-                    let send_now = enter_pressed;
-                    if send_now && !draft.trim().is_empty() {
-                        let body = Bytes::from(draft.clone());
-                        let rpc = self.0.client.rpc();
-                        tokio::spawn(async move {
-                            let _ =
-                                flatten_rpc(rpc.group_send(group, SmolStr::new("text/markdown"), body).await);
-                        });
-                        draft.clear();
-                        ui.ctx().request_discard("msg sent");
-                    }
-                });
+                let enter_pressed = text_response.lost_focus()
+                    && text_response
+                        .ctx
+                        .input(|input| input.key_pressed(Key::Enter));
+                if enter_pressed {
+                    text_response.request_focus();
+                }
+                let send_now = enter_pressed;
+                if send_now && !draft.trim().is_empty() {
+                    let body = Bytes::from(draft.clone());
+                    kind.send(ui, app, body);
+                    draft.clear();
+                }
             });
+        });
 
-        CentralPanel::default().show_inside(ui, |ui| {
-            let mut stick_to_bottom: Var<bool> =
-                ui.use_state(|| true, (group, "stick")).into_var();
-            let scroll_output = ScrollArea::vertical()
-                .id_salt("scroll")
-                .stick_to_bottom(*stick_to_bottom)
-                .animated(false)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let mut last_date: Option<NaiveDate> = None;
-                    for item in state.messages.values() {
-                        if let Some(date) = date_from_timestamp(item.received_at())
-                            && last_date != Some(date)
-                        {
-                            ui.add_space(4.0);
-                            let label = format!("[{}]", date.format("%A, %d %b %Y"));
-                            ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
-                            ui.add_space(4.0);
-                            last_date = Some(date);
-                        }
-                        render_message_row(ui, item);
+    CentralPanel::default().show_inside(ui, |ui| {
+        let mut stick_to_bottom: Var<bool> =
+            ui.use_state(|| true, (key.clone(), "stick")).into_var();
+        let scroll_output = ScrollArea::vertical()
+            .id_salt("scroll")
+            .stick_to_bottom(*stick_to_bottom)
+            .animated(false)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let mut last_date: Option<NaiveDate> = None;
+                for item in state.messages.values() {
+                    if let Some(date) = date_from_timestamp(item.received_at())
+                        && last_date != Some(date)
+                    {
+                        ui.add_space(4.0);
+                        let label = format!("[{}]", date.format("%A, %d %b %Y"));
+                        ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
+                        ui.add_space(4.0);
+                        last_date = Some(date);
                     }
-                });
-            let max_offset =
-                (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
-            let at_bottom = max_offset - scroll_output.state.offset.y <= 2.0;
-            *stick_to_bottom = at_bottom;
-            let at_top = scroll_output.state.offset.y <= 2.0;
-            if at_top {
-                state.load_older(&mut fetch);
-            }
-        });
+                    kind.render_item(ui, item, app);
+                }
+            });
+        let max_offset =
+            (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
+        let at_bottom = max_offset - scroll_output.state.offset.y <= 2.0;
+        *stick_to_bottom = at_bottom;
+        let at_top = scroll_output.state.offset.y <= 2.0;
+        if at_top {
+            let mut fetch = |before, after, limit| kind.history(app, before, after, limit);
+            state.load_older(&mut fetch);
+        }
+    });
 
-        ui.add(GroupRoster {
-            app: self.0,
-            open: &mut show_roster,
-            group,
-        });
+    kind.roster_ui(ui, app, &mut show_roster);
 
-        ui.response()
-    }
+    ui.response()
 }
 
-fn render_message_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M) {
+fn render_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M, app: Option<&mut XirtamApp>) {
     let mut job = LayoutJob::default();
     let timestamp = format_timestamp(item.received_at());
     job.append(
@@ -435,6 +306,38 @@ fn render_message_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M) {
         },
     );
     match item.mime().as_str() {
+        mime if mime == GroupInviteMsg::mime() => {
+            let invite = serde_json::from_slice::<GroupInviteMsg>(item.body()).ok();
+            let label = invite
+                .as_ref()
+                .map(|invite| {
+                    format!(
+                        "Invitation to group {}",
+                        short_group_id(&invite.descriptor.id())
+                    )
+                })
+                .unwrap_or_else(|| "Invitation to group".to_string());
+            job.append(
+                &label,
+                0.0,
+                TextFormat {
+                    color: Color32::GRAY,
+                    ..Default::default()
+                },
+            );
+            ui.horizontal(|ui| {
+                ui.label(job);
+                if let Some(app) = app {
+                    if ui.link("Accept").clicked() {
+                        let rpc = app.client.rpc();
+                        let dm_id = item.id();
+                        tokio::spawn(async move {
+                            let _ = flatten_rpc(rpc.group_accept_invite(dm_id).await);
+                        });
+                    }
+                }
+            });
+        }
         "text/plain" => {
             job.append(
                 &String::from_utf8_lossy(item.body()),
@@ -444,6 +347,7 @@ fn render_message_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M) {
                     ..Default::default()
                 },
             );
+            ui.label(job);
         }
         "text/markdown" => {
             layout_md_raw(
@@ -454,6 +358,7 @@ fn render_message_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M) {
                 },
                 &String::from_utf8_lossy(item.body()),
             );
+            ui.label(job);
         }
         other => {
             job.append(
@@ -464,35 +369,9 @@ fn render_message_row<M: ChatRecord>(ui: &mut eframe::egui::Ui, item: &M) {
                     ..Default::default()
                 },
             );
+            ui.label(job);
         }
     }
-
-    ui.label(job);
-}
-
-fn render_invite_row(ui: &mut eframe::egui::Ui, item: &DmMessage, app: &mut XirtamApp) {
-    let invite = serde_json::from_slice::<GroupInviteMsg>(item.body()).ok();
-    let label = invite
-        .as_ref()
-        .map(|invite| {
-            format!(
-                "Group invite ({})",
-                short_group_id(&invite.descriptor.id())
-            )
-        })
-        .unwrap_or_else(|| "Group invite".to_string());
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("[{}]", format_timestamp(item.received_at))).color(Color32::GRAY));
-        ui.label(RichText::new(format!("{}:", item.sender)).color(handle_color(&item.sender)));
-        ui.label(label);
-        if ui.button("Accept").clicked() {
-            let rpc = app.client.rpc();
-            let dm_id = item.id;
-            tokio::spawn(async move {
-                let _ = flatten_rpc(rpc.group_accept_invite(dm_id).await);
-            });
-        }
-    });
 }
 
 fn format_timestamp(ts: Option<NanoTimestamp>) -> String {

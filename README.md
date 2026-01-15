@@ -19,6 +19,8 @@ What is a confederal protocol? [Read this blogpost first](https://nullchinchilla
 - Directory is append-only, with signed anchors and headers for snapshot verification
 	- Updates are batched into chunks and retrieved via directory RPC
 	- PoW uses EquiX with configurable effort
+	- Clients avoid holding DB transactions across network fetches during header sync
+- Internal RPC has a short timeout to surface UI hangs during development (except `next_event`)
 - Confederal architecture
 	- No gateway-to-gateway protocol (other than convenience proxies)
 

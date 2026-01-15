@@ -52,7 +52,7 @@ pub static DATABASE: Ctx<SqlitePool> = |ctx| {
     let options = SqliteConnectOptions::new()
         .filename(&ctx.init().db_path)
         .create_if_missing(true)
-        .busy_timeout(Duration::from_secs(60))
+        .busy_timeout(Duration::from_secs(1))
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .foreign_keys(true)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
@@ -285,8 +285,7 @@ async fn new_group_message_ids(
     let mut max_id = last_seen_id;
     for (id, group_id) in rows {
         max_id = max_id.max(id);
-        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice())
-            .map(GroupId::from_bytes)
+        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice()).map(GroupId::from_bytes)
         else {
             continue;
         };
@@ -314,8 +313,7 @@ async fn new_group_received_ids(
     let mut max_received_at = last_seen_received_at;
     for (received_at, group_id) in rows {
         max_received_at = max_received_at.max(received_at);
-        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice())
-            .map(GroupId::from_bytes)
+        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice()).map(GroupId::from_bytes)
         else {
             continue;
         };
@@ -330,8 +328,7 @@ async fn load_group_versions(db: &sqlx::SqlitePool) -> anyhow::Result<HashMap<Gr
         .await?;
     let mut out = HashMap::new();
     for (group_id, roster_version) in rows {
-        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice())
-            .map(GroupId::from_bytes)
+        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice()).map(GroupId::from_bytes)
         else {
             continue;
         };

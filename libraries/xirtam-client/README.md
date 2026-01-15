@@ -127,7 +127,7 @@ late messages can be decrypted. These keys are never exposed to the UI.
 
 ## Data model (sqlite)
 
-- `client_identity`: one row holding identity + key material.
+- `client_identity`: one row holding identity + key material (including cached gateway name).
 - `dm_messages`: plaintext history (incoming + outgoing).
 - `mailbox_state`: mailbox cursor for long-polling.
 

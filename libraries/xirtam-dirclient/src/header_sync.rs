@@ -57,7 +57,6 @@ pub async fn sync_headers(
         None => Hash::from_bytes([0u8; 32]),
     };
 
-    let mut tx = pool.begin().await?;
     let mut next = match current {
         Some(current) => current + 1,
         None => 0,
@@ -89,6 +88,7 @@ pub async fn sync_headers(
             expected_prev = hash;
         }
 
+        let mut tx = pool.begin().await?;
         for (height, data, hash) in staged {
             sqlx::query(
                 "INSERT OR REPLACE INTO _dirclient_headers (height, header, header_hash) VALUES (?, ?, ?)",
@@ -101,6 +101,7 @@ pub async fn sync_headers(
             prev_hash = hash;
             current = Some(height);
         }
+        tx.commit().await?;
         debug!(height = current, "synced directory headers batch");
         next = end + 1;
     }
@@ -108,6 +109,5 @@ pub async fn sync_headers(
     if prev_hash != anchor.last_header_hash {
         anyhow::bail!("header chain mismatch");
     }
-    tx.commit().await?;
     Ok(())
 }

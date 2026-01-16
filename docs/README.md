@@ -1,6 +1,6 @@
 # xirtam: an experimental confederal protocol
 
-[📖 Protocol docs](https://mel-project.github.io/xirtam-core/)
+[📖 Protocol docs](https://mel-project.github.io/xirtam-core/#/)
 
 Xirtam (this name is provisional!) is a **confederal** end-to-end chat system. A confederal protocol is *somewhat* similar to a federated protocol like Matrix in that we use a server-client architecture, but we avoid having one gigantic server and instead allow anyone to join the network with their own server. 
 

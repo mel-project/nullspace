@@ -192,13 +192,9 @@ impl InternalProtocol for InternalImpl {
     ) -> Result<NewDeviceBundle, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db).await.map_err(internal_err)?;
-        let issuer_can_issue = identity
-            .cert_chain
-            .0
-            .iter()
-            .find(|cert| cert.pk == identity.device_secret.public())
-            .map(|cert| cert.can_issue)
-            .unwrap_or(false);
+        let issuer_cert = identity.cert_chain.last_device();
+        let issuer_can_issue = issuer_cert.pk == identity.device_secret.public()
+            && issuer_cert.can_issue;
         if !issuer_can_issue {
             return Err(InternalRpcError::AccessDenied);
         }
@@ -206,8 +202,12 @@ impl InternalProtocol for InternalImpl {
         let cert = identity
             .device_secret
             .issue_certificate(&new_secret.public(), expiry, can_issue);
-        let mut chain = identity.cert_chain.clone();
-        chain.0.push(cert);
+        let mut ancestors = identity.cert_chain.ancestors.clone();
+        ancestors.push(identity.cert_chain.this.clone());
+        let chain = CertificateChain {
+            ancestors,
+            this: cert,
+        };
         let bundle = BundleInner {
             username: identity.username,
             device_secret: new_secret,
@@ -342,7 +342,10 @@ async fn register_bootstrap(
     let server = server_from_name(&ctx, &server_name).await?;
     let device_secret = DeviceSecret::random();
     let root_cert = device_secret.self_signed(Timestamp(u64::MAX), true);
-    let cert_chain = CertificateChain(vec![root_cert.clone()]);
+    let cert_chain = CertificateChain {
+        ancestors: Vec::new(),
+        this: root_cert.clone(),
+    };
     let user_descriptor = UserDescriptor {
         server_name: server_name.clone(),
         root_cert_hash: root_cert.pk.bcs_hash(),

@@ -23,7 +23,7 @@ use crate::{Blob, username::UserName, timestamp::NanoTimestamp};
 #[nanorpc_derive]
 #[async_trait]
 pub trait ServerProtocol {
-    /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this server is proper to the username, the certificate chain served to others is also updated by "merging".
+    /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this server is proper to the username, the device certificate chain served to others is updated for that device.
     async fn v1_device_auth(
         &self,
         username: UserName,
@@ -34,7 +34,7 @@ pub trait ServerProtocol {
     async fn v1_device_certs(
         &self,
         username: UserName,
-    ) -> Result<Option<CertificateChain>, ServerRpcError>;
+    ) -> Result<Option<BTreeMap<Hash, CertificateChain>>, ServerRpcError>;
 
     /// Retrieve the medium-term keys for a given username.
     async fn v1_device_medium_pks(

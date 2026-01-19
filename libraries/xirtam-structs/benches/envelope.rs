@@ -11,7 +11,10 @@ use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 fn dm_benchmarks(c: &mut Criterion) {
     let sender_secret = DeviceSecret::random();
     let sender_cert = sender_secret.self_signed(Timestamp(u64::MAX), true);
-    let sender_chain = CertificateChain(vec![sender_cert]);
+    let sender_chain = CertificateChain {
+        ancestors: Vec::new(),
+        this: sender_cert,
+    };
     let sender_username = UserName::parse("@sender01").expect("sender username");
     let recipient = UserName::parse("@rcpt01").expect("recipient username");
 

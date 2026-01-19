@@ -112,11 +112,10 @@ impl DecryptedEnvelope {
     }
 
     pub fn verify(self, sender_root_hash: Hash) -> Result<Blob, EnvelopeError> {
-        let verified = self
-            .sender_chain
+        self.sender_chain
             .verify(sender_root_hash)
             .map_err(|_| EnvelopeError)?;
-        let device = verified.last().ok_or(EnvelopeError)?;
+        let device = self.sender_chain.last_device();
         device
             .pk
             .verify(&self.key_sig, &self.key)
@@ -157,7 +156,10 @@ mod tests {
         let sender_secret = DeviceSecret::random();
         let sender_username = UserName::parse("@sender01").expect("sender username");
         let sender_cert = sender_secret.self_signed(Timestamp(u64::MAX), true);
-        let sender_chain = CertificateChain(vec![sender_cert.clone()]);
+        let sender_chain = CertificateChain {
+            ancestors: Vec::new(),
+            this: sender_cert.clone(),
+        };
         let sender_root_hash = sender_cert.pk.bcs_hash();
 
         let recipient_a = DeviceSecret::random();

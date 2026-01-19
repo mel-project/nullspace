@@ -90,9 +90,11 @@ pub struct DeviceCertificate {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-/// A chain of certificates that ultimately represents a set of authorized devices.
-pub struct CertificateChain(pub Vec<DeviceCertificate>);
+/// A chain of certificates that authenticates a single device public key.
+pub struct CertificateChain {
+    pub ancestors: Vec<DeviceCertificate>,
+    pub this: DeviceCertificate,
+}
 
 impl Signable for DeviceCertificate {
     fn signed_value(&self) -> Vec<u8> {
@@ -110,28 +112,23 @@ impl Signable for DeviceCertificate {
 }
 
 impl CertificateChain {
-    /// Merge another certificate chain into this one, deduplicating by full certificate equality.
-    pub fn merge(mut self, other: &CertificateChain) -> CertificateChain {
-        for cert in &other.0 {
-            if !self.0.contains(cert) {
-                self.0.push(cert.clone());
-            }
-        }
-        self
+    /// Return the device certificate authenticated by this chain.
+    pub fn last_device(&self) -> &DeviceCertificate {
+        &self.this
     }
 
-    /// Return the last certificate in the chain, which represents the device.
-    pub fn last_device(&self) -> Option<&DeviceCertificate> {
-        self.0.last()
+    pub fn iter(&self) -> impl Iterator<Item = &DeviceCertificate> {
+        self.ancestors.iter().chain(std::iter::once(&self.this))
     }
 
-    /// Verify the chain and return the non-expired certificates.
-    pub fn verify(&self, trusted_pk_hash: Hash) -> anyhow::Result<Vec<DeviceCertificate>> {
+    /// Verify the chain against a trusted root public key hash.
+    pub fn verify(&self, trusted_pk_hash: Hash) -> anyhow::Result<()> {
         let now = unix_time();
         let mut trusted_signers: Vec<SigningPublic> = Vec::new();
-        let mut valid = Vec::new();
-        let mut pending = self.0.clone();
+        let mut pending = self.ancestors.clone();
+        pending.push(self.this.clone());
         let mut trusted_root_found = false;
+        let mut this_verified = false;
 
         let mut idx = 0;
         while idx < pending.len() {
@@ -144,7 +141,9 @@ impl CertificateChain {
                     if cert.can_issue {
                         trusted_signers.push(cert.pk.signing_public());
                     }
-                    valid.push(cert);
+                    if cert == self.this {
+                        this_verified = true;
+                    }
                 }
             } else {
                 idx += 1;
@@ -170,7 +169,9 @@ impl CertificateChain {
                     if cert.can_issue {
                         trusted_signers.push(cert.pk.signing_public());
                     }
-                    valid.push(cert);
+                    if cert == self.this {
+                        this_verified = true;
+                    }
                 }
                 progress = true;
             }
@@ -180,7 +181,11 @@ impl CertificateChain {
             bail!("certificate chain contains unverifiable entries");
         }
 
-        Ok(valid)
+        if !this_verified {
+            bail!("certificate chain does not authenticate leaf device");
+        }
+
+        Ok(())
     }
 }
 
@@ -203,10 +208,13 @@ mod tests {
         let root_secret = DeviceSecret::random();
         let root_cert = root_secret.self_signed(Timestamp(u64::MAX), false);
         let root_hash = root_cert.pk.bcs_hash();
-        let chain = CertificateChain(vec![root_cert.clone()]);
+        let chain = CertificateChain {
+            ancestors: Vec::new(),
+            this: root_cert.clone(),
+        };
 
-        let verified = chain.verify(root_hash).expect("verify root");
-        assert_eq!(verified, vec![root_cert]);
+        chain.verify(root_hash).expect("verify root");
+        assert_eq!(chain.last_device(), &root_cert);
     }
 
     #[test]
@@ -229,7 +237,10 @@ mod tests {
             true,
         );
 
-        let chain = CertificateChain(vec![root_cert, intermediate_cert, leaf_cert]);
+        let chain = CertificateChain {
+            ancestors: vec![root_cert, intermediate_cert],
+            this: leaf_cert,
+        };
         assert!(chain.verify(root_hash).is_err());
     }
 
@@ -253,12 +264,11 @@ mod tests {
             true,
         );
 
-        let chain = CertificateChain(vec![
-            root_cert,
-            intermediate_cert,
-            leaf_cert.clone(),
-        ]);
-        let verified = chain.verify(root_hash).expect("verify chain");
-        assert!(verified.contains(&leaf_cert));
+        let chain = CertificateChain {
+            ancestors: vec![root_cert, intermediate_cert],
+            this: leaf_cert.clone(),
+        };
+        chain.verify(root_hash).expect("verify chain");
+        assert_eq!(chain.last_device(), &leaf_cert);
     }
 }

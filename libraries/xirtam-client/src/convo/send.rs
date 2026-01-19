@@ -6,10 +6,10 @@ use anyhow::Context;
 use bytes::Bytes;
 use smol_str::SmolStr;
 use tracing::warn;
-use xirtam_crypt::hash::BcsHashExt;
+use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_crypt::signing::Signable;
 use xirtam_structs::Blob;
-use xirtam_structs::certificate::DevicePublic;
+use xirtam_structs::certificate::{CertificateChain, DevicePublic};
 use xirtam_structs::envelope::Envelope;
 use xirtam_structs::group::GroupMessage;
 use xirtam_structs::msg_content::MessageContent;
@@ -239,13 +239,23 @@ async fn send_group_message(
 
 fn collect_recipients(
     username: &UserName,
-    chain: &[xirtam_structs::certificate::DeviceCertificate],
-    medium_pks: &BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>,
+    chains: &BTreeMap<Hash, CertificateChain>,
+    medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
     let mut recipients = Vec::new();
-    for cert in chain {
-        let device_hash = cert.pk.bcs_hash();
-        let Some(medium_pk) = medium_pks.get(&device_hash) else {
+    for (device_hash, chain) in chains {
+        let cert = chain.last_device();
+        let cert_hash = cert.pk.bcs_hash();
+        if &cert_hash != device_hash {
+            warn!(
+                username = %username,
+                device_hash = %device_hash,
+                cert_hash = %cert_hash,
+                "device certificate hash mismatch"
+            );
+            continue;
+        }
+        let Some(medium_pk) = medium_pks.get(device_hash) else {
             warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
@@ -264,7 +274,7 @@ fn collect_recipients(
 fn recipients_from_peer(
     peer: &UserInfo,
 ) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
-    collect_recipients(&peer.username, &peer.certs, &peer.medium_pks)
+    collect_recipients(&peer.username, &peer.device_chains, &peer.medium_pks)
 }
 
 async fn send_envelope(

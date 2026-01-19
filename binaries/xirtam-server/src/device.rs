@@ -17,13 +17,7 @@ pub async fn device_auth(
     username: UserName,
     cert: CertificateChain,
 ) -> Result<AuthToken, ServerRpcError> {
-    let device = match cert.last_device() {
-        Some(device) => device,
-        None => {
-            tracing::debug!(username = %username, "device auth denied: empty certificate chain");
-            return Err(ServerRpcError::AccessDenied);
-        }
-    };
+    let device = cert.last_device();
     let device_hash = device.pk.bcs_hash();
 
     let descriptor = DIR_CLIENT
@@ -64,29 +58,17 @@ pub async fn device_auth(
         None => None,
     };
     let mut newly_created: Option<AuthToken> = None;
-    let existing = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT cert_chain FROM device_certificates WHERE username = ?",
+    let data = bcs::to_bytes(&cert).map_err(fatal_retry_later)?;
+    sqlx::query(
+        "INSERT OR REPLACE INTO device_certificates (device_hash, username, cert_chain) \
+         VALUES (?, ?, ?)",
     )
+    .bind(device_hash.to_bytes().to_vec())
     .bind(username.as_str())
-    .fetch_optional(tx.as_mut())
+    .bind(data)
+    .execute(tx.as_mut())
     .await
     .map_err(fatal_retry_later)?;
-    let existing_chain = match existing {
-        Some(data) => bcs::from_bytes(&data).map_err(fatal_retry_later)?,
-        None => CertificateChain(Vec::new()),
-    };
-    let merged = existing_chain.merge(&cert);
-    if merged.verify(descriptor.root_cert_hash).is_err() {
-        tracing::debug!(username = %username, "device auth denied: merged chain invalid");
-        return Err(ServerRpcError::AccessDenied);
-    }
-    let data = bcs::to_bytes(&merged).map_err(fatal_retry_later)?;
-    sqlx::query("INSERT OR REPLACE INTO device_certificates (username, cert_chain) VALUES (?, ?)")
-        .bind(username.as_str())
-        .bind(data)
-        .execute(tx.as_mut())
-        .await
-        .map_err(fatal_retry_later)?;
     if auth_token.is_none() {
         let new_token = AuthToken::random();
         let token_data = bcs::to_bytes(&new_token).map_err(fatal_retry_later)?;
@@ -115,19 +97,26 @@ pub async fn device_auth(
     Ok(auth_token)
 }
 
-pub async fn device_list(username: UserName) -> Result<Option<CertificateChain>, ServerRpcError> {
-    let data = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT cert_chain FROM device_certificates WHERE username = ?",
+pub async fn device_list(
+    username: UserName,
+) -> Result<Option<BTreeMap<Hash, CertificateChain>>, ServerRpcError> {
+    let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT device_hash, cert_chain FROM device_certificates WHERE username = ?",
     )
     .bind(username.as_str())
-    .fetch_optional(&*DATABASE)
+    .fetch_all(&*DATABASE)
     .await
     .map_err(fatal_retry_later)?;
-    let Some(data) = data else {
+    if rows.is_empty() {
         return Ok(None);
-    };
-    let chain = bcs::from_bytes(&data).map_err(fatal_retry_later)?;
-    Ok(Some(chain))
+    }
+    let mut out = BTreeMap::new();
+    for (device_hash, chain_bytes) in rows {
+        let hash = bytes_to_hash(&device_hash)?;
+        let chain = bcs::from_bytes(&chain_bytes).map_err(fatal_retry_later)?;
+        out.insert(hash, chain);
+    }
+    Ok(Some(out))
 }
 
 pub async fn device_add_medium_pk(
@@ -146,8 +135,9 @@ pub async fn device_add_medium_pk(
         return Err(ServerRpcError::AccessDenied);
     };
     let chain_bytes = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT cert_chain FROM device_certificates WHERE username = ?",
+        "SELECT cert_chain FROM device_certificates WHERE device_hash = ? AND username = ?",
     )
+    .bind(&device_hash)
     .bind(username)
     .fetch_optional(&*DATABASE)
     .await
@@ -156,12 +146,11 @@ pub async fn device_add_medium_pk(
         return Err(ServerRpcError::AccessDenied);
     };
     let chain: CertificateChain = bcs::from_bytes(&chain_bytes).map_err(fatal_retry_later)?;
+    let device = chain.last_device();
     let device_hash_obj = bytes_to_hash(&device_hash)?;
-    let device = chain
-        .0
-        .iter()
-        .find(|cert| cert.pk.bcs_hash() == device_hash_obj)
-        .ok_or(ServerRpcError::AccessDenied)?;
+    if device.pk.bcs_hash() != device_hash_obj {
+        return Err(ServerRpcError::AccessDenied);
+    }
     medium_pk
         .verify(device.pk.signing_public())
         .map_err(|_| ServerRpcError::AccessDenied)?;

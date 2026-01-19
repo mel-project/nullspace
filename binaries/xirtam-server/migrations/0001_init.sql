@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS server_meta (
 );
 
 CREATE TABLE IF NOT EXISTS device_certificates (
-    username TEXT PRIMARY KEY,
+    device_hash BLOB PRIMARY KEY,
+    username TEXT NOT NULL,
     cert_chain BLOB NOT NULL
 );
+CREATE INDEX IF NOT EXISTS device_certificates_username_idx
+    ON device_certificates (username);

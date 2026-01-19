@@ -152,11 +152,10 @@ impl SignedGroupMessage {
     }
 
     pub fn verify(self, sender_root_hash: Hash) -> Result<Blob, GroupMessageError> {
-        let verified = self
-            .sender_chain
+        self.sender_chain
             .verify(sender_root_hash)
             .map_err(|_| GroupMessageError::Verify)?;
-        let device = verified.last().ok_or(GroupMessageError::Verify)?;
+        let device = self.sender_chain.last_device();
         let signed = signed_bytes(&self.group, &self.sender, &self.message)?;
         device
             .pk

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -5,7 +6,7 @@ use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
-use xirtam_crypt::hash::BcsHashExt;
+use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_nanorpc::Transport;
 use xirtam_structs::{
     Blob,
@@ -83,7 +84,7 @@ enum Command {
 #[derive(Serialize)]
 struct ChainListOutput {
     found: bool,
-    chain: Option<CertificateChain>,
+    chains: Option<BTreeMap<Hash, CertificateChain>>,
 }
 
 #[derive(Serialize)]
@@ -103,13 +104,13 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
         Command::List { username } => {
             let endpoint = resolve_server_endpoint(global, &username).await?;
             let client = ServerClient::from(Transport::new(endpoint));
-            let chain = client
+            let chains = client
                 .v1_device_certs(username)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             let output = ChainListOutput {
-                found: chain.is_some(),
-                chain,
+                found: chains.is_some(),
+                chains,
             };
             print_json(&output)?;
         }
@@ -140,7 +141,10 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             let root_secret = read_bcs::<DeviceSecret>(&root_secret)?;
             let expiry = expiry_from_ttl(ttl_secs);
             let cert = root_secret.self_signed(expiry, !leaf);
-            let chain = CertificateChain(vec![cert]);
+            let chain = CertificateChain {
+                ancestors: Vec::new(),
+                this: cert,
+            };
             write_bcs(&out, &chain)?;
         }
         Command::ChainIssue {
@@ -151,19 +155,25 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             leaf,
             out,
         } => {
-            let mut chain = read_bcs::<CertificateChain>(&chain)?;
+            let chain = read_bcs::<CertificateChain>(&chain)?;
             let issuer_secret = read_bcs::<DeviceSecret>(&issuer_secret)?;
             let subject_secret = read_bcs::<DeviceSecret>(&subject_secret)?;
             let expiry = expiry_from_ttl(ttl_secs);
             let cert = issuer_secret.issue_certificate(&subject_secret.public(), expiry, !leaf);
-            chain.0.push(cert);
+            let mut ancestors = chain.ancestors;
+            ancestors.push(chain.this);
+            let chain = CertificateChain {
+                ancestors,
+                this: cert,
+            };
             write_bcs(&out, &chain)?;
         }
         Command::ChainDump { chain } => {
             let chain = read_bcs::<CertificateChain>(&chain)?;
             let dump: Vec<ChainDumpEntry> = chain
-                .0
+                .ancestors
                 .into_iter()
+                .chain(std::iter::once(chain.this))
                 .map(|cert| ChainDumpEntry {
                     pk_hash: cert.pk.bcs_hash(),
                     cert,

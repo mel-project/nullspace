@@ -8,10 +8,10 @@ use rand::Rng;
 use tracing::warn;
 use xirtam_crypt::aead::AeadKey;
 use xirtam_crypt::dh::DhPublic;
-use xirtam_crypt::hash::BcsHashExt;
+use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_crypt::signing::Signable;
 use xirtam_structs::Blob;
-use xirtam_structs::certificate::DevicePublic;
+use xirtam_structs::certificate::{CertificateChain, DevicePublic};
 use xirtam_structs::envelope::Envelope;
 use xirtam_structs::server::{MailboxId, SignedMediumPk};
 use xirtam_structs::username::UserName;
@@ -126,7 +126,8 @@ async fn collect_group_recipients(
     for member in members.into_iter().filter(RosterMember::is_active) {
         let username = member.username;
         let peer = get_user_info(ctx, &username).await?;
-        let user_recipients = collect_recipients(&username, &peer.certs, &peer.medium_pks)?;
+        let user_recipients =
+            collect_recipients(&username, &peer.device_chains, &peer.medium_pks)?;
         if !user_recipients.is_empty() {
             handles.push(username);
             recipients.extend(user_recipients);
@@ -141,13 +142,23 @@ async fn collect_group_recipients(
 
 fn collect_recipients(
     username: &UserName,
-    chain: &[xirtam_structs::certificate::DeviceCertificate],
-    medium_pks: &BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>,
+    chains: &BTreeMap<Hash, CertificateChain>,
+    medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<(DevicePublic, DhPublic)>> {
     let mut recipients = Vec::new();
-    for cert in chain {
-        let device_hash = cert.pk.bcs_hash();
-        let Some(medium_pk) = medium_pks.get(&device_hash) else {
+    for (device_hash, chain) in chains {
+        let cert = chain.last_device();
+        let cert_hash = cert.pk.bcs_hash();
+        if &cert_hash != device_hash {
+            warn!(
+                username = %username,
+                device_hash = %device_hash,
+                cert_hash = %cert_hash,
+                "device certificate hash mismatch"
+            );
+            continue;
+        }
+        let Some(medium_pk) = medium_pks.get(device_hash) else {
             warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };

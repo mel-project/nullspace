@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use futures_concurrency::future::TryJoin;
 use moka::future::Cache;
-use xirtam_structs::certificate::{CertificateChain, DeviceCertificate};
+use tracing::warn;
+use xirtam_crypt::hash::{BcsHashExt, Hash};
+use xirtam_structs::certificate::CertificateChain;
 use xirtam_structs::server::{ServerClient, ServerName, SignedMediumPk};
 use xirtam_structs::username::UserName;
 
@@ -17,8 +19,8 @@ pub struct UserInfo {
     pub username: UserName,
     pub server: Arc<ServerClient>,
     pub server_name: ServerName,
-    pub certs: Vec<DeviceCertificate>,
-    pub medium_pks: BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>,
+    pub device_chains: BTreeMap<Hash, CertificateChain>,
+    pub medium_pks: BTreeMap<Hash, SignedMediumPk>,
 }
 
 static USER_CACHE: LazyLock<Cache<UserName, Arc<UserInfo>>> = LazyLock::new(|| {
@@ -40,21 +42,39 @@ pub async fn get_user_info(
                 .await?
                 .context("username not in directory")?;
             let server = get_server_client(ctx, &descriptor.server_name).await?;
-            let (chain, medium_pks) = (
-                fetch_chain(&server, username),
+            let (chains, medium_pks) = (
+                fetch_chains(&server, username),
                 fetch_medium_pks(&server, username),
             )
                 .try_join()
                 .await?;
-            let certs = chain
-                .verify(descriptor.root_cert_hash)
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let mut device_chains = BTreeMap::new();
+            for (device_hash, chain) in chains {
+                if chain.verify(descriptor.root_cert_hash).is_err() {
+                    warn!(username=%username, device_hash=%device_hash, "invalid device certificate chain");
+                    continue;
+                }
+                let chain_hash = chain.last_device().pk.bcs_hash();
+                if chain_hash != device_hash {
+                    warn!(
+                        username=%username,
+                        device_hash=%device_hash,
+                        chain_hash=%chain_hash,
+                        "device certificate hash mismatch"
+                    );
+                    continue;
+                }
+                device_chains.insert(device_hash, chain);
+            }
+            if device_chains.is_empty() {
+                return Err(anyhow::anyhow!("no valid device certificate chains for {username}"));
+            }
             tracing::debug!(username=%username, elapsed=debug(start.elapsed()), "refreshed peer info");
             Ok(Arc::new(UserInfo {
                 username: username.clone(),
                 server,
                 server_name: descriptor.server_name.clone(),
-                certs,
+                device_chains,
                 medium_pks,
             }))
         })
@@ -62,21 +82,21 @@ pub async fn get_user_info(
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
 }
 
-async fn fetch_chain(
+async fn fetch_chains(
     server: &ServerClient,
     username: &UserName,
-) -> anyhow::Result<CertificateChain> {
+) -> anyhow::Result<BTreeMap<Hash, CertificateChain>> {
     server
         .v1_device_certs(username.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?
-        .context("username has no certificate chain")
+        .context("username has no certificate chains")
 }
 
 async fn fetch_medium_pks(
     server: &ServerClient,
     username: &UserName,
-) -> anyhow::Result<BTreeMap<xirtam_crypt::hash::Hash, SignedMediumPk>> {
+) -> anyhow::Result<BTreeMap<Hash, SignedMediumPk>> {
     server
         .v1_device_medium_pks(username.clone())
         .await?

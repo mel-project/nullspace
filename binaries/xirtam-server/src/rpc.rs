@@ -48,7 +48,7 @@ impl ServerProtocol for ServerRpc {
     async fn v1_device_certs(
         &self,
         username: UserName,
-    ) -> Result<Option<CertificateChain>, ServerRpcError> {
+    ) -> Result<Option<BTreeMap<xirtam_crypt::hash::Hash, CertificateChain>>, ServerRpcError> {
         device::device_list(username).await
     }
 

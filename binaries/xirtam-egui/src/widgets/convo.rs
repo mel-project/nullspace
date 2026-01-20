@@ -9,7 +9,7 @@ use pollster::FutureExt;
 use tracing::debug;
 use xirtam_client::internal::{ConvoId, ConvoMessage};
 use xirtam_structs::group::{GroupId, GroupInviteMsg};
-use xirtam_structs::msg_content::MessagePayload;
+use xirtam_structs::event::EventPayload;
 use xirtam_structs::timestamp::NanoTimestamp;
 
 use crate::XirtamApp;

@@ -11,8 +11,8 @@ use xirtam_crypt::dh::DhPublic;
 use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_crypt::signing::Signable;
 use xirtam_structs::Blob;
-use xirtam_structs::certificate::{CertificateChain, DevicePublic};
-use xirtam_structs::envelope::Envelope;
+use xirtam_structs::certificate::CertificateChain;
+use xirtam_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use xirtam_structs::server::{MailboxId, SignedMediumPk};
 use xirtam_structs::username::UserName;
 
@@ -85,17 +85,18 @@ async fn send_group_rekey(
         kind: Blob::V1_AEAD_KEY.into(),
         inner: Bytes::from(new_key.to_bytes().to_vec()),
     };
-    let envelope = Envelope::encrypt_message(
+    let signed = DeviceSigned::sign_blob(
         &key_blob,
         identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
-        recipients,
-    )
-    .map_err(|_| anyhow::anyhow!("failed to encrypt group rekey"))?;
+    )?;
+    let signed_bytes = bcs::to_bytes(&signed)?;
+    let encrypted = HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients)
+        .map_err(|_| anyhow::anyhow!("failed to encrypt group rekey"))?;
     let outer = Blob {
         kind: Blob::V1_GROUP_REKEY.into(),
-        inner: Bytes::from(bcs::to_bytes(&envelope)?),
+        inner: Bytes::from(bcs::to_bytes(&encrypted)?),
     };
     send_to_group_mailbox(
         ctx,
@@ -110,7 +111,7 @@ async fn send_group_rekey(
 async fn collect_group_recipients(
     ctx: &AnyCtx<Config>,
     group: &GroupRecord,
-) -> anyhow::Result<Vec<(DevicePublic, DhPublic)>> {
+) -> anyhow::Result<Vec<DhPublic>> {
     let mut recipients = Vec::new();
     let mut handles = Vec::new();
     let db = ctx.get(DATABASE);
@@ -144,7 +145,7 @@ fn collect_recipients(
     username: &UserName,
     chains: &BTreeMap<Hash, CertificateChain>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
-) -> anyhow::Result<Vec<(DevicePublic, DhPublic)>> {
+) -> anyhow::Result<Vec<DhPublic>> {
     let mut recipients = Vec::new();
     for (device_hash, chain) in chains {
         let cert = chain.last_device();
@@ -166,7 +167,7 @@ fn collect_recipients(
             warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
-        recipients.push((cert.pk.clone(), medium_pk.medium_pk.clone()));
+        recipients.push(medium_pk.medium_pk.clone());
     }
     Ok(recipients)
 }
@@ -178,13 +179,13 @@ pub(super) async fn process_group_rekey_entry(
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
-    let envelope: Envelope = bcs::from_bytes(&message.inner)?;
-    let device_pk = identity.device_secret.public();
-    let decrypted = match envelope.decrypt_message(&device_pk, &identity.medium_sk_current) {
+    let encrypted: HeaderEncrypted = bcs::from_bytes(&message.inner)?;
+    let decrypted = match encrypted.decrypt_bytes(&identity.medium_sk_current) {
         Ok(decrypted) => decrypted,
-        Err(_) => envelope.decrypt_message(&device_pk, &identity.medium_sk_prev)?,
+        Err(_) => encrypted.decrypt_bytes(&identity.medium_sk_prev)?,
     };
-    let sender_username = decrypted.username().clone();
+    let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
+    let sender_username = signed.sender().clone();
     let mut tx = db.begin().await?;
     let roster = GroupRoster::load(
         tx.as_mut(),
@@ -206,11 +207,11 @@ pub(super) async fn process_group_rekey_entry(
         .get_user_descriptor(&sender_username)
         .await?
         .context("sender username not in directory")?;
-    let inner = decrypted
-        .verify(sender_descriptor.root_cert_hash)
-        .map_err(|_| anyhow::anyhow!("failed to verify rekey envelope"))?;
+    let inner = signed
+        .verify_blob(sender_descriptor.root_cert_hash)
+        .map_err(|_| anyhow::anyhow!("failed to verify device-signed rekey"))?;
     if inner.kind != Blob::V1_AEAD_KEY {
-        warn!(kind = %inner.kind, "ignoring non-rekey envelope payload");
+        warn!(kind = %inner.kind, "ignoring non-rekey payload");
         return Ok(());
     }
     if inner.inner.len() != 32 {

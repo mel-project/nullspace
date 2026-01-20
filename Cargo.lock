@@ -7597,6 +7597,7 @@ dependencies = [
  "base64",
  "bcs",
  "blake3",
+ "chacha20",
  "chacha20poly1305",
  "derivative",
  "ed25519-consensus",

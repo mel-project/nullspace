@@ -20,7 +20,7 @@ Servers are "concierge servers" for client devices. Unlike Matrix homeservers or
 Servers:
 - host mailboxes (DM, group message, group management) 
 - enforce ACLs based on device auth tokens
-- publish medium-term device keys for envelope encryption
+- publish medium-term device keys for header encryption
 - serve username certificate chains
 
 Unlike in federated protocols, servers do not relay to each other; they only accept requests from clients. "Cross-server" communication is done by a sender posting to a recipient's server mailbox. For privacy and efficiency, though, servers may offer a **proxy service** that allows clients to talk to other servers through them; this is especially useful if the clients are behind a restricted network (say, behind the Great Firewall of China).

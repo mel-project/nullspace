@@ -4,10 +4,10 @@ use bytes::Bytes;
 use xirtam_crypt::aead::AeadKey;
 use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_structs::Blob;
+use xirtam_structs::event::{Event, EventPayload, Recipient};
 use xirtam_structs::group::{
     GroupDescriptor, GroupId, GroupInviteMsg, GroupManageMsg, GroupMessage,
 };
-use xirtam_structs::msg_content::{MessageContent, MessagePayload};
 use xirtam_structs::server::{AuthToken, MailboxAcl, MailboxId, ServerName};
 use xirtam_structs::timestamp::{NanoTimestamp, Timestamp};
 use xirtam_structs::username::UserName;
@@ -166,8 +166,11 @@ pub async fn invite(
         token: invite_token,
         created_at: NanoTimestamp::now(),
     };
-    let content =
-        MessageContent::from_json_payload(username.clone(), NanoTimestamp::now(), &invite)?;
+    let content = Event::from_json_payload(
+        Recipient::User(username.clone()),
+        NanoTimestamp::now(),
+        &invite,
+    )?;
     let convo_id = ConvoId::Direct { peer: username.clone() };
     let mut tx = db.begin().await?;
     queue_message(
@@ -323,8 +326,11 @@ async fn send_management_message(
     group: &GroupRecord,
     manage: GroupManageMsg,
 ) -> anyhow::Result<NanoTimestamp> {
-    let content =
-        MessageContent::from_json_payload(UserName::placeholder(), NanoTimestamp::now(), &manage)?;
+    let content = Event::from_json_payload(
+        Recipient::Group(group.group_id),
+        NanoTimestamp::now(),
+        &manage,
+    )?;
     let message = Blob {
         kind: Blob::V1_MESSAGE_CONTENT.into(),
         inner: Bytes::from(bcs::to_bytes(&content)?),

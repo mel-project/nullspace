@@ -6,8 +6,8 @@ use anyhow::Context;
 use futures_concurrency::future::Race;
 use tracing::warn;
 use xirtam_structs::Blob;
+use xirtam_structs::event::{Event, EventPayload, Recipient};
 use xirtam_structs::group::{GroupId, GroupManageMsg, GroupMessage};
-use xirtam_structs::msg_content::{MessageContent, MessagePayload};
 use xirtam_structs::server::MailboxId;
 use xirtam_structs::timestamp::NanoTimestamp;
 
@@ -184,7 +184,18 @@ async fn process_group_message_entry(
         warn!(kind = %message.kind, "ignoring non-message-content group message");
         return Ok(());
     }
-    let content: MessageContent = bcs::from_bytes(&message.inner)?;
+    let content: Event = bcs::from_bytes(&message.inner)?;
+    let recipient = match content.recipient {
+        Recipient::Group(group_id) => group_id,
+        Recipient::User(username) => {
+            warn!(sender = %sender, recipient = %username, "ignoring group message to user");
+            return Ok(());
+        }
+    };
+    if recipient != group.group_id {
+        warn!(group = ?group.group_id, recipient = ?recipient, "group recipient mismatch");
+        return Ok(());
+    }
     let mut tx = db.begin().await?;
     let convo_id = ensure_convo_id(tx.as_mut(), "group", &group.group_id.to_string()).await?;
     sqlx::query(
@@ -232,7 +243,18 @@ async fn process_group_management_entry(
         warn!(kind = %message.kind, "ignoring non-message-content management");
         return Ok(());
     }
-    let content: MessageContent = bcs::from_bytes(&message.inner)?;
+    let content: Event = bcs::from_bytes(&message.inner)?;
+    let recipient = match content.recipient {
+        Recipient::Group(group_id) => group_id,
+        Recipient::User(username) => {
+            warn!(sender = %sender, recipient = %username, "ignoring management to user");
+            return Ok(());
+        }
+    };
+    if recipient != group.group_id {
+        warn!(group = ?group.group_id, recipient = ?recipient, "management recipient mismatch");
+        return Ok(());
+    }
     if content.mime != GroupManageMsg::mime() {
         warn!(mime = %content.mime, "ignoring non-group-manage mime");
         return Ok(());

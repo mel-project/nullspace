@@ -1,11 +1,13 @@
 pub mod certificate;
 pub mod directory;
-pub mod envelope;
+pub mod e2ee;
 pub mod server;
 pub mod group;
 pub mod username;
-pub mod msg_content;
+pub mod event;
 pub mod timestamp;
+
+pub use xirtam_crypt::stream::StreamKey;
 
 use bytes::Bytes;
 use derivative::Derivative;

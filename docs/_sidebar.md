@@ -1,4 +1,5 @@
 * [Home](/)
 * [Network architecture](network.md)
 * [End-to-end encryption](e2ee.md)
+* [Events](events.md)
 * [Device certificates](devices.md)

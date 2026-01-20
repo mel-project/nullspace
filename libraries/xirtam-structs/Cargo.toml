@@ -27,5 +27,5 @@ xirtam-crypt = { version = "0.0.1", path = "../xirtam-crypt" }
 criterion = "0.5"
 
 [[bench]]
-name = "envelope"
+name = "header_encryption"
 harness = false

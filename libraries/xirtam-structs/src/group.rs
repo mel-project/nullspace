@@ -13,7 +13,7 @@ use xirtam_crypt::{
 use crate::{
     Blob,
     certificate::{CertificateChain, DeviceSecret},
-    msg_content::MessagePayload,
+    event::EventPayload,
     server::{AuthToken, ServerName},
     timestamp::{NanoTimestamp, Timestamp},
     username::UserName,
@@ -173,7 +173,7 @@ fn signed_bytes(
     bcs::to_bytes(&(group, sender, message)).map_err(|_| GroupMessageError::Encode)
 }
 
-impl MessagePayload for GroupInviteMsg {
+impl EventPayload for GroupInviteMsg {
     fn mime() -> &'static str {
         "application/vnd.xirtam.v1.group_invite"
     }
@@ -192,7 +192,7 @@ pub enum GroupManageMsg {
     RemoveAdmin(UserName),
 }
 
-impl MessagePayload for GroupManageMsg {
+impl EventPayload for GroupManageMsg {
     fn mime() -> &'static str {
         "application/vnd.xirtam.v1.group_manage"
     }

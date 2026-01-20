@@ -122,7 +122,7 @@ sequenceDiagram
   GUI->>Client: convo_send(ConvoId::Direct(@bob), "text/plain", "hi")
   Client->>DB: insert pending convo message
   Client-->>GUI: message_id
-  Client->>GW: mailbox_send(encrypted envelope)
+  Client->>GW: mailbox_send(header-encrypted message)
   Client->>DB: update received_at
   Client-->>GUI: next_event() -> ConvoUpdated { convo_id }
 ```

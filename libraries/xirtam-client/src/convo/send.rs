@@ -9,10 +9,10 @@ use tracing::warn;
 use xirtam_crypt::hash::{BcsHashExt, Hash};
 use xirtam_crypt::signing::Signable;
 use xirtam_structs::Blob;
-use xirtam_structs::certificate::{CertificateChain, DevicePublic};
-use xirtam_structs::envelope::Envelope;
+use xirtam_structs::certificate::CertificateChain;
+use xirtam_structs::e2ee::{DeviceSigned, HeaderEncrypted};
+use xirtam_structs::event::{Event, Recipient};
 use xirtam_structs::group::GroupMessage;
-use xirtam_structs::msg_content::MessageContent;
 use xirtam_structs::server::{AuthToken, MailboxId, ServerClient, SignedMediumPk};
 use xirtam_structs::timestamp::NanoTimestamp;
 use xirtam_structs::username::UserName;
@@ -141,8 +141,8 @@ async fn send_dm(
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
     let sent_at = NanoTimestamp::now();
-    let content = MessageContent {
-        recipient: peer.clone(),
+    let content = Event {
+        recipient: Recipient::User(peer.clone()),
         sent_at,
         mime: mime.clone(),
         body: body.clone(),
@@ -176,19 +176,20 @@ async fn send_dm_once(
     } else {
         AuthToken::anonymous()
     };
-    let envelope = Envelope::encrypt_message(
+    let signed = DeviceSigned::sign_blob(
         message,
         identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
-        recipients,
-    )
-    .map_err(|_| anyhow::anyhow!("failed to encrypt DM for {target}"))?;
-    let received_at = send_envelope(
+    )?;
+    let signed_bytes = bcs::to_bytes(&signed)?;
+    let encrypted = HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients)
+        .map_err(|_| anyhow::anyhow!("failed to encrypt DM for {target}"))?;
+    let received_at = send_header_encrypted(
         peer.server.as_ref(),
         auth,
         MailboxId::direct(target),
-        envelope,
+        encrypted,
     )
     .await?;
     Ok(received_at)
@@ -205,8 +206,8 @@ async fn send_group_message(
     let group = load_group(db, group_id)
         .await?
         .context("group not found")?;
-    let content = MessageContent {
-        recipient: UserName::placeholder(),
+    let content = Event {
+        recipient: Recipient::Group(group.group_id),
         sent_at: NanoTimestamp::now(),
         mime: mime.clone(),
         body: body.clone(),
@@ -241,7 +242,7 @@ fn collect_recipients(
     username: &UserName,
     chains: &BTreeMap<Hash, CertificateChain>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
-) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
+) -> anyhow::Result<Vec<xirtam_crypt::dh::DhPublic>> {
     let mut recipients = Vec::new();
     for (device_hash, chain) in chains {
         let cert = chain.last_device();
@@ -263,7 +264,7 @@ fn collect_recipients(
             warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
-        recipients.push((cert.pk.clone(), medium_pk.medium_pk.clone()));
+        recipients.push(medium_pk.medium_pk.clone());
     }
     if recipients.is_empty() {
         anyhow::bail!("no medium-term keys available for {username}");
@@ -271,21 +272,19 @@ fn collect_recipients(
     Ok(recipients)
 }
 
-fn recipients_from_peer(
-    peer: &UserInfo,
-) -> anyhow::Result<Vec<(DevicePublic, xirtam_crypt::dh::DhPublic)>> {
+fn recipients_from_peer(peer: &UserInfo) -> anyhow::Result<Vec<xirtam_crypt::dh::DhPublic>> {
     collect_recipients(&peer.username, &peer.device_chains, &peer.medium_pks)
 }
 
-async fn send_envelope(
+async fn send_header_encrypted(
     client: &ServerClient,
     auth: AuthToken,
     mailbox: MailboxId,
-    envelope: Envelope,
+    message: HeaderEncrypted,
 ) -> anyhow::Result<NanoTimestamp> {
     let message = Blob {
         kind: Blob::V1_DIRECT_MESSAGE.into(),
-        inner: Bytes::from(bcs::to_bytes(&envelope)?),
+        inner: Bytes::from(bcs::to_bytes(&message)?),
     };
     client
         .v1_mailbox_send(auth, mailbox, message)

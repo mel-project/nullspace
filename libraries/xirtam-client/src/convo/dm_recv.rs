@@ -5,8 +5,8 @@ use anyhow::Context;
 use tracing::warn;
 use xirtam_crypt::hash::BcsHashExt;
 use xirtam_structs::Blob;
-use xirtam_structs::envelope::Envelope;
-use xirtam_structs::msg_content::MessageContent;
+use xirtam_structs::e2ee::{DeviceSigned, HeaderEncrypted};
+use xirtam_structs::event::{Event, Recipient};
 use xirtam_structs::server::{MailboxId, ServerName};
 use xirtam_structs::timestamp::NanoTimestamp;
 
@@ -81,60 +81,75 @@ async fn process_mailbox_entry(
         warn!(kind = %message.kind, "ignoring non-dm mailbox entry");
         return Ok(());
     }
-    let envelope: Envelope = bcs::from_bytes(&message.inner)?;
-    let device_pk = identity.device_secret.public();
-    let device_hash = device_pk.bcs_hash();
-    let header_count = envelope.headers.len();
-    let has_header = envelope.headers.contains_key(&device_hash);
+    let encrypted: HeaderEncrypted = bcs::from_bytes(&message.inner)?;
+    let header_count = encrypted.headers.len();
+    let current_mpk = identity.medium_sk_current.public_key();
+    let current_mpk_hash = current_mpk.bcs_hash().to_bytes();
+    let current_mpk_short = [current_mpk_hash[0], current_mpk_hash[1]];
+    let has_header = encrypted
+        .headers
+        .iter()
+        .any(|header| header.receiver_mpk_short == current_mpk_short);
     tracing::debug!(
         received_at = entry.received_at.0,
         header_count,
         has_header,
-        device_hash = %device_hash,
-        "dm envelope received",
+        "dm header-encrypted message received",
     );
-    let decrypted = match envelope.decrypt_message(&device_pk, &identity.medium_sk_current) {
+    let decrypted = match encrypted.decrypt_bytes(&identity.medium_sk_current) {
         Ok(decrypted) => {
             tracing::debug!("dm decrypt with current medium key ok");
             decrypted
         }
         Err(err) => {
             tracing::debug!(error = %err, "dm decrypt with current medium key failed");
-            match envelope.decrypt_message(&device_pk, &identity.medium_sk_prev) {
+            match encrypted.decrypt_bytes(&identity.medium_sk_prev) {
                 Ok(decrypted) => {
                     tracing::debug!("dm decrypt with previous medium key ok");
                     decrypted
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "dm decrypt with previous medium key failed");
-                    return Err(anyhow::anyhow!("failed to decrypt envelope"));
+                    return Err(anyhow::anyhow!("failed to decrypt header-encrypted message"));
                 }
             }
         }
     };
-    let sender_username = decrypted.username().clone();
+    let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
+    let sender_username = signed.sender().clone();
     let sender_descriptor = dir
         .get_user_descriptor(&sender_username)
         .await?
         .context("sender username not in directory")?;
-    let message = decrypted
-        .verify(sender_descriptor.root_cert_hash)
-        .map_err(|_| anyhow::anyhow!("failed to verify envelope"))?;
+    let message = signed
+        .verify_blob(sender_descriptor.root_cert_hash)
+        .map_err(|_| anyhow::anyhow!("failed to verify device-signed message"))?;
     if message.kind != Blob::V1_MESSAGE_CONTENT {
         warn!(kind = %message.kind, "ignoring non-message-content dm");
         return Ok(());
     }
-    let content: MessageContent = bcs::from_bytes(&message.inner)?;
-    if content.recipient != identity.username && sender_username != identity.username {
+    let content: Event = bcs::from_bytes(&message.inner)?;
+    let recipient = match content.recipient {
+        Recipient::User(username) => username,
+        Recipient::Group(group_id) => {
+            warn!(
+                sender = %sender_username,
+                group = %group_id,
+                "ignoring dm with group recipient",
+            );
+            return Ok(());
+        }
+    };
+    if recipient != identity.username && sender_username != identity.username {
         warn!(
             sender = %sender_username,
-            recipient = %content.recipient,
+            recipient = %recipient,
             "ignoring dm with mismatched recipient",
         );
         return Ok(());
     }
     let peer_username = if sender_username == identity.username {
-        content.recipient.clone()
+        recipient.clone()
     } else {
         sender_username.clone()
     };

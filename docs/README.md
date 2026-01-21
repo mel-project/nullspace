@@ -1,6 +1,6 @@
 # nullpoint: an experimental confederal protocol
 
-**[Docs website](https://melproject.gitbook.io/nullpoint-docs)**
+**[Docs website](https://melproject.gitbook.io/nullpoint)**
 
 Nullpoint (this name is provisional!) is a **confederal** end-to-end chat system. A confederal protocol shares two similarities with a federated protocol like Matrix:
 - we use a server-client architecture; it's not purely p2p

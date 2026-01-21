@@ -23,7 +23,7 @@ mod screens;
 mod utils;
 mod widgets;
 
-const DEFAULT_DIR_ENDPOINT: &str = "https://nullspace-test-directory.nullfruit.net/";
+const DEFAULT_DIR_ENDPOINT: &str = "https://xirtam-test-directory.nullfruit.net/";
 const DEFAULT_DIR_ANCHOR_PK: &str = "bpOJ5ga-oQjb0njgBV5CtEZIVU6wjvltXjsQ_10BNlM";
 
 #[derive(Debug, Parser)]

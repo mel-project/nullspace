@@ -1,4 +1,4 @@
-# nullspace: an experimental confederal protocol
+# nullspace: an experimental confederal chat protocol
 
 **[GitHub](https://github.com/mel-project/xirtam-core)** **[Docs website](https://melproject.gitbook.io/nullspace)**
 

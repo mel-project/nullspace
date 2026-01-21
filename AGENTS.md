@@ -18,6 +18,13 @@ This is doubly so if the RPC call is in a `use_memo` or any other construct that
 
 Keep `docs/_sidebar.md` in sync with the docs. When adding, removing, or renaming doc pages, update the sidebar accordingly.
 
+## Documentation rules
+
+- Keep docs implementation-neutral; do not mention Rust type names.
+- When referring to other doc files, use Markdown links (e.g. `[events](events.md)`).
+- When describing BCS-encoded structures, use tuple/list notation (e.g. `[a, b, c]`), since field names are not preserved.
+- When documenting flows, prefer clear pseudocode that enables clean-room implementations.
+
 ## cargo check
 
 Always run cargo check after making significant changes to make sure things compile.

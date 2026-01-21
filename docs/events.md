@@ -1,11 +1,15 @@
 # Events
 
-An event is the plaintext payload carried inside encrypted messages. It is BCS-encoded with the following fields:
+An event is the plaintext payload carried inside encrypted messages. It is BCS-encoded as a tuple:
 
-- `recipient`, either a username (for DMs) or a group ID (for group chats)
-- `sent_at`, a timestamp
-- `mime`, a MIME type string
-- `body`, opaque bytes
+```
+[recipient, sent_at, mime, body]
+```
+
+- `recipient`: either a username (for DMs) or a group ID (for group chats)
+- `sent_at`: a timestamp
+- `mime`: a MIME type string
+- `body`: opaque bytes
 
 The `mime` field indicates how to interpret `body`. For human chat messages, `body` is usually the raw bytes of the text. For structured messages (like group invites or group management commands), `body` is typically JSON and the MIME value identifies the schema.
 

@@ -81,9 +81,11 @@ async fn send_group_rekey(
 ) -> anyhow::Result<()> {
     let recipients = collect_group_recipients(ctx, group).await?;
     let new_key = AeadKey::random();
+    let key_bytes = new_key.to_bytes();
+    let payload = bcs::to_bytes(&(group.group_id, key_bytes))?;
     let key_blob = Blob {
         kind: Blob::V1_AEAD_KEY.into(),
-        inner: Bytes::from(new_key.to_bytes().to_vec()),
+        inner: Bytes::from(payload),
     };
     let signed = DeviceSigned::sign_blob(
         &key_blob,
@@ -214,12 +216,16 @@ pub(super) async fn process_group_rekey_entry(
         warn!(kind = %inner.kind, "ignoring non-rekey payload");
         return Ok(());
     }
-    if inner.inner.len() != 32 {
-        warn!(len = inner.inner.len(), "invalid rekey length");
+    let (rekey_group, key_bytes): (xirtam_structs::group::GroupId, [u8; 32]) =
+        bcs::from_bytes(&inner.inner)?;
+    if rekey_group != group.group_id {
+        warn!(
+            expected = %group.group_id,
+            actual = %rekey_group,
+            "ignoring rekey for different group"
+        );
         return Ok(());
     }
-    let mut key_bytes = [0u8; 32];
-    key_bytes.copy_from_slice(&inner.inner);
     let new_key = AeadKey::from_bytes(key_bytes);
     sqlx::query("UPDATE groups SET group_key_prev = ?, group_key_current = ? WHERE group_id = ?")
         .bind(bcs::to_bytes(&group.group_key_current)?)

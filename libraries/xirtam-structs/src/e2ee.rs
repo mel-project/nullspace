@@ -131,6 +131,8 @@ pub enum HeaderEncryptionError {
     Encrypt,
     #[error("decrypt error")]
     Decrypt,
+    #[error("dh error")]
+    Dh,
     #[error("no recipients")]
     NoRecipients,
 }
@@ -148,7 +150,9 @@ impl HeaderEncrypted {
         let mut headers = Vec::new();
         for recipient_mpk in recipients {
             let receiver_mpk_short = mpk_short(&recipient_mpk);
-            let ss = sender_esk.diffie_hellman(&recipient_mpk);
+            let ss = sender_esk
+                .diffie_hellman(&recipient_mpk)
+                .map_err(|_| HeaderEncryptionError::Dh)?;
             let sealed = StreamKey::from_bytes(ss).encrypt([0u8; 24], &key_bytes);
             headers.push(EncryptionHeader {
                 receiver_mpk_short,
@@ -177,7 +181,9 @@ impl HeaderEncrypted {
         let recipient_mpk = recipient_medium.public_key();
         let mpk_short = mpk_short(&recipient_mpk);
         let aad = header_aad(&self.sender_epk, &self.headers)?;
-        let ss = recipient_medium.diffie_hellman(&self.sender_epk);
+        let ss = recipient_medium
+            .diffie_hellman(&self.sender_epk)
+            .map_err(|_| HeaderEncryptionError::Dh)?;
         let stream_key = StreamKey::from_bytes(ss);
         for header in self
             .headers

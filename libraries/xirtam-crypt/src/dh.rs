@@ -8,9 +8,18 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::base64::{Base64, UrlSafe};
 use serde_with::formats::Unpadded;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
+use subtle::ConstantTimeEq;
+use thiserror::Error;
 
 use crate::ParseKeyError;
 use crate::encoding;
+
+/// Errors returned by Diffie-Hellman operations.
+#[derive(Debug, Error)]
+pub enum DhError {
+    #[error("invalid shared secret")]
+    InvalidSharedSecret,
+}
 
 /// X25519 public key used for Diffie-Hellman key exchange.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -108,8 +117,12 @@ impl DhSecret {
     }
 
     /// Perform Diffie-Hellman with a peer public key, returning the shared secret bytes.
-    pub fn diffie_hellman(&self, peer: &DhPublic) -> [u8; 32] {
-        self.0.diffie_hellman(peer.as_inner()).to_bytes()
+    pub fn diffie_hellman(&self, peer: &DhPublic) -> Result<[u8; 32], DhError> {
+        let ss = self.0.diffie_hellman(peer.as_inner()).to_bytes();
+        if ss.ct_eq(&[0u8; 32]).unwrap_u8() == 1 {
+            return Err(DhError::InvalidSharedSecret);
+        }
+        Ok(ss)
     }
 }
 
@@ -143,13 +156,13 @@ pub fn triple_dh(
     local_ephemeral: &DhSecret,
     remote_long_term: &DhPublic,
     remote_ephemeral: &DhPublic,
-) -> [u8; 32] {
+) -> Result<[u8; 32], DhError> {
     let local_lt_pub = local_long_term.public_key();
     let local_eph_pub = local_ephemeral.public_key();
 
-    let dh1 = local_long_term.diffie_hellman(remote_ephemeral);
-    let dh2 = local_ephemeral.diffie_hellman(remote_long_term);
-    let dh3 = local_ephemeral.diffie_hellman(remote_ephemeral);
+    let dh1 = local_long_term.diffie_hellman(remote_ephemeral)?;
+    let dh2 = local_ephemeral.diffie_hellman(remote_long_term)?;
+    let dh3 = local_ephemeral.diffie_hellman(remote_ephemeral)?;
 
     let local_id = (local_lt_pub.to_bytes(), local_eph_pub.to_bytes());
     let remote_id = (remote_long_term.to_bytes(), remote_ephemeral.to_bytes());
@@ -159,7 +172,7 @@ pub fn triple_dh(
         (dh2, dh1)
     };
 
-    triple_dh_key(first, second, dh3)
+    Ok(triple_dh_key(first, second, dh3))
 }
 
 impl Serialize for DhSecret {
@@ -216,9 +229,18 @@ mod tests {
         let b_lt = DhSecret::from_bytes([3u8; 32]);
         let b_eph = DhSecret::from_bytes([4u8; 32]);
 
-        let a_key = triple_dh(&a_lt, &a_eph, &b_lt.public_key(), &b_eph.public_key());
-        let b_key = triple_dh(&b_lt, &b_eph, &a_lt.public_key(), &a_eph.public_key());
+        let a_key =
+            triple_dh(&a_lt, &a_eph, &b_lt.public_key(), &b_eph.public_key()).expect("a key");
+        let b_key =
+            triple_dh(&b_lt, &b_eph, &a_lt.public_key(), &a_eph.public_key()).expect("b key");
 
         assert_eq!(a_key, b_key);
+    }
+
+    #[test]
+    fn dh_rejects_all_zero_shared_secret() {
+        let secret = DhSecret::random();
+        let low_order = DhPublic::from_bytes([0u8; 32]);
+        assert!(secret.diffie_hellman(&low_order).is_err());
     }
 }

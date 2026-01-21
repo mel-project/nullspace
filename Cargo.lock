@@ -7607,6 +7607,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "subtle",
  "thiserror 2.0.17",
  "x25519-dalek",
 ]

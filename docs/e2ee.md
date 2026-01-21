@@ -22,15 +22,33 @@ Some parts of the E2EE design are fairly conventional (e.g. we use XChaCha20, Ed
 
 ## Basic primitives
 
-Before we discuss the specific protocols, it's useful to outline three primitives.
+Before we discuss the specific protocols, it's useful to outline a few primitives.
 
 ### Events
 
-An event is the plaintext payload carried inside encrypted messages. It contains:
-- `recipient`, either a username (for DMs) or a group ID (for group chats)
-- `sent_at`, a timestamp
-- `mime`, a MIME type string
-- `body`, opaque bytes
+An event is the plaintext payload carried inside encrypted messages. It is BCS-encoded as:
+
+```
+[recipient, sent_at, mime, body]
+```
+
+- `recipient`: either a username (for DMs) or a group ID (for group chats)
+- `sent_at`: a timestamp
+- `mime`: a MIME type string
+- `body`: opaque bytes
+
+### Tagged blobs
+
+Many places in the protocol carry opaque, tagged payloads as a **tagged blob**:
+
+```
+[kind, inner]
+```
+
+- `kind`: a string tag like `v1.message_content` or `v1.aead_key`
+- `inner`: raw bytes whose interpretation depends on `kind`
+
+Tagged blobs are BCS-encoded.
 
 ### Header encryption
 
@@ -38,30 +56,92 @@ Header encryption encrypts a message such that any member of a group of devices,
 
 Header encryption, by itself, provides no authentication of the sender or contents whatsoever. It's insecure used by itself!
 
-A header-encrypted message is BCS-encoded with the following fields:
-- `sender_epk`, an ephemeral, one-time DH public key (the secret side is called `sender_esk`)
-- `headers`, a list of headers, each of which contains:
-    - `headers[i].receiver_mpk_short`, the first 2 bytes of the hash of the receiver medium-term public key, `H(receiver_mpk)`. This may collide, that is fine.
-    - `headers[i].receiver_key`, the 32-byte, per-message symmetric key `K` encrypted with `DH(sender_esk, receiver_mpk)` using XChaCha20 (no Poly1305) with a zero nonce.
-- `body`, a message encrypted with `K` using XChaCha20-Poly1305 with a zero nonce, and aad being the bcs encoding of `[sender_epk, headers]`
+In pseudocode:
+
+```
+HeaderEncrypt(recipients_mpk[], plaintext_bytes):
+    sender_esk = X25519.RandomSecret()
+    sender_epk = X25519.Public(sender_esk)
+    K = RandomBytes(32)  // per-message AEAD key
+
+    headers = []
+    for receiver_mpk in recipients_mpk:
+        receiver_mpk_short = H(bcs_encode(receiver_mpk))[0..2]
+        ss = X25519.DH(sender_esk, receiver_mpk)
+        receiver_key = XChaCha20(key=ss, nonce=0).Encrypt(K)  // stream cipher, no auth
+        headers += [receiver_mpk_short, receiver_key]
+
+    aad = bcs_encode([sender_epk, headers])
+    body = XChaCha20-Poly1305(key=K, nonce=0, aad=aad).Encrypt(plaintext_bytes)
+    return bcs_encode([sender_epk, headers, body])
+
+HeaderDecrypt(my_msk, header_encrypted_bytes):
+    [sender_epk, headers, body] = bcs_decode(header_encrypted_bytes)
+    my_mpk_short = H(bcs_encode(X25519.Public(my_msk)))[0..2]
+    ss = X25519.DH(my_msk, sender_epk)
+    aad = bcs_encode([sender_epk, headers])
+
+    for header in headers where header.receiver_mpk_short == my_mpk_short:
+        K = XChaCha20(key=ss, nonce=0).Decrypt(header.receiver_key)
+        if XChaCha20-Poly1305(key=K, nonce=0, aad=aad).Decrypt(body) succeeds:
+            return plaintext_bytes
+
+    fail
+```
+
+Notes:
+- `H(...)` is BLAKE3.
+- The 2-byte `receiver_mpk_short` is only an index hint and may collide; the decryptor tries all matching candidates.
+- Nonce `0` is safe here because both `ss` and `K` are per-message fresh.
 
 ### Device signing
 
 Device signing signs an arbitrary message in such a way that proves that it's signed by a device belonging to a particular username, as long as the recipient has access to directory lookups for that username. This is useful to allow recipients to avoid fetching device lists from "foreign" servers in order to decrypt messages, only to encrypt them.
 
-A device-signed message is BCS-encoded with the following fields:
-- `sender`, a username
-- `cert_chain`, a [certificate chain](devices.md) identifying a device owned by `sender`
-- `body`, arbitrary plaintext bytes
-- `signature`, an ed25519 signature over the BCS encoding of `(sender, cert_chain, body)`
+In pseudocode:
+
+```
+DeviceSign(sender_username, sender_cert_chain, sender_device_signing_sk, body_bytes):
+    payload = [sender_username, sender_cert_chain, body_bytes]
+    signature = Ed25519.Sign(sender_device_signing_sk, bcs_encode(payload))
+    return bcs_encode([sender_username, sender_cert_chain, body_bytes, signature])
+
+DeviceVerify(device_signed_bytes, trusted_root_hash):
+    [sender, cert_chain, body, signature] = bcs_decode(device_signed_bytes)
+    VerifyCertificateChain(cert_chain, trusted_root_hash)  // see [devices.md](devices.md)
+    sender_device_pk = cert_chain.leaf_device_public_key
+    Ed25519.Verify(sender_device_pk, signature, bcs_encode([sender, cert_chain, body]))
+    return (sender, body)
+```
+
+The signature is over the full tuple `(sender, cert_chain, body)` rather than just `body` as defense-in-depth against malleability.
 
 ## DM encryption
 
 If Alice wants to send a plaintext [event](events.md) as a DM to Bob:
-- Alice device-signs the plaintext she wants to send, using one of her device secret keys.
-- Alice fetches all of Bob's device medium-term keys.
-- Alice header-encrypts the device-signed plaintext to all of Bob's devices.
-- Alice sends the header-encrypted bundle to Bob's mailbox, as a blob of kind `v1.direct_message`.
+
+```
+SendDM(to_username, event):
+    event_bytes = bcs_encode(event)
+    msg_blob_bytes = bcs_encode(["v1.message_content", event_bytes])
+    signed_bytes = DeviceSign(my_username, my_cert_chain, my_device_signing_sk, msg_blob_bytes)
+    recipients_mpk = FetchAllMediumPublicKeys(to_username)
+    he_bytes = HeaderEncrypt(recipients_mpk, signed_bytes)
+    MailboxSend(mailbox=DirectMailbox(to_username), kind="v1.direct_message", body=he_bytes)
+```
+
+On receive, Bob does:
+
+```
+RecvDM(he_bytes):
+    signed_bytes = HeaderDecrypt(my_medium_sk_current, he_bytes)
+        or HeaderDecrypt(my_medium_sk_previous, he_bytes)
+    (sender_username, msg_blob_bytes) = DeviceVerify(signed_bytes, DirectoryRootHash(sender_username))
+    [kind, inner] = bcs_decode(msg_blob_bytes)
+    assert kind == "v1.message_content"
+    event = bcs_decode(inner)
+    return event
+```
 
 Each participant periodically refreshes their medium-term keys, at an interval *not more frequent than* once every hour (so that caching lookups for 1 hour is always safe). Participants also keep around their previous medium-term key to decrypt any out-of-order messages.
 
@@ -69,14 +149,17 @@ This ensures FS/PCS within 2 hours.
 
 ## Group encryption
 
-Group messages are encrypted with a symmetric group key shared by all active members. If Alice wants to send a plaintext [event](events.md) to a group:
-- Alice device-signs the plaintext she wants to send.
-- Alice encrypts the device-signed payload with the current group key using XChaCha20-Poly1305 with a random nonce.
-- Alice sends the ciphertext as a blob of kind `v1.group_message` to the group's message mailbox.
-- Recipients decrypt using the current group key, falling back to the previous group key, then verify the device signature against the sender's directory root.
+Group messages are encrypted with a symmetric group key shared by all active members. The exact group message format and the group management semantics are specified in [groups.md](groups.md).
 
 Group rekeys are distributed with header encryption:
-- An active admin periodically generates a fresh group key.
-- The admin wraps the new key bytes in a blob of kind `v1.aead_key`, device-signs it, and header-encrypts it to all active members' medium-term keys.
-- The header-encrypted blob is sent to the group's message mailbox as kind `v1.group_rekey`.
-- Recipients decrypt using their medium-term keys, verify the device signature, ensure the sender is an active admin, and then rotate the previous/current group keys.
+
+```
+SendGroupRekey(group_id, new_group_key_bytes):
+    key_blob_bytes = bcs_encode(["v1.aead_key", bcs_encode([group_id, new_group_key_bytes])])
+    signed_bytes = DeviceSign(my_username, my_cert_chain, my_device_signing_sk, key_blob_bytes)
+    recipients_mpk = FetchAllMediumPublicKeysOfActiveMembers(group_id)
+    he_bytes = HeaderEncrypt(recipients_mpk, signed_bytes)
+    MailboxSend(mailbox=GroupMessagesMailbox(group_id), kind="v1.group_rekey", body=he_bytes)
+```
+
+Group membership, invites, bans, admins, and management messages are specified in [groups.md](groups.md).

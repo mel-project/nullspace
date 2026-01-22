@@ -14,4 +14,6 @@ nanorpc = "0.1"
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1.0.148"
 tokio = { version = "1.47.1", features = ["io-util", "net", "sync"] }
+tokio-stream = "0.1.17"
+tokio-util = { version = "0.7.16", features = ["codec"] }
 url = "2.5.7"

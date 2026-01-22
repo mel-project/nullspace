@@ -167,24 +167,16 @@ async fn process_group_message_entry(
         Ok(signed) => signed,
         Err(_) => group_message.decrypt_message(&group.group_key_prev)?,
     };
-    if signed.group != group.group_id {
-        warn!(group = ?group.group_id, "group id mismatch in message");
-        return Ok(());
-    }
-    let sender = signed.sender.clone();
+    let sender = signed.sender().clone();
     let sender_descriptor = ctx
         .get(crate::directory::DIR_CLIENT)
         .get_user_descriptor(&sender)
         .await?
         .context("sender username not in directory")?;
-    let message = signed
-        .verify(sender_descriptor.root_cert_hash)
+    let content_bytes = signed
+        .verify_bytes(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify group message"))?;
-    if message.kind != Blob::V1_MESSAGE_CONTENT {
-        warn!(kind = %message.kind, "ignoring non-message-content group message");
-        return Ok(());
-    }
-    let content: Event = bcs::from_bytes(&message.inner)?;
+    let content: Event = bcs::from_bytes(&content_bytes)?;
     let recipient = match content.recipient {
         Recipient::Group(group_id) => group_id,
         Recipient::User(username) => {
@@ -226,24 +218,16 @@ async fn process_group_management_entry(
     }
     let group_message: GroupMessage = bcs::from_bytes(&message.inner)?;
     let signed = group_message.decrypt_message(&group.descriptor.management_key)?;
-    if signed.group != group.group_id {
-        warn!(group = ?group.group_id, "group id mismatch in management");
-        return Ok(());
-    }
-    let sender = signed.sender.clone();
+    let sender = signed.sender().clone();
     let sender_descriptor = ctx
         .get(crate::directory::DIR_CLIENT)
         .get_user_descriptor(&sender)
         .await?
         .context("sender username not in directory")?;
-    let message = signed
-        .verify(sender_descriptor.root_cert_hash)
+    let content_bytes = signed
+        .verify_bytes(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify management message"))?;
-    if message.kind != Blob::V1_MESSAGE_CONTENT {
-        warn!(kind = %message.kind, "ignoring non-message-content management");
-        return Ok(());
-    }
-    let content: Event = bcs::from_bytes(&message.inner)?;
+    let content: Event = bcs::from_bytes(&content_bytes)?;
     let recipient = match content.recipient {
         Recipient::Group(group_id) => group_id,
         Recipient::User(username) => {

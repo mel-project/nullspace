@@ -7,15 +7,15 @@ use axum::{
 };
 use bytes::Bytes;
 use nanorpc::{JrpcRequest, RpcService};
-use serde_json::json;
 use nullspace_crypt::{hash::Hash, signing::Signable};
 use nullspace_structs::directory::{
     DirectoryAnchor, DirectoryChunk, DirectoryErr, DirectoryHeader, DirectoryHistoryIterExt,
     DirectoryProtocol, DirectoryResponse, DirectoryService, DirectoryUpdate, PowAlgo, PowSeed,
     PowSolution,
 };
-use nullspace_structs::username::UserName;
 use nullspace_structs::timestamp::Timestamp;
+
+use serde_json::json;
 
 use crate::{db, mirror, pow, state::DirectoryState};
 
@@ -134,9 +134,6 @@ impl DirectoryProtocol for DirectoryServer {
         update: DirectoryUpdate,
         pow_solution: PowSolution,
     ) -> Result<(), DirectoryErr> {
-        if key == UserName::placeholder().as_str() {
-            return Err(DirectoryErr::UpdateRejected("username is reserved".into()));
-        }
         if let Some(mirror) = &self.state.mirror {
             return mirror::forward_insert(mirror, key, update, pow_solution).await;
         }

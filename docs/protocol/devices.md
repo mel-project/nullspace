@@ -56,7 +56,7 @@ To add a new device to an existing username, an already-authorized device issues
    - The issuer signs `bcs_encode([new_dpk, expiry, can_issue])` with its device secret key, producing `signature`.
    - The resulting certificate is `new_cert = [new_dpk, expiry, can_issue, signature]`.
 
-4) **Issuer constructs the new device’s certificate chain**
+4) **Issuer constructs the new device's certificate chain**
    - If `issuer_chain = [ancestors, issuer_cert]`, then the new chain is:
 
 ```

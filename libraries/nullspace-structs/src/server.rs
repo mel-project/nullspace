@@ -2,22 +2,23 @@ use std::sync::LazyLock;
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use async_trait::async_trait;
+
 use nanorpc::nanorpc_derive;
+use nullspace_crypt::dh::DhPublic;
+use nullspace_crypt::signing::{Signable, Signature};
+use nullspace_crypt::{hash::Hash, signing::SigningPublic};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::hex::Hex;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
-use smol_str::SmolStr;
+use smol_str::{SmolStr, format_smolstr};
 use thiserror::Error;
 use url::Url;
-use nullspace_crypt::dh::DhPublic;
-use nullspace_crypt::signing::{Signable, Signature};
-use nullspace_crypt::{hash::Hash, signing::SigningPublic};
 
 use crate::certificate::CertificateChain;
 use crate::group::GroupId;
 use crate::timestamp::Timestamp;
-use crate::{Blob, username::UserName, timestamp::NanoTimestamp};
+use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
 
 /// The RPC protocol implemented by servers.
 #[nanorpc_derive]
@@ -121,10 +122,14 @@ pub struct ServerNameError;
 impl ServerName {
     pub fn parse(name: impl AsRef<str>) -> Result<Self, ServerNameError> {
         let name = name.as_ref();
-        if !SERVER_NAME_RE.is_match(name) {
-            return Err(ServerNameError);
+        if SERVER_NAME_RE.is_match(name) {
+            return Ok(Self(SmolStr::new(name)));
         }
-        Ok(Self(SmolStr::new(name)))
+        let name_with_tilde = format_smolstr!("~{name}");
+        if SERVER_NAME_RE.is_match(&name_with_tilde) {
+            return Ok(Self(name_with_tilde));
+        }
+        Err(ServerNameError)
     }
 
     pub fn as_str(&self) -> &str {
@@ -268,6 +273,12 @@ mod tests {
     #[test]
     fn server_name_roundtrip() {
         let name = ServerName::parse("~serv_01").expect("valid server name");
+        assert_eq!(name.as_str(), "~serv_01");
+    }
+
+    #[test]
+    fn server_name_parse_without_tilde() {
+        let name = ServerName::parse("serv_01").expect("valid server name");
         assert_eq!(name.as_str(), "~serv_01");
     }
 }

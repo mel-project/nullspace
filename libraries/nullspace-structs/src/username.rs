@@ -2,11 +2,11 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use nullspace_crypt::hash::Hash;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
-use smol_str::SmolStr;
+use smol_str::{SmolStr, format_smolstr};
 use thiserror::Error;
-use nullspace_crypt::hash::Hash;
 
 use crate::server::ServerName;
 
@@ -22,20 +22,20 @@ pub struct UserDescriptor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
-#[error("invalid username")]
+#[error("invalid format for username")]
 pub struct UserNameError;
 
 impl UserName {
     pub fn parse(username: impl AsRef<str>) -> Result<Self, UserNameError> {
         let username = username.as_ref();
-        if !USERNAME_RE.is_match(username) {
-            return Err(UserNameError);
+        if USERNAME_RE.is_match(username) {
+            return Ok(Self(SmolStr::new(username)));
         }
-        Ok(Self(SmolStr::new(username)))
-    }
-
-    pub fn placeholder() -> Self {
-        Self(SmolStr::new("@placeholder"))
+        let username_with_at = format_smolstr!("@{username}");
+        if USERNAME_RE.is_match(&username_with_at) {
+            return Ok(Self(username_with_at));
+        }
+        Err(UserNameError)
     }
 
     pub fn as_str(&self) -> &str {

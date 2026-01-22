@@ -6,6 +6,7 @@ mod http;
 mod tcp;
 
 pub(crate) const REQUEST_TIMEOUT_SECS: u64 = 600;
+pub(crate) const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 pub use tcp::{serve_lz4tcp, serve_tcp};
 

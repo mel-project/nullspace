@@ -6,13 +6,15 @@ use async_compression::tokio::write::Lz4Encoder;
 use futures_concurrency::future::Race;
 use nanorpc::{JrpcId, JrpcRequest, JrpcResponse, RpcService};
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, LinesCodec};
 use url::Url;
 
-use crate::REQUEST_TIMEOUT_SECS;
+use crate::{MAX_MESSAGE_BYTES, REQUEST_TIMEOUT_SECS};
 
 pub async fn serve_tcp<S>(addr: impl ToSocketAddrs, service: S) -> anyhow::Result<()>
 where
@@ -264,28 +266,16 @@ where
     let (write_tx, mut write_rx) = mpsc::channel::<String>(256);
     let (event_tx, event_rx) = mpsc::channel::<ConnEvent>(256);
 
-    let mut reader = BufReader::new(reader);
+    let mut reader = FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_MESSAGE_BYTES));
     let read_event_tx = event_tx.clone();
     tokio::spawn(async move {
-        let mut line = String::new();
         loop {
-            line.clear();
-            match reader.read_line(&mut line).await {
-                Ok(0) => {
-                    let _ = read_event_tx
-                        .send(ConnEvent::Closed(anyhow::anyhow!(
-                            "tcp connection closed"
-                        )))
-                        .await;
-                    break;
-                }
-                Ok(_) => {
-                    let trimmed =
-                        line.trim_end_matches(['\n', '\r']).to_string();
-                    if trimmed.is_empty() {
+            match reader.next().await {
+                Some(Ok(line)) => {
+                    if line.is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<JrpcResponse>(&trimmed) {
+                    match serde_json::from_str::<JrpcResponse>(&line) {
                         Ok(resp) => {
                             if read_event_tx.send(ConnEvent::Response(resp)).await.is_err() {
                                 break;
@@ -299,9 +289,17 @@ where
                         }
                     }
                 }
-                Err(err) => {
+                Some(Err(err)) => {
                     let _ = read_event_tx
                         .send(ConnEvent::Closed(anyhow::anyhow!(err)))
+                        .await;
+                    break;
+                }
+                None => {
+                    let _ = read_event_tx
+                        .send(ConnEvent::Closed(anyhow::anyhow!(
+                            "tcp connection closed"
+                        )))
                         .await;
                     break;
                 }
@@ -369,24 +367,22 @@ async fn rpc_connection_io<S, R, W>(
         }
     });
 
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
+    let mut reader = FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_MESSAGE_BYTES));
     loop {
-        line.clear();
-        let read_result =
-            time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), reader.read_line(&mut line))
-                .await;
+        let read_result = time::timeout(
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            reader.next(),
+        )
+        .await;
         let Ok(read_result) = read_result else {
             return;
         };
         match read_result {
-            Ok(0) => return,
-            Ok(_) => {
-                let trimmed = line.trim_end_matches(['\n', '\r']);
-                if trimmed.is_empty() {
+            Some(Ok(line)) => {
+                if line.is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<JrpcRequest>(trimmed) {
+                match serde_json::from_str::<JrpcRequest>(&line) {
                     Ok(req) => {
                         let write_tx = write_tx.clone();
                         let service = service.clone();
@@ -411,7 +407,7 @@ async fn rpc_connection_io<S, R, W>(
                     }
                 }
             }
-            Err(_) => return,
+            Some(Err(_)) | None => return,
         }
     }
 }

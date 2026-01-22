@@ -45,7 +45,6 @@ impl Blob {
     v1_kind!(direct_message);
     v1_kind!(group_message);
     v1_kind!(group_rekey);
-    v1_kind!(aead_key);
 }
 
 fn debug_bytes_len(bytes: &Bytes, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

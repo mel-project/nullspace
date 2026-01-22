@@ -7,13 +7,12 @@ use thiserror::Error;
 use nullspace_crypt::{
     aead::AeadKey,
     hash::{Hash, HashParseError},
-    signing::Signature,
 };
 
 use crate::{
-    Blob,
     certificate::{CertificateChain, DeviceSecret},
-    event::EventPayload,
+    e2ee::DeviceSigned,
+    event::{Event, EventPayload},
     server::{AuthToken, ServerName},
     timestamp::{NanoTimestamp, Timestamp},
     username::UserName,
@@ -50,15 +49,6 @@ pub struct GroupInviteMsg {
 pub struct GroupMessage {
     pub nonce: [u8; 24],
     pub ciphertext: Bytes,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignedGroupMessage {
-    pub group: GroupId,
-    pub sender: UserName,
-    pub sender_chain: CertificateChain,
-    pub message: Blob,
-    pub signature: Signature,
 }
 
 #[derive(Debug, Error)]
@@ -110,23 +100,20 @@ impl GroupDescriptor {
 
 impl GroupMessage {
     pub fn encrypt_message(
-        group: GroupId,
-        message: &Blob,
+        message: &Event,
         sender_username: UserName,
         sender_chain: CertificateChain,
         sender_device: &DeviceSecret,
         key: &AeadKey,
     ) -> Result<Self, GroupMessageError> {
-        let signed = signed_bytes(&group, &sender_username, message)?;
-        let signature = sender_device.sign(&signed);
-        let plaintext = SignedGroupMessage {
-            group,
-            sender: sender_username,
+        let message_bytes = bcs::to_bytes(message).map_err(|_| GroupMessageError::Encode)?;
+        let signed = DeviceSigned::sign_bytes(
+            Bytes::from(message_bytes),
+            sender_username,
             sender_chain,
-            message: message.clone(),
-            signature,
-        };
-        let plaintext_bytes = bcs::to_bytes(&plaintext).map_err(|_| GroupMessageError::Encode)?;
+            sender_device,
+        );
+        let plaintext_bytes = bcs::to_bytes(&signed).map_err(|_| GroupMessageError::Encode)?;
         let mut nonce = [0u8; 24];
         rand::rng().fill_bytes(&mut nonce);
         let ciphertext = key
@@ -138,39 +125,12 @@ impl GroupMessage {
         })
     }
 
-    pub fn decrypt_message(&self, key: &AeadKey) -> Result<SignedGroupMessage, GroupMessageError> {
+    pub fn decrypt_message(&self, key: &AeadKey) -> Result<DeviceSigned, GroupMessageError> {
         let plaintext = key
             .decrypt(self.nonce, &self.ciphertext, &[])
             .map_err(|_| GroupMessageError::Decrypt)?;
         bcs::from_bytes(&plaintext).map_err(|_| GroupMessageError::Decode)
     }
-}
-
-impl SignedGroupMessage {
-    pub fn username(&self) -> &UserName {
-        &self.sender
-    }
-
-    pub fn verify(self, sender_root_hash: Hash) -> Result<Blob, GroupMessageError> {
-        self.sender_chain
-            .verify(sender_root_hash)
-            .map_err(|_| GroupMessageError::Verify)?;
-        let device = self.sender_chain.last_device();
-        let signed = signed_bytes(&self.group, &self.sender, &self.message)?;
-        device
-            .pk
-            .verify(&self.signature, &signed)
-            .map_err(|_| GroupMessageError::Verify)?;
-        Ok(self.message)
-    }
-}
-
-fn signed_bytes(
-    group: &GroupId,
-    sender: &UserName,
-    message: &Blob,
-) -> Result<Vec<u8>, GroupMessageError> {
-    bcs::to_bytes(&(group, sender, message)).map_err(|_| GroupMessageError::Encode)
 }
 
 impl EventPayload for GroupInviteMsg {

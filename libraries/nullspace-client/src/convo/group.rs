@@ -331,13 +331,8 @@ async fn send_management_message(
         NanoTimestamp::now(),
         &manage,
     )?;
-    let message = Blob {
-        kind: Blob::V1_MESSAGE_CONTENT.into(),
-        inner: Bytes::from(bcs::to_bytes(&content)?),
-    };
     let group_message = GroupMessage::encrypt_message(
-        group.group_id,
-        &message,
+        &content,
         identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,

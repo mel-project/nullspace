@@ -2,15 +2,15 @@ use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
 use egui::text::LayoutJob;
-use egui::{Color32, ScrollArea, TextEdit, TextFormat, TopBottomPanel};
+use egui::{Color32, ScrollArea, Stroke, TextEdit, TextFormat, TopBottomPanel};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
+use nullspace_client::internal::{ConvoId, ConvoMessage};
+use nullspace_structs::event::EventPayload;
+use nullspace_structs::group::{GroupId, GroupInviteMsg};
+use nullspace_structs::timestamp::NanoTimestamp;
 use pollster::FutureExt;
 use tracing::debug;
-use nullspace_client::internal::{ConvoId, ConvoMessage};
-use nullspace_structs::group::{GroupId, GroupInviteMsg};
-use nullspace_structs::event::EventPayload;
-use nullspace_structs::timestamp::NanoTimestamp;
 
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
@@ -143,11 +143,7 @@ impl Widget for Convo<'_> {
     }
 }
 
-fn render_convo(
-    app: &mut NullspaceApp,
-    ui: &mut eframe::egui::Ui,
-    convo_id: ConvoId,
-) -> Response {
+fn render_convo(app: &mut NullspaceApp, ui: &mut eframe::egui::Ui, convo_id: ConvoId) -> Response {
     let update_count = app.state.update_count;
     let key = convo_id.clone();
     let mut draft: Var<String> = ui.use_state(String::new, (key.clone(), "draft")).into_var();
@@ -223,9 +219,8 @@ fn render_convo(
         *stick_to_bottom = at_bottom;
         let at_top = scroll_output.state.offset.y <= 2.0;
         if at_top {
-            let mut fetch = |before, after, limit| {
-                convo_history(app, &convo_id, before, after, limit)
-            };
+            let mut fetch =
+                |before, after, limit| convo_history(app, &convo_id, before, after, limit);
             state.load_older(&mut fetch);
         }
     });
@@ -249,7 +244,12 @@ fn convo_history(
     flatten_rpc(result)
 }
 
-fn send_message(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId, body: Bytes) {
+fn send_message(
+    ui: &mut eframe::egui::Ui,
+    app: &mut NullspaceApp,
+    convo_id: &ConvoId,
+    body: Bytes,
+) {
     let rpc = app.client.rpc();
     let convo_id = convo_id.clone();
     tokio::spawn(async move {
@@ -301,12 +301,20 @@ fn render_roster(
 fn render_row(ui: &mut eframe::egui::Ui, item: &ConvoMessage, app: &mut NullspaceApp) {
     let mut job = LayoutJob::default();
     let timestamp = format_timestamp(item.received_at);
+    let mut base_text_format = TextFormat {
+        color: Color32::BLACK,
+        ..Default::default()
+    };
+    if item.send_error.is_some() {
+        base_text_format.strikethrough = Stroke::new(1.0, Color32::BLACK);
+    }
+
     job.append(
         &format!("[{timestamp}] "),
         0.0,
         TextFormat {
             color: Color32::GRAY,
-            ..Default::default()
+            ..base_text_format.clone()
         },
     );
     let sender_color = username_color(&item.sender);
@@ -315,7 +323,7 @@ fn render_row(ui: &mut eframe::egui::Ui, item: &ConvoMessage, app: &mut Nullspac
         0.0,
         TextFormat {
             color: sender_color,
-            ..Default::default()
+            ..base_text_format.clone()
         },
     );
     match item.mime.as_str() {
@@ -335,7 +343,7 @@ fn render_row(ui: &mut eframe::egui::Ui, item: &ConvoMessage, app: &mut Nullspac
                 0.0,
                 TextFormat {
                     color: Color32::GRAY,
-                    ..Default::default()
+                    ..base_text_format.clone()
                 },
             );
             ui.horizontal(|ui| {
@@ -353,20 +361,14 @@ fn render_row(ui: &mut eframe::egui::Ui, item: &ConvoMessage, app: &mut Nullspac
             job.append(
                 &String::from_utf8_lossy(&item.body),
                 0.0,
-                TextFormat {
-                    color: Color32::BLACK,
-                    ..Default::default()
-                },
+                base_text_format.clone(),
             );
             ui.label(job);
         }
         "text/markdown" => {
             layout_md_raw(
                 &mut job,
-                TextFormat {
-                    color: Color32::BLACK,
-                    ..Default::default()
-                },
+                base_text_format.clone(),
                 &String::from_utf8_lossy(&item.body),
             );
             ui.label(job);
@@ -377,7 +379,7 @@ fn render_row(ui: &mut eframe::egui::Ui, item: &ConvoMessage, app: &mut Nullspac
                 0.0,
                 TextFormat {
                     color: Color32::RED,
-                    ..Default::default()
+                    ..base_text_format.clone()
                 },
             );
             ui.label(job);

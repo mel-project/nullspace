@@ -45,7 +45,7 @@ Many places in the protocol carry opaque, tagged payloads as a **tagged blob**:
 [kind, inner]
 ```
 
-- `kind`: a string tag like `v1.message_content` or `v1.aead_key`
+- `kind`: a string tag like `v1.message_content` or `v1.group_message`
 - `inner`: raw bytes whose interpretation depends on `kind`
 
 Tagged blobs are BCS-encoded.
@@ -55,6 +55,12 @@ Tagged blobs are BCS-encoded.
 Header encryption encrypts a message such that any member of a group of devices, each with their own Diffie-Hellman keypair, can decrypt it. For reasons that will be clear later, the keys that these devices hold are known as the **medium-term keys** of the devices.
 
 Header encryption, by itself, provides no authentication of the sender or contents whatsoever. It's insecure used by itself!
+
+Structure:
+- A header-encrypted message is a BCS-encoded tuple `[sender_epk, headers, body]`.
+- `sender_epk` is a fresh ephemeral Diffie-Hellman public key generated per message.
+- `headers` is a list of per-recipient entries. Each entry carries an index hint derived from the recipient's medium-term public key, plus an encrypted copy of a fresh per-message AEAD key.
+- `body` is the message ciphertext encrypted under that per-message AEAD key, with AAD that commits to `sender_epk` and `headers`.
 
 In pseudocode:
 
@@ -98,6 +104,12 @@ Notes:
 
 Device signing signs an arbitrary message in such a way that proves that it's signed by a device belonging to a particular username, as long as the recipient has access to directory lookups for that username. This is useful to allow recipients to avoid fetching device lists from "foreign" servers in order to decrypt messages, only to encrypt them.
 
+Structure:
+- A device-signed message is a BCS-encoded tuple `[sender, cert_chain, body, signature]`.
+- `sender` and `cert_chain` identify which device is doing the signing, and allow recipients to validate that the device belongs to `sender` via directory verification.
+- `body` is opaque bytes; recipients interpret it according to the context where device signing is used.
+- `signature` authenticates the tuple `(sender, cert_chain, body)`.
+
 In pseudocode:
 
 ```
@@ -119,6 +131,11 @@ The signature is over the full tuple `(sender, cert_chain, body)` rather than ju
 ## DM encryption
 
 If Alice wants to send a plaintext [event](events.md) as a DM to Bob:
+
+- A DM is sent as a mailbox entry whose `kind` is `v1.direct_message`.
+- The mailbox `body` is a header-encrypted payload (see "Header encryption").
+- The header-encrypted plaintext is a device-signed payload (see "Device signing").
+- The device-signed `body` is a tagged blob whose `kind` is `v1.message_content`, and whose `inner` is a BCS-encoded [event](events.md).
 
 ```
 send_dm(to_username, event):
@@ -151,16 +168,22 @@ This ensures FS/PCS within 2 hours.
 
 Group messages are encrypted with a symmetric group key shared by all active members. The exact group message format and the group management semantics are specified in [groups.md](groups.md).
 
+### Group rekeys
+
+- A group rekey is sent as a mailbox entry whose `kind` is `v1.group_rekey`.
+- The mailbox `body` is a header-encrypted payload (see "Header encryption").
+- The header-encrypted plaintext is a device-signed payload (see "Device signing").
+- The device-signed `body` is a BCS-encoded tuple `[group_id, new_group_key_bytes]`.
+
 Group rekeys are distributed with header encryption:
 
 ```
 send_group_rekey(group_id, new_group_key_bytes):
-    key_blob_bytes = bcs_encode(["v1.aead_key", bcs_encode([group_id, new_group_key_bytes])])
-    signed_bytes = device_sign(my_username, my_cert_chain, my_device_signing_sk, key_blob_bytes)
+    payload_bytes = bcs_encode([group_id, new_group_key_bytes])
+    signed_bytes = device_sign(my_username, my_cert_chain, my_device_signing_sk, payload_bytes)
     recipients_mpk = fetch_all_medium_public_keys_of_active_members(group_id)
     he_bytes = header_encrypt(recipients_mpk, signed_bytes)
     mailbox_send(mailbox=group_messages_mailbox(group_id), kind="v1.group_rekey", body=he_bytes)
 ```
 
-Group membership, invites, bans, admins, and management messages are specified in [groups.md](groups.md).
-
+Group membership, invites, bans, admins, and management messages are specified in [groups.md](groups.md). Ultimately, these messages make sure everybody has the same understanding of the **roster** (who's in the group and who has what permissions), which is important for rekeys to be decryptable by the correct set of participants.

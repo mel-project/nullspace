@@ -83,16 +83,12 @@ async fn send_group_rekey(
     let new_key = AeadKey::random();
     let key_bytes = new_key.to_bytes();
     let payload = bcs::to_bytes(&(group.group_id, key_bytes))?;
-    let key_blob = Blob {
-        kind: Blob::V1_AEAD_KEY.into(),
-        inner: Bytes::from(payload),
-    };
-    let signed = DeviceSigned::sign_blob(
-        &key_blob,
+    let signed = DeviceSigned::sign_bytes(
+        Bytes::from(payload),
         identity.username.clone(),
         identity.cert_chain.clone(),
         &identity.device_secret,
-    )?;
+    );
     let signed_bytes = bcs::to_bytes(&signed)?;
     let encrypted = HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients)
         .map_err(|_| anyhow::anyhow!("failed to encrypt group rekey"))?;
@@ -209,15 +205,11 @@ pub(super) async fn process_group_rekey_entry(
         .get_user_descriptor(&sender_username)
         .await?
         .context("sender username not in directory")?;
-    let inner = signed
-        .verify_blob(sender_descriptor.root_cert_hash)
+    let payload = signed
+        .verify_bytes(sender_descriptor.root_cert_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify device-signed rekey"))?;
-    if inner.kind != Blob::V1_AEAD_KEY {
-        warn!(kind = %inner.kind, "ignoring non-rekey payload");
-        return Ok(());
-    }
     let (rekey_group, key_bytes): (nullspace_structs::group::GroupId, [u8; 32]) =
-        bcs::from_bytes(&inner.inner)?;
+        bcs::from_bytes(&payload)?;
     if rekey_group != group.group_id {
         warn!(
             expected = %group.group_id,

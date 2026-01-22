@@ -1,6 +1,6 @@
 # Groups
 
-This document specifies Nullspace group chats: identifiers, mailboxes, invites, membership semantics, management messages, and rekeying. It is intended to be sufficient for a clean-room implementation of a compatible client.
+This document specifies Nullspace group chats: identifiers, mailboxes, invites, membership semantics, management messages, and rekeying. 
 
 ## Group identifiers and descriptor
 
@@ -51,41 +51,29 @@ Clients keep both a current and previous group message key to tolerate out-of-or
 
 ## Message formats in group mailboxes
 
+Mailbox entries in the group mailboxes are [tagged blobs](e2ee.md#tagged-blobs). Both regular group messages and group rekeys share this outer structure; they differ only in the `kind` tag and how the `inner` bytes are interpreted.
+
 ### Regular group message (`v1.group_message`)
 
-The mailbox payload is BCS-encoded as:
+The mailbox entry uses `kind = v1.group_message`, and the `inner` bytes are BCS-encoded as:
 
 ```
 [nonce, ciphertext]
 ```
 
 - `nonce`: 24 random bytes
-- `ciphertext`: XChaCha20-Poly1305 ciphertext of a signed group payload
+- `ciphertext`: XChaCha20-Poly1305 ciphertext of a [device-signed](e2ee.md#device-signing) event.
 
-The plaintext that is encrypted is BCS-encoded as:
-
-```
-[group_id, sender, cert_chain, message, signature]
-```
-
-The signature is over:
-
-```
-bcs_encode([group_id, sender, message])
-```
-
-This binds the message to the group and is defense-in-depth against malleability.
-
-For normal chat messages, the tagged blob is `[kind, inner]` where `kind` is `v1.message_content` and `inner` is `bcs_encode(event)`. The event’s recipient (`event[0]`) must be the group id.
+The decrypted plaintext is a device-signed event. The event’s recipient (`event[0]`) must be the group id.
 
 ### Group rekey (`v1.group_rekey`)
 
-The mailbox payload is a header-encrypted, device-signed tagged blob that carries the new 32-byte group message key.
+The mailbox entry uses `kind = v1.group_rekey`, and the `inner` bytes are a header-encrypted, device-signed payload that carries the new 32-byte group message key.
 
-The tagged blob is:
+The device-signed `body` is BCS-encoded as:
 
 ```
-["v1.aead_key", bcs_encode([group_id, new_group_key_bytes])]
+[group_id, new_group_key_bytes]
 ```
 
 Recipients must accept a rekey only if the sender is an active admin according to the locally-derived roster.
@@ -94,12 +82,7 @@ Recipients must accept a rekey only if the sender is an active admin according t
 
 Management messages are delivered as `v1.group_message` entries posted to the **management mailbox**, but encrypted using the **management key** rather than the group message key.
 
-After decrypting and verifying the signed group payload, clients interpret `message` as a tagged blob:
-
-- `message[0]` must be `v1.message_content`
-- `message[1]` must decode as an event
-
-The event fields must be:
+After decrypting and verifying the device-signed event, clients interpret it with these requirements:
 
 - `recipient` is the group id
 - `mime` is `application/vnd.nullspace.v1.group_manage`
@@ -152,17 +135,12 @@ create_group():
 
 ```
 send_group_message(group_id, event):
-    // wrap event as tagged blob
-    event_bytes = bcs_encode(event)
-    msg_blob = ["v1.message_content", event_bytes]
-
-    // sign and bind to group
-    signature = ed25519_sign(my_device_signing_sk, bcs_encode([group_id, my_username, msg_blob]))
-    signed = [group_id, my_username, my_cert_chain, msg_blob, signature]
+    // sign the event
+    signed = device_sign(my_username, my_cert_chain, my_device_signing_sk, bcs_encode(event))
 
     // encrypt under current group message key
     nonce = random_bytes(24)
-    ct = xchacha20_poly1305_encrypt(key=group_message_key_current, nonce=nonce, plaintext=bcs_encode(signed))
+    ct = xchacha20_poly1305_encrypt(key=group_message_key_current, nonce=nonce, plaintext=signed)
 
     mailbox_send(mailbox=group_messages_mailbox_id, kind="v1.group_message", body=bcs_encode([nonce, ct]))
 ```
@@ -174,18 +152,11 @@ recv_group_message_entry(body_bytes):
     [nonce, ct] = bcs_decode(body_bytes)
     signed_bytes = xchacha20_poly1305_decrypt(key=group_message_key_current, nonce=nonce, ciphertext=ct)
         or xchacha20_poly1305_decrypt(key=group_message_key_previous, nonce=nonce, ciphertext=ct)
-    signed = bcs_decode(signed_bytes)
 
-    [signed_group_id, sender, cert_chain, message, signature] = signed
-    assert signed_group_id == group_id
-    verify_certificate_chain(cert_chain, directory_root_hash(sender))
-    ed25519_verify(cert_chain.leaf_device_public_key, signature, bcs_encode([group_id, sender, message]))
-
-    // interpret tagged blob
-    if message[0] == "v1.message_content":
-        event = bcs_decode(message[1])
-        assert event[0] == group_id
-        return event
+    (sender, payload_bytes) = device_verify(signed_bytes, directory_root_hash(sender))
+    event = bcs_decode(payload_bytes)
+    assert event[0] == group_id
+    return event
 ```
 
 ### Invite a user
@@ -243,13 +214,10 @@ JSON encoding rules for binary values:
 ```
 send_group_management(group_id, manage_json):
     manage_event = [group_id, now_nanos, "application/vnd.nullspace.v1.group_manage", manage_json]
-    event_bytes = bcs_encode(manage_event)
-    msg_blob = ["v1.message_content", event_bytes]
 
-    signature = ed25519_sign(my_device_signing_sk, bcs_encode([group_id, my_username, msg_blob]))
-    signed = [group_id, my_username, my_cert_chain, msg_blob, signature]
+    signed = device_sign(my_username, my_cert_chain, my_device_signing_sk, bcs_encode(manage_event))
     nonce = random_bytes(24)
-    ct = xchacha20_poly1305_encrypt(key=management_key, nonce=nonce, plaintext=bcs_encode(signed))
+    ct = xchacha20_poly1305_encrypt(key=management_key, nonce=nonce, plaintext=signed)
     mailbox_send(mailbox=group_management_mailbox_id, kind="v1.group_message", body=bcs_encode([nonce, ct]))
 ```
 
@@ -263,4 +231,3 @@ Rekeying is specified cryptographically in [e2ee.md](e2ee.md). Semantically:
 
 - Only active admins’ rekeys are accepted.
 - Rekeys are addressed to the medium-term keys of all active members (pending or accepted) and exclude banned/inactive members.
-

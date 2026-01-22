@@ -3,7 +3,7 @@ use std::time::Duration;
 use nanorpc::{JrpcRequest, JrpcResponse};
 use url::Url;
 
-use crate::REQUEST_TIMEOUT_SECS;
+use crate::{MAX_MESSAGE_BYTES, REQUEST_TIMEOUT_SECS};
 
 #[derive(Clone)]
 pub(crate) struct HttpTransport {
@@ -26,13 +26,24 @@ impl HttpTransport {
         &self,
         req: JrpcRequest,
     ) -> Result<JrpcResponse, anyhow::Error> {
-        let resp = self
+        let mut resp = self
             .client
             .post(self.endpoint.clone())
             .json(&req)
             .send()
             .await?
             .error_for_status()?;
-        Ok(resp.json::<JrpcResponse>().await?)
+
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            if body.len() + chunk.len() > MAX_MESSAGE_BYTES {
+                let remaining = MAX_MESSAGE_BYTES.saturating_sub(body.len());
+                body.extend_from_slice(&chunk[..remaining]);
+                break;
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        Ok(serde_json::from_slice::<JrpcResponse>(&body)?)
     }
 }

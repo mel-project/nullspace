@@ -88,6 +88,26 @@ After decrypting and verifying the device-signed event, clients interpret it wit
 - `mime` is `application/vnd.nullspace.v1.group_manage`
 - `body` is JSON
 
+### Roster
+
+Clients maintain a local **roster** for each group. The roster is a deterministic, derived data structure computed by replaying management messages in order.
+
+The roster contains, for each username that is currently tracked:
+
+- a **membership state**: `pending`, `accepted`, or `banned`
+- an **admin flag** (boolean), meaningful only for non-banned members
+
+Note that users who are not in the roster at all are treated differently from banned users, because the former can join the group, while the latter cannot join the group until they are unbanned.
+
+Initialization:
+
+- The roster starts with `init_admin` as `accepted` with `admin = true`.
+
+Derivation rules:
+
+- Process management messages in the order they are observed from the management mailbox.
+- Each message updates the roster according to the authorization rules and the variant-specific effects described below.
+
 ### JSON schema
 
 The management message body is a JSON tagged value (externally tagged, snake_case) with one of these forms:

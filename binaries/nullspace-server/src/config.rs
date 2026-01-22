@@ -24,6 +24,8 @@ pub struct Config {
     pub public_urls: Vec<Url>,
     pub directory_url: Url,
     pub directory_pk: SigningPublic,
+    #[serde(default)]
+    pub proxy_enabled: bool,
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {

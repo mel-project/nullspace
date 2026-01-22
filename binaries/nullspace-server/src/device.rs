@@ -202,6 +202,19 @@ pub async fn device_medium_pks(
     Ok(out)
 }
 
+pub async fn auth_token_exists(auth: AuthToken) -> Result<bool, ServerRpcError> {
+    let auth_bytes = bcs::to_bytes(&auth).map_err(fatal_retry_later)?;
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM device_auth_tokens WHERE auth_token = ? LIMIT 1",
+    )
+    .bind(auth_bytes)
+    .fetch_optional(&*DATABASE)
+    .await
+    .map_err(fatal_retry_later)?
+    .is_some();
+    Ok(exists)
+}
+
 fn bytes_to_hash(bytes: &[u8]) -> Result<Hash, ServerRpcError> {
     let buf: [u8; 32] = bytes
         .try_into()

@@ -27,6 +27,6 @@ nullspace-dirclient = { path = "../../libraries/nullspace-dirclient" }
 nullspace-nanorpc = { path = "../../libraries/nullspace-nanorpc" }
 nullspace-structs = { path = "../../libraries/nullspace-structs" }
 url = "2.5.7"
-moka = { version = "0.12.12", features = ["sync"] }
+moka = { version = "0.12.12", features = ["future", "sync"] }
 async-event = "0.2.1"
 futures-concurrency = "7.6.3"

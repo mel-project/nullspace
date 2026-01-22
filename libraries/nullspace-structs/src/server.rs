@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use async_trait::async_trait;
 
-use nanorpc::nanorpc_derive;
+use nanorpc::{JrpcRequest, JrpcResponse, nanorpc_derive};
 use nullspace_crypt::dh::DhPublic;
 use nullspace_crypt::signing::{Signable, Signature};
 use nullspace_crypt::{hash::Hash, signing::SigningPublic};
@@ -79,6 +79,14 @@ pub trait ServerProtocol {
         auth: AuthToken,
         group: GroupId,
     ) -> Result<(), ServerRpcError>;
+
+    /// Proxy a request to another server.
+    async fn v1_proxy_server(
+        &self,
+        auth: AuthToken,
+        server: ServerName,
+        req: JrpcRequest,
+    ) -> Result<JrpcResponse, ProxyError>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -264,6 +272,16 @@ pub enum ServerRpcError {
     AccessDenied,
     #[error("rate limited, retry later")]
     RetryLater,
+}
+
+/// An error proxying to another server.
+#[derive(Error, Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyError {
+    #[error("proxying not supported")]
+    NotSupported,
+    #[error("upstream error: {0:?}")]
+    Upstream(String),
 }
 
 #[cfg(test)]

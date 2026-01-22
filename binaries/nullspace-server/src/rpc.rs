@@ -1,19 +1,24 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use axum::{
     http::{StatusCode, header},
     response::IntoResponse,
 };
 use bytes::Bytes;
-use nanorpc::{JrpcRequest, RpcService};
+use moka::future::Cache;
+use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
+use nullspace_nanorpc::Transport;
 use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::server::{
-    AuthToken, ServerProtocol, ServerRpcError, ServerService, MailboxAcl, MailboxEntry,
-    MailboxId, MailboxRecvArgs, SignedMediumPk,
+    AuthToken, MailboxAcl, MailboxEntry, MailboxId, MailboxRecvArgs, ProxyError, ServerName,
+    ServerProtocol, ServerRpcError, ServerService, SignedMediumPk,
 };
-use nullspace_structs::{Blob, username::UserName, timestamp::NanoTimestamp};
+use nullspace_structs::{Blob, timestamp::NanoTimestamp, username::UserName};
 
-use crate::{device, mailbox};
+use crate::config::CONFIG;
+use crate::{device, dir_client::DIR_CLIENT, mailbox};
 
 #[derive(Clone, Default)]
 pub struct ServerRpc;
@@ -48,7 +53,8 @@ impl ServerProtocol for ServerRpc {
     async fn v1_device_certs(
         &self,
         username: UserName,
-    ) -> Result<Option<BTreeMap<nullspace_crypt::hash::Hash, CertificateChain>>, ServerRpcError> {
+    ) -> Result<Option<BTreeMap<nullspace_crypt::hash::Hash, CertificateChain>>, ServerRpcError>
+    {
         device::device_list(username).await
     }
 
@@ -99,5 +105,46 @@ impl ServerProtocol for ServerRpc {
         group: nullspace_structs::group::GroupId,
     ) -> Result<(), ServerRpcError> {
         mailbox::register_group(auth, group).await
+    }
+
+    async fn v1_proxy_server(
+        &self,
+        auth: AuthToken,
+        server: ServerName,
+        req: JrpcRequest,
+    ) -> Result<JrpcResponse, ProxyError> {
+        if !CONFIG.proxy_enabled {
+            return Err(ProxyError::NotSupported);
+        }
+        static PROXY_CACHE: LazyLock<Cache<ServerName, Arc<Transport>>> = LazyLock::new(|| {
+            Cache::builder()
+                .time_to_idle(Duration::from_secs(12 * 60 * 60))
+                .build()
+        });
+
+        match device::auth_token_exists(auth).await {
+            Ok(true) => {}
+            Ok(false) => return Err(ProxyError::NotSupported),
+            Err(err) => return Err(ProxyError::Upstream(err.to_string())),
+        }
+        let transport = PROXY_CACHE
+            .try_get_with(server.clone(), async {
+                let descriptor = DIR_CLIENT
+                    .get_server_descriptor(&server)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("server not in directory"))?;
+                let endpoint = descriptor
+                    .public_urls
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("server has no public URLs"))?;
+                Ok(Arc::new(Transport::new(endpoint)))
+            })
+            .await
+            .map_err(|err: Arc<anyhow::Error>| ProxyError::Upstream(err.to_string()))?;
+        transport
+            .call_raw(req)
+            .await
+            .map_err(|err| ProxyError::Upstream(err.to_string()))
     }
 }

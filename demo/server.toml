@@ -7,3 +7,4 @@ server_name = "~demo01"
 public_urls = ["lz4tcp://127.0.0.1:7002"]
 directory_url = "http://127.0.0.1:4000"
 directory_pk = "OnF3Jh7tZ4o3g3bmUdgjTDa4qlMHN-2Q4RrJQD6K124"
+proxy_enabled = false

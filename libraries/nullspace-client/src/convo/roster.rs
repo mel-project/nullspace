@@ -221,16 +221,15 @@ impl GroupRoster {
         if version != 0 {
             return Ok(());
         }
-        let _ = self
-            .upsert_member(
-                tx,
-                RosterMember {
-                    username: self.init_admin.clone(),
-                    is_admin: true,
-                    status: GroupMemberStatus::Accepted,
-                },
-            )
-            .await?;
+        self.upsert_member(
+            tx,
+            RosterMember {
+                username: self.init_admin.clone(),
+                is_admin: true,
+                status: GroupMemberStatus::Accepted,
+            },
+        )
+        .await?;
         sqlx::query("UPDATE groups SET roster_version = 1 WHERE group_id = ?")
             .bind(self.group_id.as_bytes().to_vec())
             .execute(&mut *tx)

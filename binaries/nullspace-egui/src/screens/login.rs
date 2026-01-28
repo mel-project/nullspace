@@ -3,8 +3,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use eframe::egui::{Button, Response, Spinner, Widget};
 use egui::{ComboBox, Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
-use poll_promise::Promise;
+use nullspace_client::internal::RegisterFinish;
 use nullspace_structs::username::UserName;
+use poll_promise::Promise;
 
 use crate::NullspaceApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
@@ -34,7 +35,8 @@ impl Widget for Login<'_> {
         let mut server_choice = ui.use_state(|| ServerChoice::PublicTest, ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut bundle_str = ui.use_state(String::new, ()).into_var();
-        let register_info = ui.use_state(|| None::<nullspace_client::internal::RegisterStartInfo>, ());
+        let register_info =
+            ui.use_state(|| None::<nullspace_client::internal::RegisterStartInfo>, ());
         let register_start = ui.use_state(PromiseSlot::new, ());
         let register_finish = ui.use_state(PromiseSlot::new, ());
 
@@ -124,6 +126,8 @@ impl Widget for Login<'_> {
 
                     let register_enabled =
                         !register_start.is_running() && !register_finish.is_running();
+
+                    ui.horizontal_centered(|ui| {
                     if ui
                         .add_enabled(register_enabled, eframe::egui::Button::new("Register"))
                         .clicked()
@@ -137,7 +141,7 @@ impl Widget for Login<'_> {
                                 return;
                             }
                         };
-                        let request = nullspace_client::internal::RegisterFinish::BootstrapNewUser {
+                        let request = RegisterFinish::BootstrapNewUser {
                             username,
                             server_name,
                         };
@@ -161,6 +165,7 @@ impl Widget for Login<'_> {
                             }
                         }
                     }
+                });
                 }
                 LoginStep::FinishAddDevice => {
                     let info = (*register_info).clone();

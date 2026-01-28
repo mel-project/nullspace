@@ -153,20 +153,20 @@ async fn process_mailbox_entry(
     } else {
         sender_username.clone()
     };
-    let mut tx = db.begin().await?;
-    let convo_id = ensure_convo_id(tx.as_mut(), "direct", peer_username.as_str()).await?;
+    let mut conn = db.acquire().await?;
+    let convo_id = ensure_convo_id(&mut *conn, "direct", peer_username.as_str()).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO convo_messages \
-         (convo_id, sender_username, mime, body, received_at) \
-         VALUES (?, ?, ?, ?, ?)",
+         (convo_id, sender_username, mime, body, sent_at, received_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(convo_id)
     .bind(sender_username.as_str())
     .bind(content.mime.as_str())
     .bind(content.body.to_vec())
+    .bind(content.sent_at.0 as i64)
     .bind(entry.received_at.0 as i64)
-    .execute(tx.as_mut())
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await?;
     Ok(())
 }

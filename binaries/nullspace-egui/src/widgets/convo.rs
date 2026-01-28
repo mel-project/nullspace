@@ -2,7 +2,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
 use egui::text::LayoutJob;
-use egui::{Color32, ScrollArea, Stroke, TextEdit, TextFormat, TopBottomPanel};
+use egui::{Button, Color32, Label, ScrollArea, Stroke, TextEdit, TextFormat, TopBottomPanel};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ConvoId, ConvoMessage};
@@ -146,7 +146,6 @@ impl Widget for Convo<'_> {
 fn render_convo(app: &mut NullspaceApp, ui: &mut eframe::egui::Ui, convo_id: ConvoId) -> Response {
     let update_count = app.state.update_count;
     let key = convo_id.clone();
-    let mut draft: Var<String> = ui.use_state(String::new, (key.clone(), "draft")).into_var();
     let mut state: Var<ConvoState> = ui
         .use_state(ConvoState::default, (key.clone(), "state"))
         .into_var();
@@ -166,29 +165,7 @@ fn render_convo(app: &mut NullspaceApp, ui: &mut eframe::egui::Ui, convo_id: Con
     }
 
     render_header(ui, &convo_id, &mut show_roster);
-    TopBottomPanel::bottom(ui.id().with("bottom"))
-        .resizable(false)
-        .show_inside(ui, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let text_response =
-                    ui.add(TextEdit::singleline(&mut *draft).desired_width(f32::INFINITY));
-
-                let enter_pressed = text_response.lost_focus()
-                    && text_response
-                        .ctx
-                        .input(|input| input.key_pressed(Key::Enter));
-                if enter_pressed {
-                    text_response.request_focus();
-                }
-                let send_now = enter_pressed;
-                if send_now && !draft.trim().is_empty() {
-                    let body = Bytes::from(draft.clone());
-                    send_message(ui, app, &convo_id, body);
-                    draft.clear();
-                }
-            });
-        });
+    render_composer(ui, app, &convo_id);
 
     CentralPanel::default().show_inside(ui, |ui| {
         let mut stick_to_bottom: Var<bool> =
@@ -244,6 +221,46 @@ fn convo_history(
     flatten_rpc(result)
 }
 
+fn render_composer(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId) {
+    let key = convo_key(convo_id);
+    let mut draft: Var<String> = ui.use_state(String::new, (key.clone(), "draft")).into_var();
+
+    let max_rows = 8;
+    let row_h = ui.text_style_height(&egui::TextStyle::Body);
+    let height = row_h * max_rows as f32;
+
+    TopBottomPanel::bottom(ui.id().with("composer"))
+        .resizable(false)
+        .show_inside(ui, |ui| {
+            ui.add_space(8.0);
+
+            let newline_shortcut =
+                egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
+            let text_response = ui.add_sized(
+                [ui.available_width(), height],
+                TextEdit::multiline(&mut *draft)
+                    .desired_rows(1)
+                    .hint_text("Enter a message...")
+                    .desired_width(f32::INFINITY)
+                    .return_key(Some(newline_shortcut)),
+            );
+
+            let enter_pressed = text_response.has_focus()
+                && text_response
+                    .ctx
+                    .input(|input| input.key_pressed(Key::Enter) && !input.modifiers.shift);
+            // if enter_pressed {
+            //     text_response.request_focus();
+            // }
+            let send_now = enter_pressed;
+            if send_now && !draft.trim().is_empty() {
+                let body = Bytes::from(draft.clone());
+                send_message(ui, app, convo_id, body);
+                draft.clear();
+            }
+        });
+}
+
 fn send_message(
     ui: &mut eframe::egui::Ui,
     app: &mut NullspaceApp,
@@ -269,9 +286,11 @@ fn render_header(
         }
         ConvoId::Group { group_id } => {
             ui.horizontal(|ui| {
-                ui.heading(format!("Group {}", short_group_id(group_id)));
+                ui.add(Label::new(
+                    RichText::from(format!("Group {}", short_group_id(group_id))).heading(),
+                ));
                 if let Some(show_roster) = show_roster.as_mut() {
-                    if ui.button("Members").clicked() {
+                    if ui.add(Button::new("Members")).clicked() {
                         **show_roster = true;
                     }
                 }

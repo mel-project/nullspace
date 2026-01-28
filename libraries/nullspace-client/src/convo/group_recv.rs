@@ -188,21 +188,21 @@ async fn process_group_message_entry(
         warn!(group = ?group.group_id, recipient = ?recipient, "group recipient mismatch");
         return Ok(());
     }
-    let mut tx = db.begin().await?;
-    let convo_id = ensure_convo_id(tx.as_mut(), "group", &group.group_id.to_string()).await?;
+    let mut conn = db.acquire().await?;
+    let convo_id = ensure_convo_id(&mut *conn, "group", &group.group_id.to_string()).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO convo_messages \
-         (convo_id, sender_username, mime, body, received_at) \
-         VALUES (?, ?, ?, ?, ?)",
+         (convo_id, sender_username, mime, body, sent_at, received_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(convo_id)
     .bind(sender.as_str())
     .bind(content.mime.as_str())
     .bind(content.body.to_vec())
+    .bind(content.sent_at.0 as i64)
     .bind(entry.received_at.0 as i64)
-    .execute(tx.as_mut())
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await?;
     Ok(())
 }
 
@@ -246,15 +246,9 @@ async fn process_group_management_entry(
     let manage: GroupManageMsg = serde_json::from_slice(&content.body)?;
     let db = ctx.get(DATABASE);
     let mut tx = db.begin().await?;
-    let roster = GroupRoster::load(
-        tx.as_mut(),
-        group.group_id,
-        group.descriptor.init_admin.clone(),
-    )
-    .await?;
-    let changed = roster
-        .apply_manage_message(tx.as_mut(), &sender, manage)
-        .await?;
+    let roster =
+        GroupRoster::load(&mut tx, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let changed = roster.apply_manage_message(&mut tx, &sender, manage).await?;
     tx.commit().await?;
     if changed {
         DbNotify::touch();

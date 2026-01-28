@@ -41,15 +41,14 @@ async fn group_rekey_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let identity = Identity::load(db).await?;
     let groups = load_groups(db).await?;
     for group in groups {
-        let mut tx = db.begin().await?;
+        let mut conn = db.acquire().await?;
         let roster = GroupRoster::load(
-            tx.as_mut(),
+            &mut *conn,
             group.group_id,
             group.descriptor.init_admin.clone(),
         )
         .await?;
-        let members = roster.list(tx.as_mut()).await?;
-        tx.commit().await?;
+        let members = roster.list(&mut *conn).await?;
 
         let admin_count = members
             .iter()
@@ -113,15 +112,10 @@ async fn collect_group_recipients(
     let mut recipients = Vec::new();
     let mut handles = Vec::new();
     let db = ctx.get(DATABASE);
-    let mut tx = db.begin().await?;
-    let roster = GroupRoster::load(
-        tx.as_mut(),
-        group.group_id,
-        group.descriptor.init_admin.clone(),
-    )
-    .await?;
-    let members = roster.list(tx.as_mut()).await?;
-    tx.commit().await?;
+    let mut conn = db.acquire().await?;
+    let roster =
+        GroupRoster::load(&mut *conn, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let members = roster.list(&mut *conn).await?;
     for member in members.into_iter().filter(RosterMember::is_active) {
         let username = member.username;
         let peer = get_user_info(ctx, &username).await?;
@@ -184,15 +178,10 @@ pub(super) async fn process_group_rekey_entry(
     };
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender_username = signed.sender().clone();
-    let mut tx = db.begin().await?;
-    let roster = GroupRoster::load(
-        tx.as_mut(),
-        group.group_id,
-        group.descriptor.init_admin.clone(),
-    )
-    .await?;
-    let sender_member = roster.get(tx.as_mut(), &sender_username).await?;
-    tx.commit().await?;
+    let mut conn = db.acquire().await?;
+    let roster =
+        GroupRoster::load(&mut *conn, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let sender_member = roster.get(&mut *conn, &sender_username).await?;
     if !sender_member
         .as_ref()
         .is_some_and(|member| member.is_admin && member.is_active())

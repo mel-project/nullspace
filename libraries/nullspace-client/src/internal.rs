@@ -245,11 +245,10 @@ impl InternalProtocol for InternalImpl {
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let mut tx = db.begin().await.map_err(internal_err)?;
-        let id = queue_message(&mut tx, &convo_id, &identity.username, &mime, &body)
+        let mut conn = db.acquire().await.map_err(internal_err)?;
+        let id = queue_message(&mut *conn, &convo_id, &identity.username, &mime, &body)
             .await
             .map_err(internal_err)?;
-        tx.commit().await.map_err(internal_err)?;
         DbNotify::touch();
         Ok(id)
     }
@@ -288,13 +287,15 @@ impl InternalProtocol for InternalImpl {
             .await
             .map_err(internal_err)?
             .ok_or_else(|| InternalRpcError::Other("group not found".into()))?;
-        let mut tx = db.begin().await.map_err(internal_err)?;
-        let roster =
-            GroupRoster::load(tx.as_mut(), group, group_record.descriptor.init_admin.clone())
-                .await
-                .map_err(internal_err)?;
-        let members = roster.list(tx.as_mut()).await.map_err(internal_err)?;
-        tx.commit().await.map_err(internal_err)?;
+        let mut conn = db.acquire().await.map_err(internal_err)?;
+        let roster = GroupRoster::load(
+            &mut *conn,
+            group,
+            group_record.descriptor.init_admin.clone(),
+        )
+        .await
+        .map_err(internal_err)?;
+        let members = roster.list(&mut *conn).await.map_err(internal_err)?;
         let out = members
             .into_iter()
             .map(|member| GroupMember {

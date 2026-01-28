@@ -24,13 +24,17 @@ CREATE TABLE convo_messages (
     sender_username TEXT NOT NULL,
     mime TEXT NOT NULL,
     body BLOB NOT NULL,
+    sent_at INTEGER NOT NULL,
     send_error TEXT,
     received_at INTEGER,
     CHECK (send_error IS NULL OR received_at IS NOT NULL),
     FOREIGN KEY (convo_id) REFERENCES convos(id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX convo_messages_unique_idx
+CREATE UNIQUE INDEX convo_messages_sent_idx
+    ON convo_messages (convo_id, sent_at);
+
+CREATE INDEX convo_messages_idx
     ON convo_messages (convo_id, sender_username, received_at);
 
 CREATE INDEX convo_messages_convo_received_idx

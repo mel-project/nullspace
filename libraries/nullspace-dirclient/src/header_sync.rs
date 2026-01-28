@@ -46,11 +46,6 @@ pub async fn sync_headers(
     anchor: &DirectoryAnchor,
 ) -> anyhow::Result<()> {
     let mut current = max_stored_height(pool).await?;
-    if let Some(current) = current
-        && current > anchor.last_header_height
-    {
-        return Ok(());
-    }
 
     let mut prev_hash = match current {
         Some(current) => load_header_hash(pool, current).await?.expect("gap"),
@@ -80,7 +75,12 @@ pub async fn sync_headers(
         let mut expected_prev = prev_hash;
         for (offset, header) in headers.iter().enumerate() {
             if header.prev != expected_prev {
-                anyhow::bail!("header chain mismatch");
+                anyhow::bail!(
+                    "header chain mismatch at height {}, expected prev {}, got {}",
+                    next + offset as u64,
+                    expected_prev,
+                    header.prev
+                );
             }
             let data = bcs::to_bytes(header)?;
             let hash = Hash::digest(&data);
@@ -107,7 +107,12 @@ pub async fn sync_headers(
     }
 
     if prev_hash != anchor.last_header_hash {
-        anyhow::bail!("header chain mismatch");
+        anyhow::bail!(
+            "header chain mismatch at anchor {}, expected {}, got {}",
+            anchor.last_header_height,
+            anchor.last_header_hash,
+            prev_hash
+        );
     }
     Ok(())
 }

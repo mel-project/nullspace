@@ -95,8 +95,8 @@ pub async fn create_group(
     .bind(bcs::to_bytes(&group_key)?)
     .execute(tx.as_mut())
     .await?;
-    let roster = GroupRoster::load(tx.as_mut(), group_id, identity.username.clone()).await?;
-    let _ = roster.list(tx.as_mut()).await?;
+    let roster = GroupRoster::load(&mut tx, group_id, identity.username.clone()).await?;
+    let _ = roster.list(&mut tx).await?;
     ensure_mailbox_state(
         tx.as_mut(),
         &server_name,
@@ -172,16 +172,15 @@ pub async fn invite(
         &invite,
     )?;
     let convo_id = ConvoId::Direct { peer: username.clone() };
-    let mut tx = db.begin().await?;
+    let mut conn = db.acquire().await?;
     queue_message(
-        &mut tx,
+        &mut *conn,
         &convo_id,
         &identity.username,
         &content.mime,
         &content.body,
     )
     .await?;
-    tx.commit().await?;
     DbNotify::touch();
     Ok(())
 }

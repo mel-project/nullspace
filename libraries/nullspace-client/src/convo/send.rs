@@ -11,7 +11,7 @@ use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::{Event, Recipient};
 use nullspace_structs::group::GroupMessage;
-use nullspace_structs::server::{AuthToken, MailboxId, ServerClient, SignedMediumPk};
+use nullspace_structs::server::{AuthToken, MailboxId, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use smol_str::SmolStr;
@@ -27,7 +27,33 @@ use super::dm_common::own_server_name;
 use super::group::{load_group, send_to_group_mailbox};
 use super::{ConvoId, parse_convo_id};
 
-pub(super) async fn send_loop(ctx: &AnyCtx<Config>) {
+pub async fn queue_message(
+    tx: &mut sqlx::SqliteConnection,
+    convo_id: &ConvoId,
+    sender: &UserName,
+    mime: &SmolStr,
+    body: &Bytes,
+) -> anyhow::Result<i64> {
+    let counterparty = convo_id.counterparty();
+    let convo_id = ensure_convo_id(&mut *tx, convo_id.convo_type(), &counterparty).await?;
+    let sent_at = NanoTimestamp::now();
+    let row = sqlx::query_as::<_, (i64,)>(
+        "INSERT INTO convo_messages \
+         (convo_id, sender_username, mime, body, sent_at, received_at) \
+         VALUES (?, ?, ?, ?, ?, NULL) \
+         RETURNING id",
+    )
+    .bind(convo_id)
+    .bind(sender.as_str())
+    .bind(mime.as_str())
+    .bind(body.to_vec())
+    .bind(sent_at.0 as i64)
+    .fetch_one(&mut *tx)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn send_loop(ctx: &AnyCtx<Config>) {
     loop {
         if let Err(err) = send_loop_once(ctx).await {
             tracing::error!(error = %err, "convo send loop error");
@@ -48,51 +74,37 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             Some(convo_id) => convo_id,
             None => {
                 let err = anyhow::anyhow!("invalid convo entry");
-                mark_message_failed(db, pending.id, &err).await?;
+                let mut conn = db.acquire().await?;
+                mark_message_failed(&mut *conn, pending.id, &err).await?;
                 DbNotify::touch();
                 continue;
             }
         };
         let ctx = ctx.clone();
         match retry_backoff(async move || {
-            send_message(ctx.clone(), &convo_id, &pending.mime, &pending.body).await
+            send_message(
+                ctx.clone(),
+                &convo_id,
+                &pending.mime,
+                &pending.body,
+                pending.sent_at,
+            )
+            .await
         })
         .await
         {
             Ok(received_at) => {
-                mark_message_sent(db, pending.id, received_at).await?;
+                let mut conn = db.acquire().await?;
+                mark_message_sent(&mut *conn, pending.id, received_at).await?;
             }
             Err(err) => {
                 tracing::warn!(error = %err, "failed to send convo message");
-                mark_message_failed(db, pending.id, &err).await?;
+                let mut conn = db.acquire().await?;
+                mark_message_failed(&mut *conn, pending.id, &err).await?;
             }
         }
         DbNotify::touch();
     }
-}
-
-pub async fn queue_message(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    convo_id: &ConvoId,
-    sender: &UserName,
-    mime: &SmolStr,
-    body: &Bytes,
-) -> anyhow::Result<i64> {
-    let counterparty = convo_id.counterparty();
-    let convo_id = ensure_convo_id(tx.as_mut(), convo_id.convo_type(), &counterparty).await?;
-    let row = sqlx::query_as::<_, (i64,)>(
-        "INSERT INTO convo_messages \
-         (convo_id, sender_username, mime, body, received_at) \
-         VALUES (?, ?, ?, ?, NULL) \
-         RETURNING id",
-    )
-    .bind(convo_id)
-    .bind(sender.as_str())
-    .bind(mime.as_str())
-    .bind(body.to_vec())
-    .fetch_one(tx.as_mut())
-    .await?;
-    Ok(row.0)
 }
 
 struct PendingMessage {
@@ -101,11 +113,12 @@ struct PendingMessage {
     counterparty: String,
     mime: SmolStr,
     body: Bytes,
+    sent_at: NanoTimestamp,
 }
 
 async fn next_pending_message(db: &sqlx::SqlitePool) -> anyhow::Result<Option<PendingMessage>> {
-    let row = sqlx::query_as::<_, (i64, String, String, String, Vec<u8>)>(
-        "SELECT m.id, c.convo_type, c.convo_counterparty, m.mime, m.body \
+    let row = sqlx::query_as::<_, (i64, String, String, String, Vec<u8>, i64)>(
+        "SELECT m.id, c.convo_type, c.convo_counterparty, m.mime, m.body, m.sent_at \
          FROM convo_messages m \
          JOIN convos c ON m.convo_id = c.id \
          WHERE m.received_at IS NULL AND m.send_error IS NULL \
@@ -114,7 +127,7 @@ async fn next_pending_message(db: &sqlx::SqlitePool) -> anyhow::Result<Option<Pe
     )
     .fetch_optional(db)
     .await?;
-    let Some((id, convo_type, counterparty, mime, body)) = row else {
+    let Some((id, convo_type, counterparty, mime, body, sent_at)) = row else {
         return Ok(None);
     };
     Ok(Some(PendingMessage {
@@ -123,6 +136,7 @@ async fn next_pending_message(db: &sqlx::SqlitePool) -> anyhow::Result<Option<Pe
         counterparty,
         mime: SmolStr::new(mime),
         body: Bytes::from(body),
+        sent_at: NanoTimestamp(sent_at as u64),
     }))
 }
 
@@ -131,10 +145,11 @@ async fn send_message(
     convo_id: &ConvoId,
     mime: &SmolStr,
     body: &Bytes,
+    sent_at: NanoTimestamp,
 ) -> anyhow::Result<NanoTimestamp> {
     match convo_id {
-        ConvoId::Direct { peer } => send_dm(&ctx, peer, mime, body).await,
-        ConvoId::Group { group_id } => send_group_message(&ctx, *group_id, mime, body).await,
+        ConvoId::Direct { peer } => send_dm(&ctx, peer, mime, body, sent_at).await,
+        ConvoId::Group { group_id } => send_group_message(&ctx, *group_id, mime, body, sent_at).await,
     }
 }
 
@@ -143,10 +158,10 @@ async fn send_dm(
     peer: &UserName,
     mime: &SmolStr,
     body: &Bytes,
+    sent_at: NanoTimestamp,
 ) -> anyhow::Result<NanoTimestamp> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
-    let sent_at = NanoTimestamp::now();
     let content = Event {
         recipient: Recipient::User(peer.clone()),
         sent_at,
@@ -158,11 +173,11 @@ async fn send_dm(
         inner: Bytes::from(bcs::to_bytes(&content)?),
     };
 
-    let _peer_received_at = send_dm_once(ctx, &identity, peer, &message).await?;
+    let peer_received_at = send_dm_once(ctx, &identity, peer, &message).await?;
     let self_received_at = if identity.username != *peer {
         send_dm_once(ctx, &identity, &identity.username, &message).await?
     } else {
-        _peer_received_at
+        peer_received_at
     };
     Ok(self_received_at)
 }
@@ -191,13 +206,15 @@ async fn send_dm_once(
     let signed_bytes = bcs::to_bytes(&signed)?;
     let encrypted = HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients)
         .map_err(|_| anyhow::anyhow!("failed to encrypt DM for {target}"))?;
-    let received_at = send_header_encrypted(
-        peer.server.as_ref(),
-        auth,
-        MailboxId::direct(target),
-        encrypted,
-    )
-    .await?;
+    let message = Blob {
+        kind: Blob::V1_DIRECT_MESSAGE.into(),
+        inner: Bytes::from(bcs::to_bytes(&encrypted)?),
+    };
+    let received_at = peer
+        .server
+        .v1_mailbox_send(auth, MailboxId::direct(target), message)
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(received_at)
 }
 
@@ -206,13 +223,14 @@ async fn send_group_message(
     group_id: nullspace_structs::group::GroupId,
     mime: &SmolStr,
     body: &Bytes,
+    sent_at: NanoTimestamp,
 ) -> anyhow::Result<NanoTimestamp> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
     let group = load_group(db, group_id).await?.context("group not found")?;
     let content = Event {
         recipient: Recipient::Group(group.group_id),
-        sent_at: NanoTimestamp::now(),
+        sent_at,
         mime: mime.clone(),
         body: body.clone(),
     };
@@ -275,74 +293,30 @@ fn recipients_from_peer(peer: &UserInfo) -> anyhow::Result<Vec<nullspace_crypt::
     collect_recipients(&peer.username, &peer.device_chains, &peer.medium_pks)
 }
 
-async fn send_header_encrypted(
-    client: &ServerClient,
-    auth: AuthToken,
-    mailbox: MailboxId,
-    message: HeaderEncrypted,
-) -> anyhow::Result<NanoTimestamp> {
-    let message = Blob {
-        kind: Blob::V1_DIRECT_MESSAGE.into(),
-        inner: Bytes::from(bcs::to_bytes(&message)?),
-    };
-    client
-        .v1_mailbox_send(auth, mailbox, message)
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))
-}
-
 async fn mark_message_sent(
-    db: &sqlx::SqlitePool,
+    tx: &mut sqlx::SqliteConnection,
     id: i64,
     received_at: NanoTimestamp,
 ) -> anyhow::Result<()> {
-    let result = sqlx::query("UPDATE convo_messages SET received_at = ? WHERE id = ?")
+    sqlx::query("UPDATE convo_messages SET received_at = ? WHERE id = ?")
         .bind(received_at.0 as i64)
         .bind(id)
-        .execute(db)
-        .await;
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) if is_unique_violation(&err) => {
-            sqlx::query("DELETE FROM convo_messages WHERE id = ?")
-                .bind(id)
-                .execute(db)
-                .await?;
-            Ok(())
-        }
-        Err(err) => Err(err.into()),
-    }
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
 }
 
 async fn mark_message_failed(
-    db: &sqlx::SqlitePool,
+    tx: &mut sqlx::SqliteConnection,
     id: i64,
     err: &anyhow::Error,
 ) -> anyhow::Result<()> {
-    let received_at = NanoTimestamp::now();
-    let result =
-        sqlx::query("UPDATE convo_messages SET send_error = ?, received_at = ? WHERE id = ?")
-            .bind(err.to_string())
-            .bind(received_at.0 as i64)
-            .bind(id)
-            .execute(db)
-            .await;
-    match result {
-        Ok(_) => Ok(()),
-        Err(err) if is_unique_violation(&err) => {
-            sqlx::query("DELETE FROM convo_messages WHERE id = ?")
-                .bind(id)
-                .execute(db)
-                .await?;
-            Ok(())
-        }
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn is_unique_violation(err: &sqlx::Error) -> bool {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.code().as_deref() == Some("2067"),
-        _ => false,
-    }
+    let synth_received_at = NanoTimestamp::now();
+    sqlx::query("UPDATE convo_messages SET send_error = ?, received_at = ? WHERE id = ?")
+        .bind(err.to_string())
+        .bind(synth_received_at.0 as i64)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
 }

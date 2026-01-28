@@ -1,4 +1,8 @@
-# Style guide
+# Agents guide
+
+## Ask the user when unsure
+
+Your task is to faithfully do as the user tell you to. This means that if the user is unclear or confused about something, you need to clarify, rather than attempt to be creative and "guess".
 
 ## Async combinators
 

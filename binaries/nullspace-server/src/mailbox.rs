@@ -29,14 +29,18 @@ pub async fn mailbox_send(
     auth: AuthToken,
     mailbox: MailboxId,
     message: Blob,
+    ttl: u32,
 ) -> Result<NanoTimestamp, ServerRpcError> {
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
+    let now = NanoTimestamp::now();
+    purge_expired_entries(&mut tx, now).await?;
     let acl = acl_for_token(&mut tx, &mailbox, auth).await?;
     if !acl.can_send {
         tracing::debug!(auth = ?auth, mailbox = ?mailbox, "mailbox send denied");
         return Err(ServerRpcError::AccessDenied);
     }
-    let received_at = NanoTimestamp::now();
+    let received_at = now;
+    let expires_at = expires_at_from_ttl(received_at, ttl);
     let sender_hash = auth.bcs_hash();
     sqlx::query(
         "INSERT INTO mailbox_entries \
@@ -48,7 +52,7 @@ pub async fn mailbox_send(
     .bind(message.kind.to_string())
     .bind(message.inner.to_vec())
     .bind(sender_hash.to_bytes().to_vec())
-    .bind::<Option<i64>>(None)
+    .bind(expires_at)
     .execute(tx.as_mut())
     .await
     .map_err(fatal_retry_later)?;
@@ -69,6 +73,8 @@ pub async fn mailbox_multirecv(
             loop {
                 let notify_ctr = MAILBOX_NOTIFY.counter(arg.mailbox);
                 let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
+                let now = NanoTimestamp::now();
+                purge_expired_entries(&mut tx, now).await?;
                 let acl = acl_for_token(&mut tx, &arg.mailbox, arg.auth).await?;
                 if !acl.can_recv {
                     tracing::debug!(auth = ?arg.auth, mailbox = ?arg.mailbox, "mailbox recv denied");
@@ -77,12 +83,13 @@ pub async fn mailbox_multirecv(
                 let rows = sqlx::query_as::<_, (i64, String, Vec<u8>, Option<Vec<u8>>)>(
                     "SELECT received_at, message_kind, message_body, sender_auth_token_hash \
                 FROM mailbox_entries \
-                WHERE mailbox_id = ? AND received_at > ? \
+                WHERE mailbox_id = ? AND received_at > ? AND (expires_at IS NULL OR expires_at > ?) \
                 ORDER BY received_at, entry_id
                 LIMIT 100",
                 )
                 .bind(arg.mailbox.to_bytes().to_vec())
                 .bind(arg.after.0 as i64)
+                .bind(now.0 as i64)
                 .fetch_all(tx.as_mut())
                 .await
                 .map_err(fatal_retry_later)?;
@@ -353,4 +360,27 @@ async fn auth_token_exists(
     .await
     .map_err(fatal_retry_later)?;
     Ok(row.is_some())
+}
+
+fn expires_at_from_ttl(received_at: NanoTimestamp, ttl: u32) -> Option<i64> {
+    if ttl == 0 {
+        return None;
+    }
+    let ttl_ns = u64::from(ttl).saturating_mul(1_000_000_000);
+    Some(received_at.0.saturating_add(ttl_ns) as i64)
+}
+
+async fn purge_expired_entries(
+    tx: &mut Transaction<'_, Sqlite>,
+    now: NanoTimestamp,
+) -> Result<(), ServerRpcError> {
+    sqlx::query(
+        "DELETE FROM mailbox_entries \
+         WHERE expires_at IS NOT NULL AND expires_at <= ?",
+    )
+    .bind(now.0 as i64)
+    .execute(tx.as_mut())
+    .await
+    .map_err(fatal_retry_later)?;
+    Ok(())
 }

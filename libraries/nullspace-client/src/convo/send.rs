@@ -212,7 +212,7 @@ async fn send_dm_once(
     };
     let received_at = peer
         .server
-        .v1_mailbox_send(auth, MailboxId::direct(target), message)
+        .v1_mailbox_send(auth, MailboxId::direct(target), message, 0)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(received_at)

@@ -90,29 +90,23 @@ impl NullspaceApp {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "fantasque".to_string(),
-            egui::FontData::from_static(include_bytes!(
-                "fonts/FantasqueSansMNerdFontMono-Regular.ttf"
-            ))
-            .into(),
+            egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Regular.ttf"))
+                .into(),
         );
         fonts.font_data.insert(
             "fantasque_bold".to_string(),
-            egui::FontData::from_static(include_bytes!(
-                "fonts/FantasqueSansMNerdFontMono-Bold.ttf"
-            ))
-            .into(),
+            egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Bold.ttf"))
+                .into(),
         );
         fonts.font_data.insert(
             "fantasque_italic".to_string(),
-            egui::FontData::from_static(include_bytes!(
-                "fonts/FantasqueSansMNerdFontMono-Italic.ttf"
-            ))
-            .into(),
+            egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Italic.ttf"))
+                .into(),
         );
         fonts.font_data.insert(
             "fantasque_bold_italic".to_string(),
             egui::FontData::from_static(include_bytes!(
-                "fonts/FantasqueSansMNerdFontMono-BoldItalic.ttf"
+                "fonts/FantasqueSansMNerdFont-BoldItalic.ttf"
             ))
             .into(),
         );

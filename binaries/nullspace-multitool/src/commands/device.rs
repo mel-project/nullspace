@@ -199,7 +199,7 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
                 inner: Bytes::from(message.into_bytes()),
             };
             client
-                .v1_mailbox_send(auth, mailbox, msg)
+                .v1_mailbox_send(auth, mailbox, msg, 0)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         }

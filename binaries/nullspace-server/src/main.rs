@@ -2,6 +2,7 @@ mod config;
 mod database;
 mod device;
 mod dir_client;
+mod fragment;
 mod mailbox;
 mod rpc;
 

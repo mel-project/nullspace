@@ -16,6 +16,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::certificate::CertificateChain;
+use crate::fragment::Fragment;
 use crate::group::GroupId;
 use crate::timestamp::Timestamp;
 use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
@@ -56,6 +57,7 @@ pub trait ServerProtocol {
         auth: AuthToken,
         mailbox: MailboxId,
         message: Blob,
+        ttl: u32,
     ) -> Result<NanoTimestamp, ServerRpcError>;
 
     /// Receive one or more messages, from one or many mailboxes. This is batched to make long-polling more efficient. The server may choose to limit the number of messages in the response, so clients should be prepared to repeat until getting an empty "page".
@@ -87,6 +89,27 @@ pub trait ServerProtocol {
         server: ServerName,
         req: JrpcRequest,
     ) -> Result<JrpcResponse, ProxyError>;
+
+    /// Proxy a request to the directory.
+    async fn v1_proxy_directory(
+        &self,
+        auth: AuthToken,
+        req: JrpcRequest,
+    ) -> Result<JrpcResponse, ProxyError>;
+
+    /// Upload a fragment into the content-addressed store.
+    async fn v1_upload_frag(
+        &self,
+        auth: AuthToken,
+        frag: Fragment<'static>,
+        ttl: u32,
+    ) -> Result<(), ServerRpcError>;
+
+    /// Upload a fragment into the content-addressed store.
+    async fn v1_download_frag(
+        &self,
+        hash: Hash,
+    ) -> Result<Option<Fragment<'static>>, ServerRpcError>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

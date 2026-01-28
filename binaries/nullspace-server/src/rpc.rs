@@ -18,7 +18,7 @@ use nullspace_structs::server::{
 use nullspace_structs::{Blob, timestamp::NanoTimestamp, username::UserName};
 
 use crate::config::CONFIG;
-use crate::{device, dir_client::DIR_CLIENT, mailbox};
+use crate::{device, dir_client::DIR_CLIENT, fragment, mailbox};
 
 #[derive(Clone, Default)]
 pub struct ServerRpc;
@@ -63,8 +63,9 @@ impl ServerProtocol for ServerRpc {
         auth: AuthToken,
         mailbox_id: MailboxId,
         message: Blob,
+        ttl: u32,
     ) -> Result<NanoTimestamp, ServerRpcError> {
-        mailbox::mailbox_send(auth, mailbox_id, message).await
+        mailbox::mailbox_send(auth, mailbox_id, message, ttl).await
     }
 
     async fn v1_device_medium_pks(
@@ -107,6 +108,22 @@ impl ServerProtocol for ServerRpc {
         mailbox::register_group(auth, group).await
     }
 
+    async fn v1_upload_frag(
+        &self,
+        auth: AuthToken,
+        frag: nullspace_structs::fragment::Fragment<'static>,
+        ttl: u32,
+    ) -> Result<(), ServerRpcError> {
+        fragment::upload_frag(auth, frag, ttl).await
+    }
+
+    async fn v1_download_frag(
+        &self,
+        hash: nullspace_crypt::hash::Hash,
+    ) -> Result<Option<nullspace_structs::fragment::Fragment<'static>>, ServerRpcError> {
+        fragment::download_frag(hash).await
+    }
+
     async fn v1_proxy_server(
         &self,
         auth: AuthToken,
@@ -143,6 +160,26 @@ impl ServerProtocol for ServerRpc {
             .await
             .map_err(|err: Arc<anyhow::Error>| ProxyError::Upstream(err.to_string()))?;
         transport
+            .call_raw(req)
+            .await
+            .map_err(|err| ProxyError::Upstream(err.to_string()))
+    }
+
+    async fn v1_proxy_directory(
+        &self,
+        auth: AuthToken,
+        req: JrpcRequest,
+    ) -> Result<JrpcResponse, ProxyError> {
+        match device::auth_token_exists(auth).await {
+            Ok(true) => {}
+            Ok(false) => return Err(ProxyError::NotSupported),
+            Err(err) => return Err(ProxyError::Upstream(err.to_string())),
+        }
+
+        static DIRECTORY_TRANSPORT: LazyLock<Transport> =
+            LazyLock::new(|| Transport::new(CONFIG.directory_url.clone()));
+
+        DIRECTORY_TRANSPORT
             .call_raw(req)
             .await
             .map_err(|err| ProxyError::Upstream(err.to_string()))

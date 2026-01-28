@@ -1,11 +1,12 @@
 pub mod certificate;
 pub mod directory;
 pub mod e2ee;
-pub mod server;
-pub mod group;
-pub mod username;
 pub mod event;
+pub mod fragment;
+pub mod group;
+pub mod server;
 pub mod timestamp;
+pub mod username;
 
 pub use nullspace_crypt::stream::StreamKey;
 
@@ -47,6 +48,6 @@ impl Blob {
     v1_kind!(group_rekey);
 }
 
-fn debug_bytes_len(bytes: &Bytes, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "[{} bytes]", bytes.len())
+fn debug_bytes_len<T: AsRef<[u8]>>(bytes: &T, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "[{} bytes]", bytes.as_ref().len())
 }

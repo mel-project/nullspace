@@ -359,7 +359,7 @@ pub(super) async fn send_to_group_mailbox(
 ) -> anyhow::Result<NanoTimestamp> {
     let server = get_server_client(ctx, &group.server_name).await?;
     server
-        .v1_mailbox_send(group.token, mailbox, message)
+        .v1_mailbox_send(group.token, mailbox, message, 0)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }

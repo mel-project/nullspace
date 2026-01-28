@@ -19,6 +19,7 @@ pub struct Config {
     pub tcp_listen: Option<SocketAddr>,
     pub lz4_listen: Option<SocketAddr>,
     pub db_path: String,
+    pub fragments_path: PathBuf,
     pub signing_sk: PathBuf,
     pub server_name: ServerName,
     pub public_urls: Vec<Url>,

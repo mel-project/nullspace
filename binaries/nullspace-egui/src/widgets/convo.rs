@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
-use eframe::egui::{CentralPanel, Key, Response, RichText, Widget};
+use eframe::egui::{Key, Response, RichText, Widget};
 use egui::text::LayoutJob;
-use egui::{Button, Color32, Label, ScrollArea, Stroke, TextEdit, TextFormat, TopBottomPanel};
+use egui::{Button, Color32, Label, ScrollArea, Stroke, TextEdit, TextFormat};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ConvoId, ConvoMessage};
@@ -164,42 +164,30 @@ fn render_convo(app: &mut NullspaceApp, ui: &mut eframe::egui::Ui, convo_id: Con
         state.last_update_count_seen = update_count;
     }
 
-    render_header(ui, &convo_id, &mut show_roster);
-    render_composer(ui, app, &convo_id);
+    let full_rect = ui.available_rect_before_wrap();
+    let header_height = 40.0;
+    let composer_height = 100.0;
+    let width = full_rect.width();
+    let header_rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(width, header_height));
+    let messages_height = (full_rect.height() - header_height - composer_height).max(0.0);
+    let messages_rect = egui::Rect::from_min_size(
+        egui::pos2(full_rect.min.x, full_rect.min.y + header_height),
+        egui::vec2(width, messages_height),
+    );
+    let composer_rect = egui::Rect::from_min_size(
+        egui::pos2(full_rect.min.x, full_rect.max.y - composer_height),
+        egui::vec2(width, composer_height),
+    );
 
-    CentralPanel::default().show_inside(ui, |ui| {
-        let mut stick_to_bottom: Var<bool> =
-            ui.use_state(|| true, (key.clone(), "stick")).into_var();
-        let scroll_output = ScrollArea::vertical()
-            .id_salt("scroll")
-            .stick_to_bottom(*stick_to_bottom)
-            .animated(false)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let mut last_date: Option<NaiveDate> = None;
-                for item in state.messages.values() {
-                    if let Some(date) = date_from_timestamp(item.received_at)
-                        && last_date != Some(date)
-                    {
-                        ui.add_space(4.0);
-                        let label = format!("[{}]", date.format("%A, %d %b %Y"));
-                        ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
-                        ui.add_space(4.0);
-                        last_date = Some(date);
-                    }
-                    render_row(ui, item, app);
-                }
-            });
-        let max_offset =
-            (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
-        let at_bottom = max_offset - scroll_output.state.offset.y <= 2.0;
-        *stick_to_bottom = at_bottom;
-        let at_top = scroll_output.state.offset.y <= 2.0;
-        if at_top {
-            let mut fetch =
-                |before, after, limit| convo_history(app, &convo_id, before, after, limit);
-            state.load_older(&mut fetch);
-        }
+    ui.allocate_rect(full_rect, egui::Sense::hover());
+    ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+        render_header(ui, &convo_id, &mut show_roster);
+    });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(messages_rect), |ui| {
+        render_messages(ui, app, &convo_id, &mut state, &key);
+    });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
+        render_composer(ui, app, &convo_id);
     });
 
     render_roster(ui, app, &convo_id, &mut show_roster);
@@ -221,44 +209,80 @@ fn convo_history(
     flatten_rpc(result)
 }
 
-fn render_composer(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId) {
+fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId) {
+    ui.add_space(8.0);
     let key = convo_key(convo_id);
     let mut draft: Var<String> = ui.use_state(String::new, (key.clone(), "draft")).into_var();
 
-    let max_rows = 8;
-    let row_h = ui.text_style_height(&egui::TextStyle::Body);
-    let height = row_h * max_rows as f32;
+    ui.button("\u{f067} Attach");
 
-    TopBottomPanel::bottom(ui.id().with("composer"))
-        .resizable(false)
-        .show_inside(ui, |ui| {
-            ui.add_space(8.0);
+    ui.take_available_space();
 
-            let newline_shortcut =
-                egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
-            let text_response = ui.add_sized(
-                [ui.available_width(), height],
+    let newline_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
+    let text_response = ScrollArea::vertical()
+        .animated(false)
+        .show(ui, |ui| {
+            ui.add_sized(
+                ui.available_size(),
                 TextEdit::multiline(&mut *draft)
                     .desired_rows(1)
                     .hint_text("Enter a message...")
                     .desired_width(f32::INFINITY)
                     .return_key(Some(newline_shortcut)),
-            );
+            )
+        })
+        .inner;
 
-            let enter_pressed = text_response.has_focus()
-                && text_response
-                    .ctx
-                    .input(|input| input.key_pressed(Key::Enter) && !input.modifiers.shift);
-            // if enter_pressed {
-            //     text_response.request_focus();
-            // }
-            let send_now = enter_pressed;
-            if send_now && !draft.trim().is_empty() {
-                let body = Bytes::from(draft.clone());
-                send_message(ui, app, convo_id, body);
-                draft.clear();
+    let enter_pressed = text_response.has_focus()
+        && text_response
+            .ctx
+            .input(|input| input.key_pressed(Key::Enter) && !input.modifiers.shift);
+    // if enter_pressed {
+    //     text_response.request_focus();
+    // }
+    let send_now = enter_pressed;
+    if send_now && !draft.trim().is_empty() {
+        let body = Bytes::from(draft.clone());
+        send_message(ui, app, convo_id, body);
+        draft.clear();
+    }
+}
+
+fn render_messages(
+    ui: &mut eframe::egui::Ui,
+    app: &mut NullspaceApp,
+    convo_id: &ConvoId,
+    state: &mut Var<ConvoState>,
+    key: &ConvoId,
+) {
+    let mut stick_to_bottom: Var<bool> = ui.use_state(|| true, (key.clone(), "stick")).into_var();
+    let scroll_output = ScrollArea::vertical()
+        .id_salt("scroll")
+        .stick_to_bottom(*stick_to_bottom)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let mut last_date: Option<NaiveDate> = None;
+            for item in state.messages.values() {
+                if let Some(date) = date_from_timestamp(item.received_at)
+                    && last_date != Some(date)
+                {
+                    ui.add_space(4.0);
+                    let label = format!("[{}]", date.format("%A, %d %b %Y"));
+                    ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
+                    ui.add_space(4.0);
+                    last_date = Some(date);
+                }
+                render_row(ui, item, app);
             }
         });
+    let max_offset = (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
+    let at_bottom = max_offset - scroll_output.state.offset.y <= 2.0;
+    *stick_to_bottom = at_bottom;
+    let at_top = scroll_output.state.offset.y <= 2.0;
+    if at_top {
+        let mut fetch = |before, after, limit| convo_history(app, convo_id, before, after, limit);
+        state.load_older(&mut fetch);
+    }
 }
 
 fn send_message(
@@ -282,10 +306,13 @@ fn render_header(
 ) {
     match convo_id {
         ConvoId::Direct { peer } => {
-            ui.heading(peer.to_string());
+            ui.horizontal_centered(|ui| {
+                ui.heading(peer.to_string());
+                ui.button("Info")
+            });
         }
         ConvoId::Group { group_id } => {
-            ui.horizontal(|ui| {
+            ui.horizontal_centered(|ui| {
                 ui.add(Label::new(
                     RichText::from(format!("Group {}", short_group_id(group_id))).heading(),
                 ));

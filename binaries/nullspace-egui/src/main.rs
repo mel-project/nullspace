@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use egui::{Modal, Spinner};
+use egui::{Modal, Spinner, style::ScrollStyle};
 use nullspace_client::{Client, Config, internal::Event};
 use nullspace_crypt::signing::SigningPublic;
 use tokio::{
@@ -68,19 +68,23 @@ impl NullspaceApp {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         cc.egui_ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-            style.spacing.window_margin = egui::Margin::same(24);
+            // style.spacing.window_margin = egui::Margin::same(24);
             style.spacing.button_padding = egui::vec2(6.0, 4.0);
             style.spacing.indent = 16.0;
-            // style.spacing.scroll = ScrollStyle::solid();
-            for wid in [
-                &mut style.visuals.widgets.active,
-                &mut style.visuals.widgets.hovered,
-                &mut style.visuals.widgets.noninteractive,
-                &mut style.visuals.widgets.open,
-                &mut style.visuals.widgets.inactive,
-            ] {
-                wid.corner_radius = egui::CornerRadius::ZERO;
-            }
+            // style.spacing.scroll = ScrollStyle:::;
+            // for wid in [
+            //     &mut style.visuals.widgets.active,
+            //     &mut style.visuals.widgets.hovered,
+            //     &mut style.visuals.widgets.noninteractive,
+            //     &mut style.visuals.widgets.open,
+            //     &mut style.visuals.widgets.inactive,
+            // ] {
+            //     wid.corner_radius = egui::CornerRadius::ZERO;
+            // }
+            // style.debug.debug_on_hover = true; // show callstack / rects on hover
+            // style.debug.show_expand_width = true; // highlight width expanders
+            // style.debug.show_expand_height = true; // highlight height expanders
+            // style.debug.show_resize = true; // show resize handles
         });
         // cc.egui_ctx.set_zoom_factor(1.25);
         let mut fonts = egui::FontDefinitions::default();

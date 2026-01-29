@@ -190,11 +190,8 @@ async fn download_inner(
     if !identity_exists(db).await? {
         return Err(InternalRpcError::NotReady.into());
     }
-    let (sender_username, root) = load_attachment_root(
-        &mut *db.acquire().await?,
-        attachment_id,
-    )
-    .await?;
+    let (sender_username, root) =
+        load_attachment_root(&mut *db.acquire().await?, attachment_id).await?;
     let sender = UserName::parse(&sender_username)?;
     let server_name = ctx
         .get(DIR_CLIENT)
@@ -270,6 +267,12 @@ async fn download_inner(
 
     file.flush().await?;
     tokio::fs::rename(&part_path, &final_path).await?;
+    std::fs::File::open(&final_path)?.sync_all()?;
+    sqlx::query("insert or replace into attachment_paths (hash, download_path) values ($1, $2)")
+        .bind(attachment_id.to_bytes().as_slice())
+        .bind(final_path.to_string_lossy())
+        .execute(ctx.get(DATABASE))
+        .await?;
     emit_event(
         ctx,
         Event::DownloadDone {
@@ -278,6 +281,24 @@ async fn download_inner(
         },
     );
     Ok(())
+}
+
+pub async fn attachment_status(ctx: &AnyCtx<Config>, id: Hash) -> anyhow::Result<AttachmentStatus> {
+    let dl_path: Option<String> =
+        sqlx::query_scalar("select download_path from attachment_paths where hash = $1")
+            .bind(id.to_bytes().as_slice())
+            .fetch_optional(ctx.get(DATABASE))
+            .await?;
+    let root_bytes: Vec<u8> =
+        sqlx::query_scalar("select root from attachment_roots where hash = $1")
+            .bind(id.to_bytes().as_slice())
+            .fetch_one(ctx.get(DATABASE))
+            .await?;
+    let frag_root: FragmentRoot = bcs::from_bytes(&root_bytes)?;
+    Ok(AttachmentStatus {
+        frag_root,
+        saved_to: dl_path.map(|s| s.into()),
+    })
 }
 
 pub async fn store_attachment_root(
@@ -357,8 +378,7 @@ async fn unique_path(dir: &Path, filename: &str) -> anyhow::Result<PathBuf> {
         } else {
             dir.join(format!("{stem} ({i}).{ext}"))
         };
-        if tokio::fs::try_exists(&candidate).await? == false
-        {
+        if tokio::fs::try_exists(&candidate).await? == false {
             return Ok(candidate);
         }
     }

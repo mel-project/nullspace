@@ -15,11 +15,11 @@ use tracing::debug;
 
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
-use crate::utils::units::{format_filesize, unit_for_bytes};
+use crate::utils::speed::speed_fmt;
 use crate::widgets::content::Content;
 use crate::widgets::group_roster::GroupRoster;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const INITIAL_LIMIT: u16 = 100;
 const PAGE_LIMIT: u16 = 100;
@@ -27,6 +27,7 @@ const PAGE_LIMIT: u16 = 100;
 pub struct Convo<'a>(pub &'a mut NullspaceApp, pub ConvoId);
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 struct ConvoState {
     messages: BTreeMap<i64, ConvoMessage>,
     oldest_id: Option<i64>,
@@ -36,18 +37,6 @@ struct ConvoState {
     no_more_older: bool,
 }
 
-impl Default for ConvoState {
-    fn default() -> Self {
-        Self {
-            messages: BTreeMap::new(),
-            oldest_id: None,
-            latest_received_id: None,
-            last_update_count_seen: 0,
-            initialized: false,
-            no_more_older: false,
-        }
-    }
-}
 
 impl ConvoState {
     fn apply_messages(&mut self, messages: Vec<ConvoMessage>) {
@@ -135,6 +124,14 @@ impl ConvoState {
             }
         }
     }
+}
+
+fn infer_mime(path: &Path) -> SmolStr {
+    infer::get_from_path(path)
+        .ok()
+        .flatten()
+        .map(|kind| SmolStr::new(kind.mime_type()))
+        .unwrap_or_else(|| SmolStr::new("application/octet-stream"))
 }
 
 impl Widget for Convo<'_> {
@@ -228,11 +225,10 @@ fn render_header(
                 ui.add(Label::new(
                     RichText::from(format!("Group {}", short_group_id(group_id))).heading(),
                 ));
-                if let Some(show_roster) = show_roster.as_mut() {
-                    if ui.add(Button::new("Members")).clicked() {
+                if let Some(show_roster) = show_roster.as_mut()
+                    && ui.add(Button::new("Members")).clicked() {
                         **show_roster = true;
                     }
-                }
             });
         }
     }
@@ -284,18 +280,25 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
     // attachment part
     if let Some(in_progress) = attachment.as_ref() {
         if let Some((uploaded, total)) = app.state.upload_progress.get(in_progress) {
-            let (unit_scale, unit_suffix) = unit_for_bytes((*uploaded).max(*total));
-            let uploaded_text = format_filesize(*uploaded, unit_scale);
-            let total_text = format_filesize(*total, unit_scale);
+            let speed_key = format!("upload-{in_progress}");
+            let (left, speed, right) = speed_fmt(&speed_key, *uploaded, *total);
+            let speed_text = if right.is_empty() {
+                if speed.is_empty() {
+                    format!("Uploading: {left}")
+                } else {
+                    format!("Uploading: {left} @ {speed}")
+                }
+            } else if speed.is_empty() {
+                format!("Uploading: {left}, {right} remaining")
+            } else {
+                format!("Uploading: {left} @ {speed}, {right} remaining")
+            };
             let progress = if *total == 0 {
                 0.0
             } else {
                 (*uploaded as f32 / *total as f32).clamp(0.0, 1.0)
             };
-            ui.add(
-                ProgressBar::new(progress)
-                    .text(format!("{uploaded_text}/{total_text} {unit_suffix}")),
-            );
+            ui.add(ProgressBar::new(progress).text(speed_text.to_string()));
         } else if let Some(done) = app.state.upload_done.get(in_progress) {
             let upload_id = *in_progress;
             let root = done.clone();
@@ -348,10 +351,8 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
                 "picked an attachment, starting upload..."
             );
             let rpc = app.client.rpc();
-            let Ok(upload_id) = flatten_rpc(
-                rpc.attachment_upload(path, "application/octet-stream".into())
-                    .block_on(),
-            ) else {
+            let mime = infer_mime(&path);
+            let Ok(upload_id) = flatten_rpc(rpc.attachment_upload(path, mime).block_on()) else {
                 return;
             };
             attachment.replace(upload_id);
@@ -425,14 +426,11 @@ fn render_roster(
 
 fn render_row(ui: &mut eframe::egui::Ui, item: &ConvoMessage, app: &mut NullspaceApp) {
     let timestamp = format_timestamp(item.received_at);
-    egui::Grid::new(ui.id().with(item.id))
-        .num_columns(2)
-        // .min_col_width(72.0)
-        .show(ui, |ui| {
-            ui.label(RichText::new(format!("[{timestamp}]")).color(Color32::GRAY));
-            ui.add(Content { app, message: item });
-            ui.end_row();
-        });
+    ui.horizontal_top(|ui| {
+        ui.label(RichText::new(format!("[{timestamp}]")).color(Color32::GRAY));
+        ui.add(Content { app, message: item });
+    });
+    ui.add_space(2.0);
 }
 
 fn format_timestamp(ts: Option<NanoTimestamp>) -> String {

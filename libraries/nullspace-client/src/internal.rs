@@ -411,7 +411,9 @@ impl InternalProtocol for InternalImpl {
         &self,
         attachment_id: nullspace_crypt::hash::Hash,
     ) -> Result<AttachmentStatus, InternalRpcError> {
-        todo!()
+        attachments::attachment_status(&self.ctx, attachment_id)
+            .await
+            .map_err(map_anyhow_err)
     }
 }
 

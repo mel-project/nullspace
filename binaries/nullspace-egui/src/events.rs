@@ -24,8 +24,7 @@ pub async fn event_loop(
             Ok(event) => {
                 if let Event::ConvoUpdated { convo_id } = &event
                     && !focused_task.load(Ordering::Relaxed)
-                {
-                    if let ConvoId::Direct { peer } = convo_id {
+                    && let ConvoId::Direct { peer } = convo_id {
                         match flatten_rpc(
                             rpc.convo_history(convo_id.clone(), None, None, 1).await,
                         ) {
@@ -60,7 +59,6 @@ pub async fn event_loop(
                             }
                         }
                     }
-                }
                 if event_tx.send(event).await.is_err() {
                     break;
                 }

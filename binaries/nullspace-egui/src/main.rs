@@ -64,7 +64,6 @@ struct AppState {
     upload_done: BTreeMap<i64, FragmentRoot>,
     upload_error: BTreeMap<i64, String>,
     download_progress: BTreeMap<i64, (u64, u64)>,
-    download_done: BTreeMap<i64, PathBuf>,
     download_error: BTreeMap<i64, String>,
     download_for_msg: BTreeMap<i64, i64>,
 }
@@ -225,14 +224,8 @@ impl eframe::App for NullspaceApp {
                 Event::DownloadDone { id, absolute_path } => {
                     tracing::debug!(id, path = ?absolute_path, "download done event");
                     self.state.download_progress.remove(&id);
-                    self.state.download_done.insert(id, absolute_path);
                     self.state.download_error.remove(&id);
-                    if let Some(path) = self.state.download_done.get(&id) {
-                        let path = path.clone();
-                        std::thread::spawn(move || {
-                            let _ = open::that(path);
-                        });
-                    }
+                    let _ = open::that_detached(absolute_path);
                 }
                 Event::DownloadFailed { id, error } => {
                     tracing::warn!(id, error = %error, "download failed event");

@@ -349,7 +349,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
             );
             let rpc = app.client.rpc();
             let Ok(upload_id) = flatten_rpc(
-                rpc.upload_start(path, "application/octet-stream".into())
+                rpc.attachment_upload(path, "application/octet-stream".into())
                     .block_on(),
             ) else {
                 return;

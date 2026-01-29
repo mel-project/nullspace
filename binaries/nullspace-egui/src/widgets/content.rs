@@ -1,8 +1,8 @@
 use crate::utils::color::username_color;
 use crate::widgets::convo::default_download_dir;
 use eframe::egui::{Response, RichText, Widget};
-use egui::text::LayoutJob;
 use egui::{Color32, TextFormat};
+use egui::{TextStyle, text::LayoutJob};
 use nullspace_client::internal::MessageContent;
 use pollster::FutureExt;
 
@@ -27,9 +27,16 @@ fn render_content(
     app: &mut NullspaceApp,
     message: &nullspace_client::internal::ConvoMessage,
 ) -> Response {
+    let font_id = ui
+        .style()
+        .text_styles
+        .get(&TextStyle::Body)
+        .cloned()
+        .unwrap();
     let mut job = LayoutJob::default();
     let mut base_text_format = TextFormat {
         color: Color32::BLACK,
+        font_id,
         ..Default::default()
     };
     if message.send_error.is_some() {
@@ -70,10 +77,18 @@ fn render_content(
         MessageContent::Attachment { id, size, mime } => {
             let (unit_scale, unit_suffix) = unit_for_bytes(*size);
             let size_text = format_filesize(*size, unit_scale);
-            let label = format!("Attachment [{mime} {size_text} {unit_suffix}]");
+            let attachment_label = format!("Attachment [{mime} {size_text} {unit_suffix}]");
+            job.append(
+                &attachment_label,
+                0.0,
+                TextFormat {
+                    color: Color32::DARK_BLUE,
+                    ..base_text_format.clone()
+                },
+            );
+            ui.label(job);
             ui.horizontal(|ui| {
-                ui.label(job.clone());
-                if ui.link(label).clicked() {
+                if ui.link(attachment_label).clicked() {
                     if let Some(download_id) = app.state.download_for_msg.get(&message.id)
                         && let Some(path) = app.state.download_done.get(download_id)
                     {
@@ -85,7 +100,7 @@ fn render_content(
                         let save_dir = default_download_dir();
                         let rpc = app.client.rpc();
                         let Ok(download_id) =
-                            flatten_rpc(rpc.download_start(*id, save_dir).block_on())
+                            flatten_rpc(rpc.attachment_download(*id, save_dir).block_on())
                         else {
                             return;
                         };

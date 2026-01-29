@@ -6,6 +6,7 @@ use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_structs::fragment::{Fragment, FragmentLeaf, FragmentNode, FragmentRoot};
 use nullspace_structs::username::UserName;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -14,17 +15,23 @@ use crate::database::{DATABASE, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::events::emit_event;
 use crate::identity::Identity;
-use crate::internal::{Event, InternalRpcError, device_auth, internal_err};
+use crate::internal::{Event, InternalRpcError, device_auth};
 use crate::server::get_server_client;
 
 const CHUNK_SIZE_BYTES: usize = 256 * 1024;
 const MAX_FANOUT: usize = 4096;
 
-pub async fn upload_start(
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AttachmentStatus {
+    pub frag_root: FragmentRoot,
+    pub saved_to: Option<PathBuf>,
+}
+
+pub async fn attachment_upload(
     ctx: &AnyCtx<Config>,
     absolute_path: PathBuf,
     mime: SmolStr,
-) -> Result<i64, InternalRpcError> {
+) -> anyhow::Result<i64> {
     let upload_id = rand::random();
     let ctx = ctx.clone();
     tokio::spawn(async move {
@@ -53,27 +60,23 @@ async fn upload_inner(
     absolute_path: PathBuf,
     mime: SmolStr,
     upload_id: i64,
-) -> Result<(), InternalRpcError> {
+) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    if !identity_exists(db).await.map_err(internal_err)? {
-        return Err(InternalRpcError::NotReady);
+    if !identity_exists(db).await? {
+        return Err(InternalRpcError::NotReady.into());
     }
 
-    let identity = Identity::load(db).await.map_err(internal_err)?;
+    let identity = Identity::load(db).await?;
     let server_name = identity
         .server_name
         .clone()
-        .ok_or_else(|| InternalRpcError::Other("server name not available".into()))?;
-    let client = get_server_client(ctx, &server_name)
-        .await
-        .map_err(internal_err)?;
+        .ok_or_else(|| anyhow::anyhow!("server name not available"))?;
+    let client = get_server_client(ctx, &server_name).await?;
     let auth = device_auth(&client, &identity.username, &identity.cert_chain).await?;
 
     let filename = file_basename(&absolute_path)?;
-    let mut file = tokio::fs::File::open(&absolute_path)
-        .await
-        .map_err(internal_err)?;
-    let total_size = file.metadata().await.map_err(internal_err)?.len();
+    let mut file = tokio::fs::File::open(&absolute_path).await?;
+    let total_size = file.metadata().await?.len();
     let content_key = AeadKey::random();
     let mut uploaded_size = 0u64;
     let mut leaf_index = 0u64;
@@ -81,14 +84,14 @@ async fn upload_inner(
     let mut buf = vec![0u8; CHUNK_SIZE_BYTES];
 
     loop {
-        let read = file.read(&mut buf).await.map_err(internal_err)?;
+        let read = file.read(&mut buf).await?;
         if read == 0 {
             break;
         }
         let nonce = nonce_for_leaf(leaf_index);
         let ciphertext = content_key
             .encrypt(nonce, &buf[..read], &[])
-            .map_err(|_| InternalRpcError::Other("chunk encryption failed".into()))?;
+            .map_err(|_| anyhow::anyhow!("chunk encryption failed"))?;
         let leaf = FragmentLeaf {
             data: Bytes::from(ciphertext),
         };
@@ -97,12 +100,9 @@ async fn upload_inner(
             hash,
             size: read as u64,
         });
-        let response = client
-            .v1_upload_frag(auth, Fragment::Leaf(leaf), 0)
-            .await
-            .map_err(internal_err)?;
+        let response = client.v1_upload_frag(auth, Fragment::Leaf(leaf), 0).await?;
         if let Err(err) = response {
-            return Err(InternalRpcError::Other(err.to_string()));
+            return Err(anyhow::anyhow!(err.to_string()));
         }
         uploaded_size = uploaded_size.saturating_add(read as u64);
         emit_event(
@@ -132,12 +132,9 @@ async fn upload_inner(
     }
 
     for node in nodes {
-        let response = client
-            .v1_upload_frag(auth, Fragment::Node(node), 0)
-            .await
-            .map_err(internal_err)?;
+        let response = client.v1_upload_frag(auth, Fragment::Node(node), 0).await?;
         if let Err(err) = response {
-            return Err(InternalRpcError::Other(err.to_string()));
+            return Err(anyhow::anyhow!(err.to_string()));
         }
     }
 
@@ -159,13 +156,13 @@ async fn upload_inner(
     Ok(())
 }
 
-pub async fn download_start(
+pub async fn attachment_download(
     ctx: &AnyCtx<Config>,
     attachment_id: Hash,
     save_dir: PathBuf,
-) -> Result<i64, InternalRpcError> {
+) -> anyhow::Result<i64> {
     if !save_dir.is_absolute() {
-        return Err(InternalRpcError::Other("save dir must be absolute".into()));
+        return Err(anyhow::anyhow!("save dir must be absolute"));
     }
     let download_id = rand::random();
     let ctx = ctx.clone();
@@ -188,39 +185,34 @@ async fn download_inner(
     attachment_id: Hash,
     save_dir: PathBuf,
     download_id: i64,
-) -> Result<(), InternalRpcError> {
+) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    if !identity_exists(db).await.map_err(internal_err)? {
-        return Err(InternalRpcError::NotReady);
+    if !identity_exists(db).await? {
+        return Err(InternalRpcError::NotReady.into());
     }
-    let (sender_username, root) = load_attachment_root(db, attachment_id).await?;
-    let sender = UserName::parse(&sender_username).map_err(internal_err)?;
+    let (sender_username, root) = load_attachment_root(
+        &mut *db.acquire().await?,
+        attachment_id,
+    )
+    .await?;
+    let sender = UserName::parse(&sender_username)?;
     let server_name = ctx
         .get(DIR_CLIENT)
         .get_user_descriptor(&sender)
-        .await
-        .map_err(internal_err)?
-        .ok_or_else(|| InternalRpcError::Other("sender not in directory".into()))?
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
         .server_name;
-    let client = get_server_client(ctx, &server_name)
-        .await
-        .map_err(internal_err)?;
+    let client = get_server_client(ctx, &server_name).await?;
 
-    tokio::fs::create_dir_all(&save_dir)
-        .await
-        .map_err(internal_err)?;
+    tokio::fs::create_dir_all(&save_dir).await?;
     let filename = sanitize_filename(root.filename.as_str());
     let final_path = unique_path(&save_dir, &filename).await?;
     let part_path = final_path.with_extension("part");
-    let mut file = tokio::fs::File::create(&part_path)
-        .await
-        .map_err(internal_err)?;
+    let mut file = tokio::fs::File::create(&part_path).await?;
 
     if root.pointers.is_empty() {
-        file.flush().await.map_err(internal_err)?;
-        tokio::fs::rename(&part_path, &final_path)
-            .await
-            .map_err(internal_err)?;
+        file.flush().await?;
+        tokio::fs::rename(&part_path, &final_path).await?;
         emit_event(
             ctx,
             Event::DownloadDone {
@@ -236,12 +228,12 @@ async fn download_inner(
     let mut downloaded_size = 0u64;
 
     while let Some(hash) = stack.pop() {
-        let response = client.v1_download_frag(hash).await.map_err(internal_err)?;
+        let response = client.v1_download_frag(hash).await?;
         let frag = response
-            .map_err(|err| InternalRpcError::Other(err.to_string()))?
-            .ok_or_else(|| InternalRpcError::Other("missing fragment".into()))?;
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?
+            .ok_or_else(|| anyhow::anyhow!("missing fragment"))?;
         if frag.bcs_hash() != hash {
-            return Err(InternalRpcError::Other("fragment hash mismatch".into()));
+            return Err(anyhow::anyhow!("fragment hash mismatch"));
         }
         match frag {
             Fragment::Node(node) => {
@@ -253,11 +245,11 @@ async fn download_inner(
                 let plaintext = if let Some(key) = &root.content_key {
                     let nonce = nonce_for_leaf(leaf_index);
                     key.decrypt(nonce, &leaf.data, &[])
-                        .map_err(|_| InternalRpcError::Other("chunk decryption failed".into()))?
+                        .map_err(|_| anyhow::anyhow!("chunk decryption failed"))?
                 } else {
                     leaf.data.to_vec()
                 };
-                file.write_all(&plaintext).await.map_err(internal_err)?;
+                file.write_all(&plaintext).await?;
                 downloaded_size = downloaded_size.saturating_add(plaintext.len() as u64);
                 emit_event(
                     ctx,
@@ -273,13 +265,11 @@ async fn download_inner(
     }
 
     if downloaded_size != root.total_size {
-        return Err(InternalRpcError::Other("download size mismatch".into()));
+        return Err(anyhow::anyhow!("download size mismatch"));
     }
 
-    file.flush().await.map_err(internal_err)?;
-    tokio::fs::rename(&part_path, &final_path)
-        .await
-        .map_err(internal_err)?;
+    file.flush().await?;
+    tokio::fs::rename(&part_path, &final_path).await?;
     emit_event(
         ctx,
         Event::DownloadDone {
@@ -291,15 +281,6 @@ async fn download_inner(
 }
 
 pub async fn store_attachment_root(
-    db: &sqlx::SqlitePool,
-    sender: &UserName,
-    root: &FragmentRoot,
-) -> anyhow::Result<Hash> {
-    let mut conn = db.acquire().await?;
-    store_attachment_root_conn(&mut conn, sender, root).await
-}
-
-pub async fn store_attachment_root_conn(
     conn: &mut sqlx::SqliteConnection,
     sender: &UserName,
     root: &FragmentRoot,
@@ -322,30 +303,29 @@ pub async fn store_attachment_root_conn(
 }
 
 pub async fn load_attachment_root(
-    db: &sqlx::SqlitePool,
+    db: &mut sqlx::SqliteConnection,
     attachment_id: Hash,
-) -> Result<(String, FragmentRoot), InternalRpcError> {
+) -> anyhow::Result<(String, FragmentRoot)> {
     let row = sqlx::query_as::<_, (String, Vec<u8>)>(
         "SELECT sender_username, root FROM attachment_roots WHERE hash = ?",
     )
     .bind(attachment_id.to_bytes().to_vec())
     .fetch_optional(db)
-    .await
-    .map_err(internal_err)?;
+    .await?;
     let Some((sender_username, root_bytes)) = row else {
-        return Err(InternalRpcError::Other("attachment not found".into()));
+        return Err(anyhow::anyhow!("attachment not found"));
     };
-    let root: FragmentRoot = bcs::from_bytes(&root_bytes).map_err(internal_err)?;
+    let root: FragmentRoot = bcs::from_bytes(&root_bytes)?;
     Ok((sender_username, root))
 }
 
-fn file_basename(path: &Path) -> Result<String, InternalRpcError> {
+fn file_basename(path: &Path) -> anyhow::Result<String> {
     let name = path
         .file_name()
-        .ok_or_else(|| InternalRpcError::Other("missing filename".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("missing filename"))?;
     let name = name
         .to_str()
-        .ok_or_else(|| InternalRpcError::Other("filename is not valid utf-8".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("filename is not valid utf-8"))?;
     Ok(name.to_string())
 }
 
@@ -365,9 +345,9 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
-async fn unique_path(dir: &Path, filename: &str) -> Result<PathBuf, InternalRpcError> {
+async fn unique_path(dir: &Path, filename: &str) -> anyhow::Result<PathBuf> {
     let base = dir.join(filename);
-    if tokio::fs::try_exists(&base).await.map_err(internal_err)? == false {
+    if tokio::fs::try_exists(&base).await? == false {
         return Ok(base);
     }
     let (stem, ext) = split_extension(filename);
@@ -377,17 +357,12 @@ async fn unique_path(dir: &Path, filename: &str) -> Result<PathBuf, InternalRpcE
         } else {
             dir.join(format!("{stem} ({i}).{ext}"))
         };
-        if tokio::fs::try_exists(&candidate)
-            .await
-            .map_err(internal_err)?
-            == false
+        if tokio::fs::try_exists(&candidate).await? == false
         {
             return Ok(candidate);
         }
     }
-    Err(InternalRpcError::Other(
-        "could not pick unique filename".into(),
-    ))
+    Err(anyhow::anyhow!("could not pick unique filename"))
 }
 
 fn split_extension(filename: &str) -> (&str, &str) {

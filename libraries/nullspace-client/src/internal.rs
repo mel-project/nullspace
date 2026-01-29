@@ -23,6 +23,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::attachments::{self, AttachmentStatus, store_attachment_root};
 use crate::config::Config;
 pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary, MessageContent};
 use crate::convo::{
@@ -32,7 +33,6 @@ use crate::database::{DATABASE, DbNotify, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::identity::Identity;
 use crate::server::get_server_client;
-use crate::attachments::{self, store_attachment_root};
 
 /// The internal JSON-RPC interface exposed by nullspace-client.
 #[nanorpc_derive]
@@ -73,16 +73,20 @@ pub trait InternalProtocol {
     async fn group_members(&self, group: GroupId) -> Result<Vec<GroupMember>, InternalRpcError>;
     async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError>;
 
-    async fn upload_start(
+    async fn attachment_upload(
         &self,
         absolute_path: PathBuf,
         mime: SmolStr,
     ) -> Result<i64, InternalRpcError>;
-    async fn download_start(
+    async fn attachment_download(
         &self,
         attachment_id: nullspace_crypt::hash::Hash,
         save_dir: PathBuf,
     ) -> Result<i64, InternalRpcError>;
+    async fn attachment_status(
+        &self,
+        attachment_id: nullspace_crypt::hash::Hash,
+    ) -> Result<AttachmentStatus, InternalRpcError>;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -383,20 +387,31 @@ impl InternalProtocol for InternalImpl {
         result.map_err(internal_err)
     }
 
-    async fn upload_start(
+    async fn attachment_upload(
         &self,
         absolute_path: PathBuf,
         mime: SmolStr,
     ) -> Result<i64, InternalRpcError> {
-        attachments::upload_start(&self.ctx, absolute_path, mime).await
+        attachments::attachment_upload(&self.ctx, absolute_path, mime)
+            .await
+            .map_err(map_anyhow_err)
     }
 
-    async fn download_start(
+    async fn attachment_download(
         &self,
         attachment_id: nullspace_crypt::hash::Hash,
         save_dir: PathBuf,
     ) -> Result<i64, InternalRpcError> {
-        attachments::download_start(&self.ctx, attachment_id, save_dir).await
+        attachments::attachment_download(&self.ctx, attachment_id, save_dir)
+            .await
+            .map_err(map_anyhow_err)
+    }
+
+    async fn attachment_status(
+        &self,
+        attachment_id: nullspace_crypt::hash::Hash,
+    ) -> Result<AttachmentStatus, InternalRpcError> {
+        todo!()
     }
 }
 
@@ -566,6 +581,14 @@ pub(crate) fn internal_err(err: impl std::fmt::Display) -> InternalRpcError {
     InternalRpcError::Other(err.to_string())
 }
 
+fn map_anyhow_err(err: anyhow::Error) -> InternalRpcError {
+    if let Some(rpc_err) = err.downcast_ref::<InternalRpcError>() {
+        rpc_err.clone()
+    } else {
+        InternalRpcError::Other(err.to_string())
+    }
+}
+
 async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> {
     let rows = sqlx::query_as::<
         _,
@@ -691,7 +714,7 @@ async fn decode_message_content(
         }),
         mime if mime == FragmentRoot::mime() => {
             let root: FragmentRoot = serde_json::from_slice(body)?;
-            let id = store_attachment_root(db, sender, &root).await?;
+            let id = store_attachment_root(&mut *db.acquire().await?, sender, &root).await?;
             Ok(MessageContent::Attachment {
                 id,
                 size: root.total_size,

@@ -4,26 +4,25 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use anyhow::Context;
 use futures_concurrency::future::Race;
-use tracing::warn;
 use nullspace_structs::Blob;
 use nullspace_structs::event::{Event, EventPayload, Recipient};
 use nullspace_structs::group::{GroupId, GroupManageMsg, GroupMessage};
 use nullspace_structs::server::MailboxId;
 use nullspace_structs::timestamp::NanoTimestamp;
+use tracing::warn;
 
-use crate::config::Config;
 use crate::database::{
     DATABASE, DbNotify, ensure_convo_id, ensure_mailbox_state, load_mailbox_after,
     update_mailbox_after,
 };
 use crate::long_poll::LONG_POLLER;
 use crate::server::get_server_client;
+use crate::{attachments::store_attachment_root, config::Config};
 
 use super::ConvoId;
 use super::group::{GroupRecord, load_group, load_groups};
 use super::rekey::process_group_rekey_entry;
 use super::roster::GroupRoster;
-use crate::attachments::store_attachment_root_conn;
 
 #[derive(Clone, Copy)]
 enum GroupMailboxKind {
@@ -194,7 +193,7 @@ async fn process_group_message_entry(
         if let Ok(root) =
             serde_json::from_slice::<nullspace_structs::fragment::FragmentRoot>(&content.body)
         {
-            let _ = store_attachment_root_conn(&mut conn, &sender, &root).await;
+            let _ = store_attachment_root(&mut conn, &sender, &root).await;
         }
     }
     let convo_id = ensure_convo_id(&mut *conn, "group", &group.group_id.to_string()).await?;
@@ -256,7 +255,9 @@ async fn process_group_management_entry(
     let mut tx = db.begin().await?;
     let roster =
         GroupRoster::load(&mut tx, group.group_id, group.descriptor.init_admin.clone()).await?;
-    let changed = roster.apply_manage_message(&mut tx, &sender, manage).await?;
+    let changed = roster
+        .apply_manage_message(&mut tx, &sender, manage)
+        .await?;
     tx.commit().await?;
     if changed {
         DbNotify::touch();

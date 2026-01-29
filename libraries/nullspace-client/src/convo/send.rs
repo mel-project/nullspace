@@ -9,21 +9,20 @@ use nullspace_crypt::signing::Signable;
 use nullspace_structs::Blob;
 use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
+use nullspace_structs::event::EventPayload;
 use nullspace_structs::event::{Event, Recipient};
 use nullspace_structs::group::GroupMessage;
-use nullspace_structs::event::EventPayload;
 use nullspace_structs::server::{AuthToken, MailboxId, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use smol_str::SmolStr;
 use tracing::warn;
 
-use crate::attachments::store_attachment_root_conn;
-use crate::config::Config;
 use crate::database::{DATABASE, DbNotify, ensure_convo_id};
 use crate::identity::Identity;
 use crate::retry::retry_backoff;
 use crate::user_info::{UserInfo, get_user_info};
+use crate::{attachments::store_attachment_root, config::Config};
 
 use super::dm_common::own_server_name;
 use super::group::{load_group, send_to_group_mailbox};
@@ -55,7 +54,7 @@ pub async fn queue_message(
     if mime == nullspace_structs::fragment::FragmentRoot::mime() {
         if let Ok(root) = serde_json::from_slice::<nullspace_structs::fragment::FragmentRoot>(body)
         {
-            let _ = store_attachment_root_conn(&mut *tx, sender, &root).await;
+            let _ = store_attachment_root(&mut *tx, sender, &root).await;
         }
     }
     Ok(row.0)
@@ -157,7 +156,9 @@ async fn send_message(
 ) -> anyhow::Result<NanoTimestamp> {
     match convo_id {
         ConvoId::Direct { peer } => send_dm(&ctx, peer, mime, body, sent_at).await,
-        ConvoId::Group { group_id } => send_group_message(&ctx, *group_id, mime, body, sent_at).await,
+        ConvoId::Group { group_id } => {
+            send_group_message(&ctx, *group_id, mime, body, sent_at).await
+        }
     }
 }
 

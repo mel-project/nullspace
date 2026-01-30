@@ -225,7 +225,6 @@ impl eframe::App for NullspaceApp {
                     tracing::debug!(id, path = ?absolute_path, "download done event");
                     self.state.download_progress.remove(&id);
                     self.state.download_error.remove(&id);
-                    let _ = open::that_detached(absolute_path);
                 }
                 Event::DownloadFailed { id, error } => {
                     tracing::warn!(id, error = %error, "download failed event");

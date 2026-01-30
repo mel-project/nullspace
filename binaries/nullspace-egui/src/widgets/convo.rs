@@ -26,8 +26,7 @@ const PAGE_LIMIT: u16 = 100;
 
 pub struct Convo<'a>(pub &'a mut NullspaceApp, pub ConvoId);
 
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct ConvoState {
     messages: BTreeMap<i64, ConvoMessage>,
     oldest_id: Option<i64>,
@@ -36,7 +35,6 @@ struct ConvoState {
     initialized: bool,
     no_more_older: bool,
 }
-
 
 impl ConvoState {
     fn apply_messages(&mut self, messages: Vec<ConvoMessage>) {
@@ -226,9 +224,10 @@ fn render_header(
                     RichText::from(format!("Group {}", short_group_id(group_id))).heading(),
                 ));
                 if let Some(show_roster) = show_roster.as_mut()
-                    && ui.add(Button::new("Members")).clicked() {
-                        **show_roster = true;
-                    }
+                    && ui.add(Button::new("Members")).clicked()
+                {
+                    **show_roster = true;
+                }
             });
         }
     }
@@ -282,17 +281,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
         if let Some((uploaded, total)) = app.state.upload_progress.get(in_progress) {
             let speed_key = format!("upload-{in_progress}");
             let (left, speed, right) = speed_fmt(&speed_key, *uploaded, *total);
-            let speed_text = if right.is_empty() {
-                if speed.is_empty() {
-                    format!("Uploading: {left}")
-                } else {
-                    format!("Uploading: {left} @ {speed}")
-                }
-            } else if speed.is_empty() {
-                format!("Uploading: {left}, {right} remaining")
-            } else {
-                format!("Uploading: {left} @ {speed}, {right} remaining")
-            };
+            let speed_text = format!("{left} @ {speed}, {right} remaining");
             let progress = if *total == 0 {
                 0.0
             } else {

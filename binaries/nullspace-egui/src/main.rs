@@ -303,15 +303,15 @@ impl eframe::App for NullspaceApp {
 }
 
 fn main() -> eframe::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: this happens at process start, before any threads are spawned.
-        unsafe {
-            std::env::set_var("WINIT_UNIX_BACKEND", "x11");
-            std::env::set_var("XDG_SESSION_TYPE", "x11");
-            std::env::remove_var("WAYLAND_DISPLAY");
-        }
-    }
+    // #[cfg(target_os = "linux")]
+    // {
+    //     // SAFETY: this happens at process start, before any threads are spawned.
+    //     unsafe {
+    //         std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+    //         std::env::set_var("XDG_SESSION_TYPE", "x11");
+    //         std::env::remove_var("WAYLAND_DISPLAY");
+    //     }
+    // }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             "nullspace=debug,nullspace_egui=debug",

@@ -143,7 +143,11 @@ impl Widget for AttachmentContent<'_> {
                 let uri = format!("file://{path_str}");
                 let box_width = ui.available_width().min(500.0);
                 let max_box = egui::vec2(ui.available_width(), box_width * 0.6);
-                ui.add(egui::Image::from_uri(uri).fit_to_exact_size(max_box));
+                ui.add(
+                    egui::Image::from_uri(uri)
+                        .fit_to_exact_size(max_box)
+                        .show_loading_spinner(false),
+                );
             } else if !*image_downloading {
                 if let Some(limit) = self.app.state.prefs.max_auto_image_download_bytes
                     && self.size <= limit

@@ -1,12 +1,14 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyctx::AnyCtx;
 use bytes::Bytes;
+use dashmap::DashSet;
 use futures_concurrency::future::TryJoin;
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use nullspace_crypt::aead::AeadKey;
@@ -204,6 +206,17 @@ async fn download_inner(
     attachment_id: Hash,
     save_dir: PathBuf,
 ) -> anyhow::Result<()> {
+    static IN_PROGRESS: LazyLock<Mutex<HashSet<Hash>>> = LazyLock::new(Default::default);
+    {
+        let mut prog = IN_PROGRESS.lock().unwrap();
+        if prog.contains(&attachment_id) {
+            return Ok(());
+        }
+        prog.insert(attachment_id);
+    }
+    scopeguard::defer!({
+        IN_PROGRESS.lock().unwrap().remove(&attachment_id);
+    });
     let db = ctx.get(DATABASE);
     if !identity_exists(db).await? {
         return Err(InternalRpcError::NotReady.into());

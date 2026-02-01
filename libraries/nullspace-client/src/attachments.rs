@@ -128,7 +128,7 @@ async fn upload_inner(
                 Ok((index, hash, chunk_len as u64))
             }
         })
-        .buffer_unordered(10)
+        .buffer_unordered(20)
         .try_collect::<Vec<_>>()
         .await?;
 

@@ -739,6 +739,7 @@ async fn decode_message_content(
                 id,
                 size: root.total_size(),
                 mime: root.mime,
+                filename: root.filename.clone(),
             })
         }
         _ => Ok(MessageContent::PlainText("Unsupported message".to_string())),

@@ -19,7 +19,7 @@ use crate::utils::speed::speed_fmt;
 use crate::widgets::content::Content;
 use crate::widgets::group_roster::GroupRoster;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const INITIAL_LIMIT: u16 = 10;
 const PAGE_LIMIT: u16 = 10;

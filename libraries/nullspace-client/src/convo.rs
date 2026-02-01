@@ -76,6 +76,7 @@ pub enum MessageContent {
         id: Hash,
         size: u64,
         mime: SmolStr,
+        filename: SmolStr,
     },
     GroupInvite { invite_id: i64 },
 }

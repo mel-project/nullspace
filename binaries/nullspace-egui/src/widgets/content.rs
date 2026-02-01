@@ -1,9 +1,10 @@
+use core::f32;
 use std::path::PathBuf;
 
 use crate::utils::color::username_color;
 
 use eframe::egui::{Response, RichText, Widget};
-use egui::{Color32, TextFormat};
+use egui::{Color32, ProgressBar, TextFormat};
 use egui::{TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use nullspace_client::internal::MessageContent;
@@ -56,13 +57,19 @@ impl Widget for Content<'_> {
                             }
                         });
                     }
-                    MessageContent::Attachment { id, size, mime } => {
+                    MessageContent::Attachment {
+                        id,
+                        size,
+                        mime,
+                        filename,
+                    } => {
                         ui.add(AttachmentContent {
                             app: self.app,
                             message: self.message,
                             id: *id,
                             size: *size,
                             mime,
+                            filename,
                         });
                     }
                     MessageContent::PlainText(text) => {
@@ -96,6 +103,7 @@ pub struct AttachmentContent<'a> {
     pub id: Hash,
     pub size: u64,
     pub mime: &'a str,
+    pub filename: &'a str,
 }
 
 impl Widget for AttachmentContent<'_> {
@@ -121,7 +129,7 @@ impl Widget for AttachmentContent<'_> {
         });
         let (unit_scale, unit_suffix) = unit_for_bytes(self.size);
         let size_text = format_filesize(self.size, unit_scale);
-        let attachment_label = format!("[{} {} {}]", self.mime, size_text, unit_suffix);
+        let attachment_label = format!("{} [{} {}]", self.filename, size_text, unit_suffix);
         if self.mime.starts_with("image/") && self.size < 20_000_000 {
             ui.label(attachment_label);
             if let Some(path) = dl_path {
@@ -130,35 +138,37 @@ impl Widget for AttachmentContent<'_> {
                 #[cfg(windows)]
                 let path_str = path_str.replace('\\', "/");
                 let uri = format!("file://{path_str}");
-                let box_width = ui.available_width().min(800.0);
-                let max_box = egui::vec2(box_width, box_width * 0.6);
+                let box_width = ui.available_width().min(500.0);
+                let max_box = egui::vec2(ui.available_width(), box_width * 0.6);
                 ui.add(egui::Image::from_uri(uri).fit_to_exact_size(max_box));
             } else if !*image_downloading {
                 image_downloading.set_next(true);
                 start_dl!();
             }
         } else {
-            ui.horizontal_top(|ui| {
-                ui.colored_label(Color32::DARK_BLUE, attachment_label);
-                if let Ok(status) = status
-                    && let Some(path) = status.saved_to
-                {
-                    if ui.small_button("Open").clicked() {
-                        let _ = open::that_detached(path);
+            ui.colored_label(Color32::DARK_BLUE, attachment_label);
+            if dl_progress.is_none() {
+                ui.horizontal(|ui| {
+                    if let Ok(status) = status
+                        && let Some(path) = status.saved_to
+                    {
+                        if ui.button("Open").clicked() {
+                            let _ = open::that_detached(path);
+                        }
+                    } else if ui.button("Download").clicked() {
+                        start_dl!();
                     }
-                } else if ui.small_button("Download").clicked() {
-                    start_dl!();
-                }
-            });
+                });
+            }
         }
         if let Some((downloaded, total)) = dl_progress {
             let speed_key = format!("download-{}", self.id);
             let (left, speed, right) = speed_fmt(&speed_key, downloaded, total);
-            let speed_text = format!("Downloading: {left} @ {speed}, {right} remaining");
-            ui.label(
-                RichText::new(speed_text.to_string())
-                    .color(Color32::GRAY)
-                    .size(11.0),
+            let speed_text = format!("{left} @ {speed}");
+            ui.add(
+                ProgressBar::new(downloaded as f32 / total.max(1) as f32)
+                    .text(speed_text)
+                    .desired_width(400.0),
             );
         } else if let Some(error) = dl_error {
             ui.label(

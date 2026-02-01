@@ -27,6 +27,7 @@ mod fonts;
 mod notify;
 mod promises;
 mod screens;
+mod tray;
 mod utils;
 mod widgets;
 
@@ -54,6 +55,10 @@ struct NullspaceApp {
     focused: Arc<AtomicBool>,
     prefs_path: PathBuf,
     file_dialog: EguiFileDialog,
+    tray: Option<tray::Tray>,
+    tray_hidden: bool,
+    pending_quit: bool,
+    supports_hide: bool,
 
     state: AppState,
 }
@@ -112,12 +117,24 @@ impl NullspaceApp {
         cc.egui_ctx.set_fonts(load_fonts(fonts));
         cc.egui_ctx
             .set_zoom_factor(prefs.zoom_percent as f32 / 100.0);
+        let tray = match tray::Tray::init("nullspace-egui") {
+            Ok(tray) => Some(tray),
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to initialize tray");
+                None
+            }
+        };
+        let supports_hide = supports_hide_window();
         Self {
             client,
             recv_event,
             focused,
             prefs_path,
             file_dialog: EguiFileDialog::new(),
+            tray,
+            tray_hidden: false,
+            pending_quit: false,
+            supports_hide,
             state: AppState {
                 prefs: prefs.clone(),
                 last_saved_prefs: prefs,
@@ -130,9 +147,39 @@ impl NullspaceApp {
 impl eframe::App for NullspaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
 
         self.focused.store(focused, Ordering::Relaxed);
+        if let Some(tray) = &self.tray {
+            while let Some(action) = tray.try_recv() {
+                match action {
+                    tray::TrayAction::Show => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        self.tray_hidden = false;
+                    }
+                    tray::TrayAction::Hide => {
+                        if self.supports_hide {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                            self.tray_hidden = true;
+                        }
+                    }
+                    tray::TrayAction::Quit => {
+                        self.pending_quit = true;
+                    }
+                }
+            }
+        }
+        if close_requested && self.tray.is_some() && self.supports_hide && !self.pending_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.tray_hidden = true;
+        }
+        if self.pending_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         while let Ok(event) = self.recv_event.try_recv() {
             tracing::debug!(event = ?event, "processing nullspace event");
             match event {
@@ -249,7 +296,12 @@ impl eframe::App for NullspaceApp {
                 self.state.last_saved_prefs = self.state.prefs.clone();
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(100));
+        let repaint_after = if self.tray_hidden {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(100)
+        };
+        ctx.request_repaint_after(repaint_after);
     }
 }
 
@@ -260,7 +312,27 @@ fn main() -> eframe::Result<()> {
         ))
         .init();
 
+    if cfg!(target_os = "linux") {
+        let has_display = std::env::var_os("DISPLAY").is_some();
+        if has_display {
+            // Safe here: we set a process-wide default before any threads start.
+            unsafe {
+                std::env::set_var("WINIT_UNIX_BACKEND", "x11");
+                std::env::remove_var("WAYLAND_DISPLAY");
+                std::env::set_var("XDG_SESSION_TYPE", "x11");
+            }
+        } else {
+            tracing::warn!("DISPLAY is unset; leaving WINIT_UNIX_BACKEND unchanged");
+        }
+    }
+
     let cli = Cli::parse();
+    tracing::info!(
+        winit_unix_backend = %std::env::var("WINIT_UNIX_BACKEND").unwrap_or_else(|_| "<unset>".to_string()),
+        xdg_session_type = %std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "<unset>".to_string()),
+        wayland_display = %std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "<unset>".to_string()),
+        "window backend environment"
+    );
     let runtime = Runtime::new().expect("tokio runtime");
     let _guard = runtime.enter();
     let prefs_path = cli.prefs_path.unwrap_or_else(default_prefs_path);
@@ -317,6 +389,24 @@ fn default_prefs_path() -> PathBuf {
         tracing::warn!(error = %err, "failed to create config dir");
     }
     dir.join("nullspace-egui.json")
+}
+
+fn supports_hide_window() -> bool {
+    if cfg!(target_os = "linux") {
+        if matches!(std::env::var("WINIT_UNIX_BACKEND").ok().as_deref(), Some("x11")) {
+            return true;
+        }
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            return false;
+        }
+        if matches!(
+            std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+            Some("wayland")
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 fn load_prefs(path: &PathBuf) -> Option<PrefData> {

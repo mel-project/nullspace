@@ -70,15 +70,6 @@ async fn upload_inner(
     if !identity_exists(db).await? {
         return Err(InternalRpcError::NotReady.into());
     }
-
-    let identity = Identity::load(db).await?;
-    let server_name = identity
-        .server_name
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("server name not available"))?;
-    let client = get_server_client(ctx, &server_name).await?;
-    let auth = device_auth(&client, &identity.username, &identity.cert_chain).await?;
-
     let filename = file_basename(&absolute_path)?;
     let total_size = tokio::fs::metadata(&absolute_path).await?.len();
     emit_event(
@@ -89,6 +80,15 @@ async fn upload_inner(
             total_size,
         },
     );
+
+    let identity = Identity::load(db).await?;
+    let server_name = identity
+        .server_name
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("server name not available"))?;
+    let client = get_server_client(ctx, &server_name).await?;
+    let auth = device_auth(&client, &identity.username, &identity.cert_chain).await?;
+
     let content_key = AeadKey::random();
     let uploaded_size = Arc::new(AtomicU64::new(0));
     let chunk_size = CHUNK_SIZE_BYTES as u64;
@@ -138,7 +138,7 @@ async fn upload_inner(
                 Ok((index, hash, chunk_len as u64))
             }
         })
-        .buffer_unordered(20)
+        .buffer_unordered(100)
         .try_collect::<Vec<_>>()
         .await?;
 

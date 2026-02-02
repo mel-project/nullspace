@@ -57,15 +57,12 @@ impl RawTcpClient {
     }
 
     fn new_with_mode(endpoint: Url, mode: WireMode) -> Self {
-        let (cmd_tx, cmd_rx) = mpsc::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(2000);
         tokio::spawn(async move { run_tcp_client(endpoint, mode, cmd_rx).await });
         Self { cmd_tx }
     }
 
-    pub(crate) async fn call_raw(
-        &self,
-        req: JrpcRequest,
-    ) -> Result<JrpcResponse, anyhow::Error> {
+    pub(crate) async fn call_raw(&self, req: JrpcRequest) -> Result<JrpcResponse, anyhow::Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
         let req_id = req.id.clone();
         self.cmd_tx
@@ -146,11 +143,7 @@ enum WireMode {
     Lz4,
 }
 
-async fn run_tcp_client(
-    endpoint: Url,
-    mode: WireMode,
-    mut cmd_rx: mpsc::Receiver<ClientCommand>,
-) {
+async fn run_tcp_client(endpoint: Url, mode: WireMode, mut cmd_rx: mpsc::Receiver<ClientCommand>) {
     let mut connection: Option<Connection> = None;
     let mut in_flight: HashMap<JrpcId, oneshot::Sender<Result<JrpcResponse, anyhow::Error>>> =
         HashMap::new();
@@ -297,9 +290,7 @@ where
                 }
                 None => {
                     let _ = read_event_tx
-                        .send(ConnEvent::Closed(anyhow::anyhow!(
-                            "tcp connection closed"
-                        )))
+                        .send(ConnEvent::Closed(anyhow::anyhow!("tcp connection closed")))
                         .await;
                     break;
                 }
@@ -321,18 +312,14 @@ where
                 Ok(Ok(())) => {}
                 Ok(Err(_)) | Err(_) => {
                     let _ = event_tx
-                        .send(ConnEvent::Closed(anyhow::anyhow!(
-                            "tcp connection closed"
-                        )))
+                        .send(ConnEvent::Closed(anyhow::anyhow!("tcp connection closed")))
                         .await;
                     return;
                 }
             }
         }
         let _ = event_tx
-            .send(ConnEvent::Closed(anyhow::anyhow!(
-                "tcp connection closed"
-            )))
+            .send(ConnEvent::Closed(anyhow::anyhow!("tcp connection closed")))
             .await;
     });
 
@@ -369,11 +356,8 @@ async fn rpc_connection_io<S, R, W>(
 
     let mut reader = FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_MESSAGE_BYTES));
     loop {
-        let read_result = time::timeout(
-            Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            reader.next(),
-        )
-        .await;
+        let read_result =
+            time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), reader.next()).await;
         let Ok(read_result) = read_result else {
             return;
         };

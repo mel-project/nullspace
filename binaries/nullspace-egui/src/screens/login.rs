@@ -24,6 +24,7 @@ enum LoginStep {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ServerChoice {
     PublicTest,
+    PublicTestCn,
     Custom,
 }
 
@@ -92,6 +93,7 @@ impl Widget for Login<'_> {
                         ComboBox::from_id_salt("register_server_choice")
                             .selected_text(match *server_choice {
                                 ServerChoice::PublicTest => "~public_test",
+                                ServerChoice::PublicTestCn => "~public_test_cn",
                                 ServerChoice::Custom => "Custom",
                             })
                             .show_ui(ui, |ui| {
@@ -99,6 +101,11 @@ impl Widget for Login<'_> {
                                     &mut *server_choice,
                                     ServerChoice::PublicTest,
                                     "~public_test",
+                                );
+                                ui.selectable_value(
+                                    &mut *server_choice,
+                                    ServerChoice::PublicTestCn,
+                                    "~public_test_cn",
                                 );
                                 ui.selectable_value(
                                     &mut *server_choice,
@@ -112,7 +119,7 @@ impl Widget for Login<'_> {
                         *server_str = "~public_test".to_string();
                         ui.label(
                             RichText::new(
-                                "Hint: ~public_test is the test server run by the Nullspace developers",
+                                "Hint: ~public_test (hosted in the US) and ~public_test_cn (hosted in China) are test servers run by the Nullspace developers",
                             )
                             .size(10.0),
                         );

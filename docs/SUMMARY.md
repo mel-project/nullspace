@@ -5,6 +5,7 @@
   * [Network architecture](protocol/network.md)
   * [End-to-end encryption](protocol/e2ee.md)
   * [Events](protocol/events.md)
+  * [Attachments](protocol/attachments.md)
   * [Groups](protocol/groups.md)
   * [Device certificates](protocol/devices.md)
 * [Guides](guides/README.md)

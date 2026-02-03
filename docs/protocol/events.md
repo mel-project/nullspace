@@ -6,8 +6,8 @@ An event is the plaintext payload carried inside encrypted messages. It is BCS-e
 [recipient, sent_at, mime, body]
 ```
 
-- `recipient`: either a username (for DMs) or a group ID (for group chats)
-- `sent_at`: a timestamp
+- `recipient`: `["user", username]` (for DMs) or `["group", group_id]` (for group chats)
+- `sent_at`: Unix timestamp (nanoseconds)
 - `mime`: a MIME type string
 - `body`: opaque bytes
 
@@ -21,4 +21,4 @@ The `mime` field indicates how to interpret `body`. For human chat messages, `bo
 | `text/markdown` | Human chat message with Markdown | Raw UTF-8 text bytes | Username or group ID |
 | `application/vnd.nullspace.v1.group_invite` | Group invite payload | JSON | Username |
 | `application/vnd.nullspace.v1.group_manage` | Group management command | JSON | Group ID |
-
+| `application/vnd.nullspace.v1.attachment` | File attachment root | JSON | Username or group ID |

@@ -76,7 +76,7 @@ extend_chain(issuer_chain, new_cert):
 
 ### In practice
 
-In nullspace-client, adding a device is implemented as a **single transfer** from an existing device to the new device.
+A client may implement adding a device as a **single transfer** from an existing device to the new device.
 
 Instead of having the new device generate a keypair and send only its public key to the issuer, the existing device generates a complete **device bundle** that contains everything the new device needs to become a fully functional device:
 
@@ -86,7 +86,7 @@ Instead of having the new device generate a keypair and send only its public key
 
 This bundle is encoded as opaque bytes for the UI to transfer (typically as a single QR code, or as copy/paste text). The UI does not need to understand any of the contents.
 
-On the new device, nullspace-client:
+On the new device, the client:
 
 1) decodes the bundle
 2) looks up the user descriptor in the directory to obtain the trusted root public key hash and the current server name
@@ -95,4 +95,3 @@ On the new device, nullspace-client:
 5) generates fresh medium-term Diffie-Hellman keys locally and registers the public key on the server, signed by the bundled device signing key
 
 The device bundle contains a device signing secret key, so it must be transferred over a confidential, in-person channel (QR on a trusted screen, etc).
-

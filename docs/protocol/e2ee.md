@@ -32,8 +32,8 @@ An event is the plaintext payload carried inside encrypted messages. It is BCS-e
 [recipient, sent_at, mime, body]
 ```
 
-- `recipient`: either a username (for DMs) or a group ID (for group chats)
-- `sent_at`: a timestamp
+- `recipient`: `["user", username]` (for DMs) or `["group", group_id]` (for group chats)
+- `sent_at`: Unix timestamp (nanoseconds)
 - `mime`: a MIME type string
 - `body`: opaque bytes
 

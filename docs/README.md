@@ -29,7 +29,7 @@ Some notable design features:
 - [x] MVP group protocol (group IDs, rekeying, membership control)
 - [ ] PFPs, group names, and other quality of life features
 - [ ] Advanced group features (directory naming, server migration)
-- [ ] Attachments / file transfers
+- [x] Attachments / file transfers
 - [ ] 1-to-1 voice calls
 - [ ] Group voice calls
 - [ ] Discord-like "communities" with fine-grained ACLs, channels, etc

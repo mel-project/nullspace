@@ -16,8 +16,7 @@ pub struct FragmentRoot {
     pub filename: SmolStr,
     pub mime: SmolStr,
     pub children: Vec<(Hash, u64)>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_key: Option<AeadKey>,
+    pub content_key: AeadKey,
 }
 
 /// A fragment node, which contains pointers to other fragment nodes and/or leaves.

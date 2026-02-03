@@ -9,7 +9,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyctx::AnyCtx;
 use bytes::Bytes;
 use dashmap::DashSet;
-use futures_concurrency::future::TryJoin;
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
@@ -31,6 +30,9 @@ use crate::server::get_server_client;
 
 const CHUNK_SIZE_BYTES: usize = 256 * 1024;
 const MAX_FANOUT: usize = 4096;
+
+const TRANSFER_CONCURRENCY: usize = 64;
+
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -138,7 +140,7 @@ async fn upload_inner(
                 Ok((index, hash, chunk_len as u64))
             }
         })
-        .buffer_unordered(100)
+        .buffer_unordered(TRANSFER_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
 
@@ -173,7 +175,7 @@ async fn upload_inner(
         filename: SmolStr::new(filename),
         mime,
         children: current_level,
-        content_key: Some(content_key),
+        content_key,
     };
 
     emit_event(
@@ -271,18 +273,19 @@ async fn download_inner(
     file.set_len(total_size).await?;
 
     let downloaded_size = Arc::new(AtomicU64::new(0));
-    let worker_count = root.children.len().min(10).max(1);
-    let chunk_size = root.children.len().div_ceil(worker_count);
-    let tasks = root
+    let child_offsets = root
         .children
-        .chunks(chunk_size)
-        .scan(0u64, |offset, chunk| {
+        .iter()
+        .copied()
+        .scan(0u64, |offset, (hash, size)| {
             let start_offset = *offset;
-            let chunk_size_sum: u64 = chunk.iter().map(|(_, size)| *size).sum();
-            *offset = offset.saturating_add(chunk_size_sum);
-            Some((start_offset, chunk.to_vec()))
+            *offset = offset.saturating_add(size);
+            Some((hash, start_offset))
         })
-        .map(|(start_offset, chunk)| {
+        .collect::<Vec<_>>();
+
+    stream::iter(child_offsets)
+        .map(|(hash, start_offset)| {
             let ctx = ctx.clone();
             let client = client.clone();
             let root = root.clone();
@@ -293,26 +296,23 @@ async fn download_inner(
                     .write(true)
                     .open(&part_path)
                     .await?;
-                let mut offset = start_offset;
-                for (hash, size) in chunk {
-                    download_fragment(
-                        client.as_ref(),
-                        &root,
-                        &ctx,
-                        attachment_id,
-                        &mut file,
-                        &downloaded_size,
-                        hash,
-                        offset,
-                    )
-                    .await?;
-                    offset = offset.saturating_add(size);
-                }
+                download_fragment(
+                    client.as_ref(),
+                    &root,
+                    &ctx,
+                    attachment_id,
+                    &mut file,
+                    &downloaded_size,
+                    hash,
+                    start_offset,
+                )
+                .await?;
                 Ok::<(), anyhow::Error>(())
             }
         })
-        .collect::<Vec<_>>();
-    tasks.try_join().await?;
+        .buffer_unordered(TRANSFER_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
 
     if downloaded_size.load(std::sync::atomic::Ordering::Relaxed) != total_size {
         return Err(anyhow::anyhow!("download size mismatch"));
@@ -374,12 +374,10 @@ fn download_fragment<'a>(
                 Ok(())
             }
             Fragment::Leaf(leaf) => {
-                let plaintext = if let Some(key) = &root.content_key {
-                    key.decrypt(leaf.nonce, &leaf.data, &[])
-                        .map_err(|_| anyhow::anyhow!("chunk decryption failed"))?
-                } else {
-                    leaf.data.to_vec()
-                };
+                let plaintext = root
+                    .content_key
+                    .decrypt(leaf.nonce, &leaf.data, &[])
+                    .map_err(|_| anyhow::anyhow!("chunk decryption failed"))?;
                 file.seek(SeekFrom::Start(start_offset)).await?;
                 file.write_all(&plaintext).await?;
                 let downloaded_size = downloaded_size

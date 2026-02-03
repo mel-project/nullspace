@@ -8,12 +8,7 @@ This guide explains how to run the Nullspace GUI client locally.
 
 ## Run the app
 
-1. Clone the repository:
-
-   ```sh
-   git clone https://github.com/mel-project/nullspace.git
-   cd nullspace
-   ```
+1. Clone this repository and `cd` into it.
 
 2. Run the GUI client:
 

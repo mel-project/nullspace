@@ -21,19 +21,12 @@ enum LoginStep {
     FinishAddDevice,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ServerChoice {
-    PublicTest,
-    PublicTestCn,
-    Custom,
-}
-
 impl Widget for Login<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let step = ui.use_state(|| LoginStep::EnterUsername, ());
         let mut username_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut server_str = ui.use_state(|| "".to_string(), ()).into_var();
-        let mut server_choice = ui.use_state(|| ServerChoice::PublicTest, ()).into_var();
+        let mut server_choice = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut bundle_str = ui.use_state(String::new, ()).into_var();
         let register_info =
@@ -91,44 +84,40 @@ impl Widget for Login<'_> {
                     ui.horizontal(|ui| {
                         ui.label("Server");
                         ComboBox::from_id_salt("register_server_choice")
-                            .selected_text(match *server_choice {
-                                ServerChoice::PublicTest => "~public_test",
-                                ServerChoice::PublicTestCn => "~public_test_cn",
-                                ServerChoice::Custom => "Custom",
-                            })
+                            .selected_text(server_choice.as_str())
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut *server_choice,
-                                    ServerChoice::PublicTest,
+                                    "~public_test".to_string(),
                                     "~public_test",
                                 );
                                 ui.selectable_value(
                                     &mut *server_choice,
-                                    ServerChoice::PublicTestCn,
+                                    "~public_test_cn".to_string(),
                                     "~public_test_cn",
                                 );
                                 ui.selectable_value(
                                     &mut *server_choice,
-                                    ServerChoice::Custom,
+                                    "Custom".to_string(),
                                     "Custom",
                                 );
                             });
                     });
 
-                    if *server_choice == ServerChoice::PublicTest {
-                        *server_str = "~public_test".to_string();
+                    if *server_choice == "Custom" {
+                        ui.add(
+                            TextEdit::singleline(&mut *custom_server_str)
+                                .hint_text("Enter a ~server_id"),
+                        );
+                        *server_str = (*custom_server_str).clone();
+                    } else {
+                        *server_str = (*server_choice).clone();
                         ui.label(
                             RichText::new(
                                 "Hint: ~public_test (hosted in the US) and ~public_test_cn (hosted in China) are test servers run by the Nullspace developers",
                             )
                             .size(10.0),
                         );
-                    } else {
-                        ui.add(
-                            TextEdit::singleline(&mut *custom_server_str)
-                                .hint_text("Enter a ~server_id"),
-                        );
-                        *server_str = (*custom_server_str).clone();
                     }
 
                     let register_enabled =

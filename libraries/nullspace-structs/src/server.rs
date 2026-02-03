@@ -25,6 +25,12 @@ use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
 #[nanorpc_derive]
 #[async_trait]
 pub trait ServerProtocol {
+    // /// Allocates a one-time provisioning channel, given a random channel ID. Blocks until somebody posts to this channel, or the timeout is hit.
+    // async fn v1_provision_allocate(&self) -> Result<u64, ServerRpcError>;
+
+    // /// Posts to a provisioning channel. Must provide a valid auth token for rate limiting purposes.
+    // async fn v1_provision_send(&self, channel: u64, value: Blob) -> Result<(), ServerRpcError>;
+
     /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this server is proper to the username, the device certificate chain served to others is updated for that device.
     async fn v1_device_auth(
         &self,
@@ -106,10 +112,7 @@ pub trait ServerProtocol {
     ) -> Result<(), ServerRpcError>;
 
     /// Upload a fragment into the content-addressed store.
-    async fn v1_download_frag(
-        &self,
-        hash: Hash,
-    ) -> Result<Option<Fragment>, ServerRpcError>;
+    async fn v1_download_frag(&self, hash: Hash) -> Result<Option<Fragment>, ServerRpcError>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

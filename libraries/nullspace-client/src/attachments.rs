@@ -25,7 +25,8 @@ use crate::database::{DATABASE, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::events::emit_event;
 use crate::identity::Identity;
-use crate::internal::{Event, InternalRpcError, device_auth};
+use crate::internal::{Event, InternalRpcError};
+use crate::auth_tokens::get_auth_token;
 use crate::server::get_server_client;
 
 const CHUNK_SIZE_BYTES: usize = 256 * 1024;
@@ -89,7 +90,7 @@ async fn upload_inner(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("server name not available"))?;
     let client = get_server_client(ctx, &server_name).await?;
-    let auth = device_auth(&client, &identity.username, &identity.cert_chain).await?;
+    let auth = get_auth_token(ctx).await?;
 
     let content_key = AeadKey::random();
     let uploaded_size = Arc::new(AtomicU64::new(0));

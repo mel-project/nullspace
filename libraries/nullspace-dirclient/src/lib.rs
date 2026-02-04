@@ -257,18 +257,27 @@ impl DirClient {
     }
 
     async fn fetch_verified_response(&self, key: &str) -> anyhow::Result<DirectoryResponse> {
-        let anchor = self
-            .raw
-            .v1_get_anchor()
-            .await?
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        anchor.verify(self.anchor_pk)?;
-        header_sync::sync_headers(&self.raw, &self.pool, &anchor).await?;
         let response = self
             .raw
             .v1_get_item(key.to_string())
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let mut anchor = self
+            .raw
+            .v1_get_anchor()
+            .await?
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        anchor.verify(self.anchor_pk)?;
+        while anchor.last_header_height < response.proof_height {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            anchor = self
+                .raw
+                .v1_get_anchor()
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            anchor.verify(self.anchor_pk)?;
+        }
+        header_sync::sync_headers(&self.raw, &self.pool, &anchor).await?;
         verify_response(&self.pool, key, &anchor, &response).await?;
         Ok(response)
     }

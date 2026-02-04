@@ -5,11 +5,11 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use futures_concurrency::future::TryJoin;
 use moka::future::Cache;
-use tracing::warn;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::server::{ServerClient, ServerName, SignedMediumPk};
 use nullspace_structs::username::UserName;
+use tracing::warn;
 
 use crate::config::Config;
 use crate::directory::DIR_CLIENT;
@@ -29,6 +29,12 @@ static USER_CACHE: LazyLock<Cache<UserName, Arc<UserInfo>>> = LazyLock::new(|| {
         .build()
 });
 
+static USER_ROOT_HASH_CACHE: LazyLock<Cache<UserName, Hash>> = LazyLock::new(|| {
+    Cache::builder()
+        .time_to_live(Duration::from_secs(60))
+        .build()
+});
+
 pub async fn get_user_info(
     ctx: &anyctx::AnyCtx<Config>,
     username: &UserName,
@@ -41,6 +47,7 @@ pub async fn get_user_info(
                 .get_user_descriptor(username)
                 .await?
                 .context("username not in directory")?;
+            let root_hash = get_user_root_hash(ctx, username).await?;
             let server = get_server_client(ctx, &descriptor.server_name).await?;
             let (chains, medium_pks) = (
                 fetch_chains(&server, username),
@@ -50,7 +57,7 @@ pub async fn get_user_info(
                 .await?;
             let mut device_chains = BTreeMap::new();
             for (device_hash, chain) in chains {
-                if chain.verify(descriptor.root_cert_hash).is_err() {
+                if chain.verify(root_hash).is_err() {
                     warn!(username=%username, device_hash=%device_hash, "invalid device certificate chain");
                     continue;
                 }
@@ -77,6 +84,23 @@ pub async fn get_user_info(
                 device_chains,
                 medium_pks,
             }))
+        })
+        .await
+        .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
+}
+
+pub async fn get_user_root_hash(
+    ctx: &anyctx::AnyCtx<Config>,
+    username: &UserName,
+) -> anyhow::Result<Hash> {
+    USER_ROOT_HASH_CACHE
+        .try_get_with(username.clone(), async {
+            let dir = ctx.get(DIR_CLIENT);
+            let descriptor = dir
+                .get_user_descriptor(username)
+                .await?
+                .context("username not in directory")?;
+            Ok(descriptor.root_cert_hash)
         })
         .await
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))

@@ -452,7 +452,11 @@ async fn register_bootstrap(
     dir.insert_user_descriptor(&username, &user_descriptor, &device_secret)
         .await
         .map_err(internal_err)?;
-    let auth = device_auth(&server, &username, &cert_chain).await?;
+    let auth = server
+        .v1_device_auth(username.clone(), cert_chain.clone())
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
     let medium_sk = register_medium_key(&server, auth, &device_secret).await?;
 
     persist_identity(
@@ -484,7 +488,11 @@ async fn register_add_device(
         .verify(user_descriptor.root_cert_hash)
         .map_err(internal_err)?;
     let server = server_from_name(&ctx, &user_descriptor.server_name).await?;
-    let auth = device_auth(&server, &bundle.username, &bundle.cert_chain).await?;
+    let auth = server
+        .v1_device_auth(bundle.username.clone(), bundle.cert_chain.clone())
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
     let medium_sk = register_medium_key(&server, auth, &bundle.device_secret).await?;
     persist_identity(
         ctx.get(DATABASE),
@@ -513,18 +521,6 @@ async fn server_from_name(
     get_server_client(ctx, server_name)
         .await
         .map_err(internal_err)
-}
-
-pub(crate) async fn device_auth(
-    server: &ServerClient,
-    username: &UserName,
-    cert_chain: &CertificateChain,
-) -> Result<AuthToken, InternalRpcError> {
-    server
-        .v1_device_auth(username.clone(), cert_chain.clone())
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))
 }
 
 async fn register_medium_key(

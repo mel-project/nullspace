@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};
@@ -50,12 +53,16 @@ impl RpcTransport for Transport {
         let inflight = self
             .inflight
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::debug!(
-            endpoint = display(&self.endpoint),
-            inflight,
-            "calling an RPC endpoint"
-        );
+        let method = req.method.clone();
+        let start = Instant::now();
         scopeguard::defer!({
+            tracing::debug!(
+                endpoint = display(&self.endpoint),
+                method,
+                inflight,
+                elapsed = debug(start.elapsed()),
+                "called an RPC endpoint"
+            );
             self.inflight
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });

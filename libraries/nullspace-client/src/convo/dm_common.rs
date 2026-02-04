@@ -1,20 +1,15 @@
 use anyctx::AnyCtx;
 use anyhow::Context;
-use nullspace_structs::server::{AuthToken, ServerClient, ServerName};
+use nullspace_structs::server::{AuthToken, ServerName};
 
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::directory::DIR_CLIENT;
 use crate::identity::{Identity, store_server_name};
+use crate::auth_tokens::get_auth_token;
 
-pub(super) async fn device_auth(
-    client: &ServerClient,
-    identity: &Identity,
-) -> anyhow::Result<AuthToken> {
-    client
-        .v1_device_auth(identity.username.clone(), identity.cert_chain.clone())
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))
+pub(super) async fn device_auth(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
+    get_auth_token(ctx).await
 }
 
 pub(super) async fn own_server_name(

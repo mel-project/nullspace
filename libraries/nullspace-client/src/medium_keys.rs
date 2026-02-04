@@ -8,6 +8,7 @@ use nullspace_structs::server::SignedMediumPk;
 use nullspace_structs::timestamp::Timestamp;
 
 use crate::Config;
+use crate::auth_tokens::get_auth_token;
 use crate::database::DATABASE;
 use crate::directory::DIR_CLIENT;
 use crate::identity::Identity;
@@ -33,10 +34,7 @@ async fn rotate_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         .await?
         .context("identity username not in directory")?;
     let server = get_server_client(ctx, &descriptor.server_name).await?;
-    let auth = server
-        .v1_device_auth(identity.username.clone(), identity.cert_chain.clone())
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let auth = get_auth_token(ctx).await?;
     let new_sk = DhSecret::random();
     let mut signed = SignedMediumPk {
         medium_pk: new_sk.public_key(),

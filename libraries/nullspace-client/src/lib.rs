@@ -1,5 +1,6 @@
 mod c_api;
 mod config;
+mod auth_tokens;
 mod attachments;
 mod convo;
 mod database;

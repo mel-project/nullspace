@@ -1,5 +1,5 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,22 +10,25 @@ use nullspace_dirclient::DirClient;
 use nullspace_rpc_pool::{PooledTransport, RpcPool};
 use nullspace_structs::server::{AuthToken, ProxyError, ServerClient, ServerName};
 
-use crate::config::Config;
+use crate::auth_tokens::get_auth_token;
+use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
 use crate::identity::Identity;
 use crate::rpc_pool::RPC_POOL;
 
-static SERVER_CACHE: LazyLock<Cache<ServerName, Arc<ServerClient>>> = LazyLock::new(|| {
-    Cache::builder()
-        .time_to_idle(Duration::from_secs(3600))
-        .build()
-});
+pub static SERVER_CACHE: Ctx<Cache<ServerName, Arc<ServerClient>>> =
+    |_ctx: &anyctx::AnyCtx<Config>| {
+        Cache::builder()
+            .time_to_idle(Duration::from_secs(3600))
+            .build()
+    };
 
 pub async fn get_server_client(
     ctx: &anyctx::AnyCtx<Config>,
     name: &ServerName,
 ) -> anyhow::Result<Arc<ServerClient>> {
-    SERVER_CACHE
+    let cache = ctx.get(SERVER_CACHE);
+    cache
         .try_get_with(name.clone(), async {
             let rpc_pool = ctx.get(RPC_POOL).clone();
             let transport = rpc_pool.rpc(ctx.init().dir_endpoint.clone());
@@ -40,7 +43,7 @@ pub async fn get_server_client(
                 .as_ref()
                 .and_then(|identity| identity.server_name.clone());
             let proxy_info =
-                if let (Some(identity), Some(own_server_name)) = (identity, own_server_name) {
+                if let Some(own_server_name) = own_server_name {
                     if &own_server_name == name {
                         None
                     } else {
@@ -53,12 +56,8 @@ pub async fn get_server_client(
                             .first()
                             .cloned()
                             .context("server has no public URLs")?;
-                        let proxy_client =
-                            Arc::new(ServerClient::from(rpc_pool.rpc(endpoint)));
-                        let auth_token = proxy_client
-                            .v1_device_auth(identity.username, identity.cert_chain)
-                            .await?
-                            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+                        let proxy_client = Arc::new(ServerClient::from(rpc_pool.rpc(endpoint)));
+                        let auth_token = get_auth_token(ctx).await?;
                         Some(ProxyInfo {
                             own_server_name,
                             proxy_client,

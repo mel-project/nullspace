@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use anyctx::AnyCtx;
-use anyhow::Context;
 use nullspace_crypt::hash::BcsHashExt;
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
@@ -17,6 +16,7 @@ use crate::database::{
 use crate::identity::Identity;
 use crate::long_poll::LONG_POLLER;
 use crate::server::get_server_client;
+use crate::user_info::get_user_root_hash;
 use crate::{attachments::store_attachment_root, config::Config};
 
 use super::dm_common::{device_auth, refresh_own_server_name};
@@ -44,7 +44,7 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         },
     };
     let server = get_server_client(ctx, &server_name).await?;
-    let auth = device_auth(server.as_ref(), &identity).await?;
+    let auth = device_auth(ctx).await?;
     let mailbox = MailboxId::direct(&identity.username);
     ensure_mailbox_state(db, &server_name, mailbox, NanoTimestamp(0)).await?;
     let mut after = load_mailbox_after(db, &server_name, mailbox).await?;
@@ -73,7 +73,6 @@ async fn process_mailbox_entry(
     entry: nullspace_structs::server::MailboxEntry,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    let dir = ctx.get(crate::directory::DIR_CLIENT);
     let identity = Identity::load(db).await?;
     update_mailbox_after(db, server_name, mailbox, entry.received_at).await?;
     let message = entry.message;
@@ -119,12 +118,9 @@ async fn process_mailbox_entry(
     };
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender_username = signed.sender().clone();
-    let sender_descriptor = dir
-        .get_user_descriptor(&sender_username)
-        .await?
-        .context("sender username not in directory")?;
+    let sender_root_hash = get_user_root_hash(ctx, &sender_username).await?;
     let message = signed
-        .verify_blob(sender_descriptor.root_cert_hash)
+        .verify_blob(sender_root_hash)
         .map_err(|_| anyhow::anyhow!("failed to verify device-signed message"))?;
     if message.kind != Blob::V1_MESSAGE_CONTENT {
         warn!(kind = %message.kind, "ignoring non-message-content dm");

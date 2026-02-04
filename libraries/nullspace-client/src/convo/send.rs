@@ -202,7 +202,7 @@ async fn send_dm_once(
     let recipients = recipients_from_peer(peer.as_ref())?;
 
     let auth = if peer.server_name == own_server {
-        super::dm_common::device_auth(peer.server.as_ref(), identity).await?
+        super::dm_common::device_auth(ctx).await?
     } else {
         AuthToken::anonymous()
     };

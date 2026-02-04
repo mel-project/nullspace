@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::database::{DATABASE, DbNotify, ensure_convo_id, ensure_mailbox_state};
 use crate::identity::Identity;
 use crate::server::get_server_client;
+use crate::auth_tokens::get_auth_token;
 
 use super::ConvoId;
 use super::roster::GroupRoster;
@@ -58,10 +59,7 @@ pub async fn create_group(
     let token = AuthToken::random();
 
     let server = get_server_client(ctx, &server_name).await?;
-    let auth = server
-        .v1_device_auth(identity.username.clone(), identity.cert_chain.clone())
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let auth = get_auth_token(ctx).await?;
     server
         .v1_register_group(auth, group_id)
         .await?

@@ -29,11 +29,6 @@ struct ProfileEntry {
     force_refresh: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct DisplayLabel {
-    pub display: String,
-}
-
 impl ProfileLoader {
     pub fn view(&mut self, username: &UserName) -> Option<UserDetails> {
         let entry = match self.entries.entry(username.clone()) {
@@ -117,7 +112,7 @@ impl ProfileLoader {
         self.label_index_dirty = false;
     }
 
-    pub fn label_for(&mut self, username: &UserName) -> DisplayLabel {
+    pub fn label_for(&mut self, username: &UserName) -> String {
         let view = self.view(username);
         self.refresh_label_index();
 
@@ -139,7 +134,7 @@ impl ProfileLoader {
         } else {
             base
         };
-        DisplayLabel { display }
+        display
     }
 
     pub fn invalidate(&mut self, username: &UserName) {

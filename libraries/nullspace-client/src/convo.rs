@@ -1,12 +1,12 @@
 use anyctx::AnyCtx;
 use futures_concurrency::future::Race;
-use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
-use std::str::FromStr;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
+use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
+use std::str::FromStr;
 
 use crate::config::Config;
 
@@ -18,7 +18,7 @@ mod rekey;
 mod roster;
 mod send;
 
-pub use group::{create_group, invite, accept_invite, load_group};
+pub use group::{accept_invite, create_group, invite, load_group};
 pub use roster::GroupRoster;
 pub use send::queue_message;
 
@@ -78,7 +78,9 @@ pub enum MessageContent {
         mime: SmolStr,
         filename: SmolStr,
     },
-    GroupInvite { invite_id: i64 },
+    GroupInvite {
+        invite_id: i64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

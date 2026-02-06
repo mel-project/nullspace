@@ -24,7 +24,7 @@ use crate::widgets::user_info::UserInfo;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const INITIAL_LIMIT: u16 = 100;
+const INITIAL_LIMIT: u16 = 10;
 const PAGE_LIMIT: u16 = 10;
 
 pub struct Convo<'a>(pub &'a mut NullspaceApp, pub ConvoId);
@@ -183,7 +183,7 @@ fn render_convo(app: &mut NullspaceApp, ui: &mut eframe::egui::Ui, convo_id: Con
         render_header(app, ui, &convo_id, &mut show_roster, &mut user_info_target);
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(messages_rect), |ui| {
-        render_messages(ui, app, &convo_id, &mut state, &key);
+        render_messages(ui, app, &convo_id, &mut state);
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
         render_composer(ui, app, &convo_id);
@@ -217,7 +217,7 @@ fn render_header(
     match convo_id {
         ConvoId::Direct { peer } => {
             let view = app.state.profile_loader.view(peer);
-            let display = app.state.profile_loader.label_for(peer).display;
+            let display = app.state.profile_loader.label_for(peer);
             ui.horizontal_centered(|ui| {
                 let size = 24.0;
                 ui.add(Avatar {
@@ -251,18 +251,7 @@ fn render_messages(
     app: &mut NullspaceApp,
     convo_id: &ConvoId,
     state: &mut Var<ConvoState>,
-    key: &ConvoId,
 ) {
-    let mut sender_labels: std::collections::HashMap<
-        nullspace_structs::username::UserName,
-        String,
-    > = std::collections::HashMap::new();
-    for item in state.messages.values() {
-        if !sender_labels.contains_key(&item.sender) {
-            let label = app.state.profile_loader.label_for(&item.sender).display;
-            sender_labels.insert(item.sender.clone(), label);
-        }
-    }
     let scroll_output = ScrollArea::vertical()
         .id_salt("scroll")
         .stick_to_bottom(true)
@@ -278,14 +267,10 @@ fn render_messages(
                     ui.add_space(4.0);
                     last_date = Some(date);
                 }
-                let label = sender_labels
-                    .get(&item.sender)
-                    .cloned()
-                    .unwrap_or_else(|| item.sender.to_string());
+                let label = app.state.profile_loader.label_for(&item.sender);
                 render_row(ui, item, app, label);
             }
         });
-    let max_offset = (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
 
     let at_top = scroll_output.state.offset.y <= 2.0;
     if at_top {
@@ -448,10 +433,12 @@ fn render_row(
     let timestamp = format_timestamp(item.received_at);
     ui.horizontal_top(|ui| {
         ui.label(RichText::new(format!("[{timestamp}]")).color(Color32::GRAY));
-        ui.add(Content {
-            app,
-            message: item,
-            sender_label,
+        ui.push_id(item.received_at, |ui| {
+            ui.add(Content {
+                app,
+                message: item,
+                sender_label,
+            })
         });
     });
     ui.add_space(4.0);

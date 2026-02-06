@@ -42,8 +42,7 @@ impl Widget for GroupRoster<'_> {
                                 .app
                                 .state
                                 .profile_loader
-                                .label_for(&member.username)
-                                .display;
+                                .label_for(&member.username);
                             if member.is_admin {
                                 label.push_str(" [admin]");
                             }

@@ -64,7 +64,7 @@ impl Widget for SteadyState<'_> {
                         if let Ok(username) = &own_username {
                             let profile_view = self.0.state.profile_loader.view(username);
                             let display = self.0.state.profile_loader.label_for(username);
-                            if ui.button(display.display).clicked()
+                            if ui.button(display).clicked()
                                 | ui.add_sized(
                                     vec2(size, size),
                                     Avatar {
@@ -149,7 +149,7 @@ impl<'a> SteadyState<'a> {
                         let selection = convo.convo_id.clone();
                         let label = match &convo.convo_id {
                             ConvoId::Direct { peer } => {
-                                self.0.state.profile_loader.label_for(peer).display
+                                self.0.state.profile_loader.label_for(peer)
                             }
                             ConvoId::Group { group_id } => {
                                 format!("Group {}", short_group_id(group_id))

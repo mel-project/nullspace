@@ -16,7 +16,9 @@ impl Timestamp {
 }
 
 /// A nanoseconds-granularity Unix timestamp, represented as an integer.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(
+    Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Hash,
+)]
 #[serde(transparent)]
 pub struct NanoTimestamp(pub u64);
 

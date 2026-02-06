@@ -78,7 +78,6 @@ impl Widget for SmoothImage<'_> {
             let (rect, response) = ui.allocate_exact_size(ui_size, self.sense);
             eframe::egui::Image::from_texture(&texture)
                 .corner_radius(self.corner_radius)
-                .texture_options(eframe::egui::TextureOptions::NEAREST)
                 .paint_at(ui, rect);
             return response;
         }
@@ -208,7 +207,7 @@ fn make_texture(
     let resized = decoded.resize_exact(
         texel_size[0],
         texel_size[1],
-        image::imageops::FilterType::Lanczos3,
+        image::imageops::FilterType::Triangle,
     );
     let rgba = resized.to_rgba8();
 

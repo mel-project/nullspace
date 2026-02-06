@@ -3,7 +3,7 @@ use eframe::egui::{Response, TextWrapMode, Widget, Window};
 use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
-use nullspace_client::internal::{MessageDirection, UserDetails};
+use nullspace_client::internal::UserDetails;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use poll_promise::Promise;
@@ -57,7 +57,7 @@ impl Widget for UserInfo {
                         return;
                     }
                     None => {
-                        ui.label("Loading...");
+                        ui.spinner();
                         return;
                     }
                 };
@@ -144,7 +144,7 @@ impl Widget for UserInfo {
                                     .wrap_mode(TextWrapMode::Extend)
                                     .add(|tui| {
                                         for group in &details.common_groups {
-                                            tui.label(&format!("Group {}", short_group_id(group)));
+                                            tui.label(format!("Group {}", short_group_id(group)));
                                         }
                                     });
                                 }

@@ -1,2 +1,9 @@
+pub mod add_contact;
+pub mod add_device;
+pub mod add_group;
+pub mod group_roster;
 pub mod login;
+pub mod preferences;
+pub mod profile;
 pub mod steady_state;
+pub mod user_info;

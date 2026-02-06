@@ -57,7 +57,7 @@ impl Widget for ProfileInner<'_> {
             PromiseSlot::<Result<nullspace_structs::username::UserName, String>>::new,
             (),
         );
-        let mut username_error_reported: Var<bool> = ui.use_state(|| false, ()).into_var();
+
         let mut display_name_input: Var<String> = ui.use_state(String::new, ()).into_var();
         let mut initialized: Var<bool> = ui.use_state(|| false, ()).into_var();
         let mut avatar_choice: Var<AvatarChoice> =
@@ -74,15 +74,11 @@ impl Widget for ProfileInner<'_> {
         let username = match username_promise.poll() {
             Some(Ok(username)) => username,
             Some(Err(err)) => {
-                if !*username_error_reported {
-                    self.app.state.error_dialog = Some(err);
-                    *username_error_reported = true;
-                }
-                ui.label("Unable to load profile.");
+                ui.colored_label(Color32::RED, err);
                 return ui.response();
             }
             None => {
-                ui.label("Loading...");
+                ui.spinner();
                 return ui.response();
             }
         };
@@ -90,7 +86,7 @@ impl Widget for ProfileInner<'_> {
         let profile_view = self.app.state.profile_loader.view(&username);
 
         let Some(profile_view) = profile_view else {
-            ui.label("Loading...");
+            ui.spinner();
             return ui.response();
         };
 
@@ -145,33 +141,16 @@ impl Widget for ProfileInner<'_> {
                         })
                         .ui(|ui| {
                             let size = 64.0;
-                            match &*avatar_choice {
-                                AvatarChoice::Set(attachment) => {
-                                    ui.push_id(attachment, |ui| {
-                                        ui.add(Avatar {
-                                            sender: username.clone(),
-                                            attachment: Some(attachment.clone()),
-                                            size,
-                                        })
-                                    });
-                                }
-                                AvatarChoice::Clear => {
-                                    paint_placeholder(ui, size);
-                                }
-                                AvatarChoice::Keep => {
-                                    if let Some(attachment) = profile_view.avatar.as_ref() {
-                                        ui.push_id(attachment, |ui| {
-                                            ui.add(Avatar {
-                                                sender: username.clone(),
-                                                attachment: Some(attachment.clone()),
-                                                size,
-                                            })
-                                        });
-                                    } else {
-                                        paint_placeholder(ui, size);
-                                    }
-                                }
-                            }
+                            let attachment = match &*avatar_choice {
+                                AvatarChoice::Keep => profile_view.avatar.clone(),
+                                AvatarChoice::Clear => None,
+                                AvatarChoice::Set(attachment) => Some(attachment.clone()),
+                            };
+                            ui.add(Avatar {
+                                sender: username.clone(),
+                                attachment,
+                                size,
+                            });
                         });
 
                         // Buttons
@@ -304,12 +283,6 @@ fn profile_row(tui: &mut Tui, label: &str, content: impl FnOnce(&mut Tui)) {
         tui.wrap_mode(TextWrapMode::Extend).label(label);
         tui.add(|tui| content(tui));
     });
-}
-
-fn paint_placeholder(ui: &mut egui::Ui, size: f32) {
-    let (rect, _) =
-        ui.allocate_exact_size(eframe::egui::vec2(size, size), eframe::egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, Color32::LIGHT_GRAY);
 }
 
 fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &mut Var<Option<i64>>, path: PathBuf) {

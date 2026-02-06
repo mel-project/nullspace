@@ -127,14 +127,14 @@ impl ProfileLoader {
             }
             None => (username.as_str().to_string(), false),
         };
-        let display = if has_display
+        
+        if has_display
             && self.label_counts.get(&base).copied().unwrap_or(0) > 1
         {
             format!("{base} ({})", username.as_str())
         } else {
             base
-        };
-        display
+        }
     }
 
     pub fn invalidate(&mut self, username: &UserName) {

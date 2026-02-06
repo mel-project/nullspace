@@ -43,12 +43,12 @@ async fn group_rekey_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     for group in groups {
         let mut conn = db.acquire().await?;
         let roster = GroupRoster::load(
-            &mut *conn,
+            &mut conn,
             group.group_id,
             group.descriptor.init_admin.clone(),
         )
         .await?;
-        let members = roster.list(&mut *conn).await?;
+        let members = roster.list(&mut conn).await?;
 
         let admin_count = members
             .iter()
@@ -114,8 +114,8 @@ async fn collect_group_recipients(
     let db = ctx.get(DATABASE);
     let mut conn = db.acquire().await?;
     let roster =
-        GroupRoster::load(&mut *conn, group.group_id, group.descriptor.init_admin.clone()).await?;
-    let members = roster.list(&mut *conn).await?;
+        GroupRoster::load(&mut conn, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let members = roster.list(&mut conn).await?;
     for member in members.into_iter().filter(RosterMember::is_active) {
         let username = member.username;
         let peer = get_user_info(ctx, &username).await?;
@@ -180,8 +180,8 @@ pub(super) async fn process_group_rekey_entry(
     let sender_username = signed.sender().clone();
     let mut conn = db.acquire().await?;
     let roster =
-        GroupRoster::load(&mut *conn, group.group_id, group.descriptor.init_admin.clone()).await?;
-    let sender_member = roster.get(&mut *conn, &sender_username).await?;
+        GroupRoster::load(&mut conn, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let sender_member = roster.get(&mut conn, &sender_username).await?;
     if !sender_member
         .as_ref()
         .is_some_and(|member| member.is_admin && member.is_active())

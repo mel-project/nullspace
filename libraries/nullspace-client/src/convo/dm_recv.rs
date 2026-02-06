@@ -152,13 +152,12 @@ async fn process_mailbox_entry(
         sender_username.clone()
     };
     let mut conn = db.acquire().await?;
-    if content.mime == nullspace_structs::fragment::Attachment::mime() {
-        if let Ok(root) =
+    if content.mime == nullspace_structs::fragment::Attachment::mime()
+        && let Ok(root) =
             serde_json::from_slice::<nullspace_structs::fragment::Attachment>(&content.body)
         {
-            let _ = store_attachment_root(&mut *conn, &sender_username, &root).await;
+            let _ = store_attachment_root(&mut conn, &sender_username, &root).await;
         }
-    }
     let convo_id = ensure_convo_id(&mut *conn, "direct", peer_username.as_str()).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO convo_messages \

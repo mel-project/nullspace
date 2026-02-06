@@ -26,7 +26,7 @@ impl Tray {
             let (tx, rx) = mpsc::channel();
             let tray = LinuxTray::new(app_name.to_string(), tx);
             let handle = ksni::blocking::TrayMethods::spawn(tray)?;
-            return Ok(Self { _handle: handle, rx });
+            Ok(Self { _handle: handle, rx })
         }
 
         #[cfg(not(target_os = "linux"))]

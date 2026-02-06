@@ -144,11 +144,10 @@ impl PerUrlPool {
             .lock()
             .expect("rpc pool transport lock poisoned");
         for slot in transports.iter_mut() {
-            if let Some(existing) = slot.as_ref() {
-                if Arc::ptr_eq(existing, target) {
+            if let Some(existing) = slot.as_ref()
+                && Arc::ptr_eq(existing, target) {
                     *slot = None;
                 }
-            }
         }
     }
 }

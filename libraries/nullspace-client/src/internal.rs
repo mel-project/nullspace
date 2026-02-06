@@ -347,7 +347,7 @@ impl InternalProtocol for InternalImpl {
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
         let mut conn = db.acquire().await.map_err(internal_err)?;
-        let id = queue_message(&mut *conn, &convo_id, &identity.username, &mime, &body)
+        let id = queue_message(&mut conn, &convo_id, &identity.username, &mime, &body)
             .await
             .map_err(internal_err)?;
         DbNotify::touch();
@@ -398,13 +398,13 @@ impl InternalProtocol for InternalImpl {
             .ok_or_else(|| InternalRpcError::Other("group not found".into()))?;
         let mut conn = db.acquire().await.map_err(internal_err)?;
         let roster = GroupRoster::load(
-            &mut *conn,
+            &mut conn,
             group,
             group_record.descriptor.init_admin.clone(),
         )
         .await
         .map_err(internal_err)?;
-        let members = roster.list(&mut *conn).await.map_err(internal_err)?;
+        let members = roster.list(&mut conn).await.map_err(internal_err)?;
         let out = members
             .into_iter()
             .map(|member| GroupMember {
@@ -771,10 +771,7 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
         let last_message = match (msg_id, sender_username, mime, body) {
             (Some(id), Some(sender_username), Some(mime), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
-                let body = match decode_message_content(db, id, &sender, &mime, &body).await {
-                    Ok(body) => Some(body),
-                    Err(_) => None,
-                };
+                let body = (decode_message_content(db, id, &sender, &mime, &body).await).ok();
                 body.map(|body| ConvoMessage {
                     id,
                     convo_id: convo_id.clone(),

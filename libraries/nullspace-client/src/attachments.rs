@@ -76,7 +76,7 @@ async fn upload_inner(
     let filename = file_basename(&absolute_path)?;
     let total_size = tokio::fs::metadata(&absolute_path).await?.len();
     emit_event(
-        &ctx,
+        ctx,
         Event::UploadProgress {
             id: upload_id,
             uploaded_size: 0,
@@ -104,7 +104,7 @@ async fn upload_inner(
         .map(|(index, offset)| {
             let ctx = ctx.clone();
             let client = client.clone();
-            let auth = auth.clone();
+            let auth = auth;
             let absolute_path = absolute_path.clone();
             let uploaded_size = uploaded_size.clone();
             let content_key = content_key.clone();
@@ -155,7 +155,7 @@ async fn upload_inner(
     while current_level.len() > MAX_FANOUT {
         let mut next_level = Vec::new();
         for group in current_level.chunks(MAX_FANOUT) {
-            let children: Vec<(Hash, u64)> = group.iter().copied().collect();
+            let children: Vec<(Hash, u64)> = group.to_vec();
             let node = FragmentNode { children };
             let hash = Fragment::Node(node.clone()).bcs_hash();
             let size = node.total_size();
@@ -221,11 +221,10 @@ pub async fn attachment_download_oneshot(
     if !save_to.is_absolute() {
         return Err(anyhow::anyhow!("save path must be absolute"));
     }
-    if let Ok(metadata) = tokio::fs::metadata(&save_to).await {
-        if metadata.is_file() {
+    if let Ok(metadata) = tokio::fs::metadata(&save_to).await
+        && metadata.is_file() {
             return Ok(());
         }
-    }
     let parent = save_to
         .parent()
         .ok_or_else(|| anyhow::anyhow!("save path must have a parent directory"))?;
@@ -535,12 +534,11 @@ fn create_temp_path(parent: &Path, target: &Path) -> PathBuf {
 }
 
 async fn finalize_atomic_file(temp_path: &Path, target: &Path) -> anyhow::Result<()> {
-    if let Ok(metadata) = tokio::fs::metadata(target).await {
-        if metadata.is_file() {
+    if let Ok(metadata) = tokio::fs::metadata(target).await
+        && metadata.is_file() {
             let _ = tokio::fs::remove_file(temp_path).await;
             return Ok(());
         }
-    }
     match tokio::fs::rename(temp_path, target).await {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -579,7 +577,7 @@ fn sanitize_filename(name: &str) -> String {
 
 async fn unique_path(dir: &Path, filename: &str) -> anyhow::Result<PathBuf> {
     let base = dir.join(filename);
-    if tokio::fs::try_exists(&base).await? == false {
+    if !(tokio::fs::try_exists(&base).await?) {
         return Ok(base);
     }
     let (stem, ext) = split_extension(filename);
@@ -589,7 +587,7 @@ async fn unique_path(dir: &Path, filename: &str) -> anyhow::Result<PathBuf> {
         } else {
             dir.join(format!("{stem} ({i}).{ext}"))
         };
-        if tokio::fs::try_exists(&candidate).await? == false {
+        if !(tokio::fs::try_exists(&candidate).await?) {
             return Ok(candidate);
         }
     }

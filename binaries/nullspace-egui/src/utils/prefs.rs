@@ -4,7 +4,7 @@ const MB: u64 = 1_000_000;
 
 pub const IMAGE_AUTO_DOWNLOAD_OPTIONS: &[(Option<u64>, &str)] = &[
     (None, "None"),
-    (Some(1 * MB), "1 MB"),
+    (Some(MB), "1 MB"),
     (Some(5 * MB), "5 MB"),
     (Some(10 * MB), "10 MB"),
     (Some(20 * MB), "20 MB"),

@@ -7,13 +7,13 @@ use nullspace_client::internal::{ConvoId, ConvoSummary};
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
-use crate::widgets::add_contact::AddContact;
-use crate::widgets::add_device::AddDevice;
-use crate::widgets::add_group::AddGroup;
+use crate::screens::add_contact::AddContact;
+use crate::screens::add_device::AddDevice;
+use crate::screens::add_group::AddGroup;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::convo::Convo;
-use crate::widgets::preferences::Preferences;
-use crate::widgets::profile::Profile;
+use crate::screens::preferences::Preferences;
+use crate::screens::profile::Profile;
 
 pub struct SteadyState<'a>(pub &'a mut NullspaceApp);
 

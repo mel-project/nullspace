@@ -34,41 +34,41 @@ fn load_font_family(family_names: &[&str]) -> Option<Vec<u8>> {
 
 pub fn load_fonts(mut fonts: FontDefinitions) -> FontDefinitions {
     fonts.font_data.insert(
-        "fantasque".to_string(),
+        "main".to_string(),
         egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Regular.ttf"))
             .into(),
     );
     fonts.font_data.insert(
-        "fantasque_bold".to_string(),
+        "main_bold".to_string(),
         egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Bold.ttf")).into(),
     );
     fonts.font_data.insert(
-        "fantasque_italic".to_string(),
+        "main_italic".to_string(),
         egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Italic.ttf"))
             .into(),
     );
     fonts.font_data.insert(
-        "fantasque_bold_italic".to_string(),
+        "main_bold_italic".to_string(),
         egui::FontData::from_static(include_bytes!(
             "fonts/FantasqueSansMNerdFont-BoldItalic.ttf"
         ))
         .into(),
     );
     fonts.families.insert(
-        egui::FontFamily::Name("fantasque".into()),
-        vec!["fantasque".to_string()],
+        egui::FontFamily::Name("main".into()),
+        vec!["main".to_string()],
     );
     fonts.families.insert(
-        egui::FontFamily::Name("fantasque_bold".into()),
-        vec!["fantasque_bold".to_string()],
+        egui::FontFamily::Name("main_bold".into()),
+        vec!["main_bold".to_string()],
     );
     fonts.families.insert(
-        egui::FontFamily::Name("fantasque_italic".into()),
-        vec!["fantasque_italic".to_string()],
+        egui::FontFamily::Name("main_italic".into()),
+        vec!["main_italic".to_string()],
     );
     fonts.families.insert(
-        egui::FontFamily::Name("fantasque_bold_italic".into()),
-        vec!["fantasque_bold_italic".to_string()],
+        egui::FontFamily::Name("main_bold_italic".into()),
+        vec!["main_bold_italic".to_string()],
     );
 
     // we keep the existing font as a fallback
@@ -77,14 +77,14 @@ pub fn load_fonts(mut fonts: FontDefinitions) -> FontDefinitions {
         .get(&egui::FontFamily::Proportional)
         .unwrap()
         .clone();
-    existing_fonts.insert(0, "fantasque".into());
+    existing_fonts.insert(0, "main".into());
     fonts
         .families
         .insert(egui::FontFamily::Proportional, existing_fonts);
 
     fonts
         .families
-        .insert(egui::FontFamily::Monospace, vec!["fantasque".to_string()]);
+        .insert(egui::FontFamily::Monospace, vec!["main".to_string()]);
 
     let mut fontdb = HashMap::new();
     fontdb.insert(
@@ -128,5 +128,6 @@ pub fn load_fonts(mut fonts: FontDefinitions) -> FontDefinitions {
                 .push(region.to_owned());
         }
     }
+
     fonts
 }

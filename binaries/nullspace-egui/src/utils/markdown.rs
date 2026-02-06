@@ -85,7 +85,7 @@ pub fn layout_md_raw(job: &mut LayoutJob, base_format: TextFormat, input: &str) 
                     };
                     fmt.font_id = FontId::new(
                         fmt.font_id.size * scale,
-                        FontFamily::Name("fantasque_bold".into()),
+                        FontFamily::Name("main_bold".into()),
                     );
                     format_stack.push(fmt);
                 }
@@ -95,13 +95,13 @@ pub fn layout_md_raw(job: &mut LayoutJob, base_format: TextFormat, input: &str) 
                         .cloned()
                         .unwrap_or_else(|| base_format.clone());
                     let family = match fmt.font_id.family {
-                        FontFamily::Name(ref name) if name.as_ref() == "fantasque_bold" => {
-                            "fantasque_bold_italic"
+                        FontFamily::Name(ref name) if name.as_ref() == "main_bold" => {
+                            "main_bold_italic"
                         }
-                        FontFamily::Name(ref name) if name.as_ref() == "fantasque_bold_italic" => {
-                            "fantasque_bold_italic"
+                        FontFamily::Name(ref name) if name.as_ref() == "main_bold_italic" => {
+                            "main_bold_italic"
                         }
-                        _ => "fantasque_italic",
+                        _ => "main_italic",
                     };
                     fmt.font_id = FontId::new(fmt.font_id.size, FontFamily::Name(family.into()));
                     format_stack.push(fmt);
@@ -112,13 +112,13 @@ pub fn layout_md_raw(job: &mut LayoutJob, base_format: TextFormat, input: &str) 
                         .cloned()
                         .unwrap_or_else(|| base_format.clone());
                     let family = match fmt.font_id.family {
-                        FontFamily::Name(ref name) if name.as_ref() == "fantasque_italic" => {
-                            "fantasque_bold_italic"
+                        FontFamily::Name(ref name) if name.as_ref() == "main_italic" => {
+                            "main_bold_italic"
                         }
-                        FontFamily::Name(ref name) if name.as_ref() == "fantasque_bold_italic" => {
-                            "fantasque_bold_italic"
+                        FontFamily::Name(ref name) if name.as_ref() == "main_bold_italic" => {
+                            "main_bold_italic"
                         }
-                        _ => "fantasque_bold",
+                        _ => "main_bold",
                     };
                     fmt.font_id = FontId::new(fmt.font_id.size, FontFamily::Name(family.into()));
                     format_stack.push(fmt);
@@ -156,7 +156,7 @@ pub fn layout_md_raw(job: &mut LayoutJob, base_format: TextFormat, input: &str) 
                 }
                 Tag::List(start) => {
                     match start {
-                        Some(start) => list_stack.push(ListState::Ordered { next: start as u64 }),
+                        Some(start) => list_stack.push(ListState::Ordered { next: start }),
                         None => list_stack.push(ListState::Unordered),
                     }
                 }

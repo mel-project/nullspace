@@ -65,11 +65,10 @@ pub async fn profile_set(
             .await
             .map_err(fatal_retry_later)?;
 
-    if let Some(previous_created) = existing_created {
-        if created <= previous_created {
+    if let Some(previous_created) = existing_created
+        && created <= previous_created {
             return Err(ServerRpcError::AccessDenied);
         }
-    }
 
     sqlx::query(
         "INSERT OR REPLACE INTO user_profiles (username, profile, created) VALUES (?, ?, ?)",

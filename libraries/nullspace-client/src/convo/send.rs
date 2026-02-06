@@ -51,12 +51,11 @@ pub async fn queue_message(
     .bind(sent_at.0 as i64)
     .fetch_one(&mut *tx)
     .await?;
-    if mime == nullspace_structs::fragment::Attachment::mime() {
-        if let Ok(root) = serde_json::from_slice::<nullspace_structs::fragment::Attachment>(body)
+    if mime == nullspace_structs::fragment::Attachment::mime()
+        && let Ok(root) = serde_json::from_slice::<nullspace_structs::fragment::Attachment>(body)
         {
             let _ = store_attachment_root(&mut *tx, sender, &root).await;
         }
-    }
     Ok(row.0)
 }
 
@@ -82,7 +81,7 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             None => {
                 let err = anyhow::anyhow!("invalid convo entry");
                 let mut conn = db.acquire().await?;
-                mark_message_failed(&mut *conn, pending.id, &err).await?;
+                mark_message_failed(&mut conn, pending.id, &err).await?;
                 DbNotify::touch();
                 continue;
             }
@@ -102,12 +101,12 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         {
             Ok(received_at) => {
                 let mut conn = db.acquire().await?;
-                mark_message_sent(&mut *conn, pending.id, received_at).await?;
+                mark_message_sent(&mut conn, pending.id, received_at).await?;
             }
             Err(err) => {
                 tracing::warn!(error = %err, "failed to send convo message");
                 let mut conn = db.acquire().await?;
-                mark_message_failed(&mut *conn, pending.id, &err).await?;
+                mark_message_failed(&mut conn, pending.id, &err).await?;
             }
         }
         DbNotify::touch();

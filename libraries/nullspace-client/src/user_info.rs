@@ -30,11 +30,10 @@ pub async fn get_user_descriptor(
     username: &UserName,
 ) -> anyhow::Result<UserDescriptor> {
     let db = ctx.get(DATABASE);
-    if let Some((descriptor, fetched_at)) = load_cached_descriptor(db, username).await? {
-        if is_fresh(fetched_at) {
+    if let Some((descriptor, fetched_at)) = load_cached_descriptor(db, username).await?
+        && is_fresh(fetched_at) {
             return Ok(descriptor);
         }
-    }
 
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir

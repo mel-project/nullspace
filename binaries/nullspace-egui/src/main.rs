@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use egui::style::ScrollStyle;
 use egui::{Modal, Spinner};
 use egui_file_dialog::FileDialog as EguiFileDialog;
 use nullspace_client::{Client, Config, internal::Event};

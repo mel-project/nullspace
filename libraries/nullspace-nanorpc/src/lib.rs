@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, atomic::AtomicU64},
-    time::Instant,
-};
+use std::sync::{Arc, atomic::AtomicU64};
 
 use async_trait::async_trait;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};

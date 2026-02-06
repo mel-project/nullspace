@@ -172,7 +172,7 @@ pub async fn invite(
     let convo_id = ConvoId::Direct { peer: username.clone() };
     let mut conn = db.acquire().await?;
     queue_message(
-        &mut *conn,
+        &mut conn,
         &convo_id,
         &identity.username,
         &content.mime,

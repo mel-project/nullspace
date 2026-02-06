@@ -144,14 +144,13 @@ impl Widget for AttachmentContent<'_> {
                 let max_box = egui::vec2(ui.available_width(), box_width * 0.6);
 
                 ui.add(SmoothImage::new(path.as_path()).fit_to_size(max_box));
-            } else if !*image_downloading {
-                if let Some(limit) = self.app.state.prefs.max_auto_image_download_bytes
+            } else if !*image_downloading
+                && let Some(limit) = self.app.state.prefs.max_auto_image_download_bytes
                     && self.size <= limit
                 {
                     image_downloading.set_next(true);
                     start_dl!();
                 }
-            }
         }
 
         if let Some((downloaded, total)) = dl_progress {

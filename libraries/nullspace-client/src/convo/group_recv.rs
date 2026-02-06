@@ -47,7 +47,7 @@ pub(super) async fn group_recv_loop(ctx: &AnyCtx<Config>) {
     );
     let mut notify = DbNotify::new();
     loop {
-        if let Err(err) = sync_group_tasks(ctx, &mut *tasks).await {
+        if let Err(err) = sync_group_tasks(ctx, &mut tasks).await {
             tracing::warn!(error = %err, "failed to sync group recv tasks");
         }
         notify.wait_for_change().await;
@@ -67,13 +67,13 @@ async fn sync_group_tasks(
             group_id: group.group_id,
         };
         live.insert(convo_id.clone());
-        if !tasks.contains_key(&convo_id) {
+        if let std::collections::btree_map::Entry::Vacant(e) = tasks.entry(convo_id) {
             let ctx = ctx.clone();
             let group_id = group.group_id;
             let handle = tokio::spawn(async move {
                 group_recv_task(ctx, group_id).await;
             });
-            tasks.insert(convo_id, handle);
+            e.insert(handle);
         }
     }
     tasks.retain(|convo_id, handle| {
@@ -193,13 +193,12 @@ async fn process_group_message_entry(
         return Ok(());
     }
     let mut conn = db.acquire().await?;
-    if content.mime == nullspace_structs::fragment::Attachment::mime() {
-        if let Ok(root) =
+    if content.mime == nullspace_structs::fragment::Attachment::mime()
+        && let Ok(root) =
             serde_json::from_slice::<nullspace_structs::fragment::Attachment>(&content.body)
         {
             let _ = store_attachment_root(&mut conn, &sender, &root).await;
         }
-    }
     let convo_id = ensure_convo_id(&mut *conn, "group", &group.group_id.to_string()).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO convo_messages \

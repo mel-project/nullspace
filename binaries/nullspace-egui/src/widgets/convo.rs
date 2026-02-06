@@ -16,11 +16,11 @@ use tracing::debug;
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
+use crate::screens::group_roster::GroupRoster;
+use crate::screens::user_info::UserInfo;
 use crate::utils::speed::speed_fmt;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::content::Content;
-use crate::widgets::group_roster::GroupRoster;
-use crate::widgets::user_info::UserInfo;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

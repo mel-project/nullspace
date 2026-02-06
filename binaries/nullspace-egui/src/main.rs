@@ -99,6 +99,12 @@ impl NullspaceApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         catppuccin_egui::set_theme(&cc.egui_ctx, catppuccin_egui::LATTE);
+
+        // Enable multi-pass layout for egui_taffy
+        cc.egui_ctx.options_mut(|options| {
+            options.max_passes = std::num::NonZeroUsize::new(2).unwrap();
+        });
+
         cc.egui_ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(6.0, 6.0);
             // style.spacing.window_margin = egui::Margin::same(24);

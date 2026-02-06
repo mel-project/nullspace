@@ -1,11 +1,14 @@
 use chrono::{DateTime, Local};
-use eframe::egui::{Grid, Response, Widget, Window};
+use eframe::egui::{Response, TextWrapMode, Widget, Window};
 use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
+use egui_taffy::{Tui, TuiBuilderLogic, tui};
 use nullspace_client::internal::{MessageDirection, UserDetails};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use poll_promise::Promise;
+use taffy::style_helpers::{auto, fr, length};
+use taffy::{AlignItems, Display, FlexDirection, LengthPercentage, Size as TaffySize, Style};
 
 use crate::promises::{PromiseSlot, flatten_rpc};
 use crate::rpc::get_rpc;
@@ -59,74 +62,133 @@ impl Widget for UserInfo {
                     }
                 };
 
-                ui.horizontal(|ui| {
-                    let size = 48.0;
-                    if let Some(attachment) = details.avatar.as_ref() {
-                        ui.add(Avatar {
-                            sender: &details.username,
-                            attachment,
-                            size,
-                        });
-                    } else {
-                        let (rect, _) = ui.allocate_exact_size(
-                            eframe::egui::vec2(size, size),
-                            eframe::egui::Sense::hover(),
-                        );
-                        ui.painter()
-                            .rect_filled(rect, 0.0, eframe::egui::Color32::LIGHT_GRAY);
-                    }
-                    ui.vertical(|ui| {
-                        let display = details
-                            .display_name
-                            .as_deref()
-                            .unwrap_or_else(|| details.username.as_str());
-                        ui.heading(display);
-                        ui.label(RichText::new(details.username.as_str()).color(Color32::GRAY));
-                    });
-                });
-
-                ui.add_space(8.0);
-
-                Grid::new("user_info_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Server");
-                        let server_label = details
-                            .server_name
-                            .as_ref()
-                            .map(|server| server.to_string())
-                            .unwrap_or_else(|| "unknown".to_string());
-                        ui.label(server_label);
-                        ui.end_row();
-
-                        ui.label("Common groups");
-                        if details.common_groups.is_empty() {
-                            ui.label("None");
-                        } else {
-                            ui.vertical(|ui| {
-                                for group in &details.common_groups {
-                                    ui.label(format!("Group {}", short_group_id(group)));
+                // Main container with taffy
+                tui(ui, ui.id().with("user_info"))
+                    .style(Style {
+                        flex_direction: FlexDirection::Column,
+                        gap: TaffySize::length(12.),
+                        ..Default::default()
+                    })
+                    .show(|tui| {
+                        // Header: Avatar + Name
+                        tui.style(Style {
+                            flex_direction: FlexDirection::Row,
+                            align_items: Some(AlignItems::Center),
+                            gap: TaffySize::length(12.),
+                            ..Default::default()
+                        })
+                        .add(|tui| {
+                            // Avatar (fixed size, no shrink)
+                            tui.style(Style {
+                                flex_shrink: 0.,
+                                ..Default::default()
+                            })
+                            .ui(|ui| {
+                                let size = 48.0;
+                                if let Some(attachment) = details.avatar.as_ref() {
+                                    ui.add(Avatar {
+                                        sender: &details.username,
+                                        attachment,
+                                        size,
+                                    });
+                                } else {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        eframe::egui::vec2(size, size),
+                                        eframe::egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        0.0,
+                                        eframe::egui::Color32::LIGHT_GRAY,
+                                    );
                                 }
                             });
-                        }
-                        ui.end_row();
 
-                        ui.label("Last message");
-                        if let Some(last) = details.last_dm_message.as_ref() {
-                            ui.vertical(|ui| {
-                                let direction = match last.direction {
-                                    MessageDirection::Incoming => "Incoming",
-                                    MessageDirection::Outgoing => "Outgoing",
-                                };
-                                let time = format_timestamp(last.received_at);
-                                ui.label(format!("{direction} · {time}"));
-                                ui.label(RichText::new(&last.preview).color(Color32::GRAY));
+                            // Name section (grows to fill space)
+                            tui.style(Style {
+                                flex_direction: FlexDirection::Column,
+                                gap: TaffySize {
+                                    width: LengthPercentage::Length(4.),
+                                    height: LengthPercentage::Length(4.),
+                                },
+                                flex_grow: 1.,
+                                ..Default::default()
+                            })
+                            .ui(|ui| {
+                                let display = details
+                                    .display_name
+                                    .as_deref()
+                                    .unwrap_or_else(|| details.username.as_str());
+                                ui.heading(display);
+                                ui.label(
+                                    RichText::new(details.username.as_str()).color(Color32::GRAY),
+                                );
                             });
-                        } else {
-                            ui.label("None");
-                        }
-                        ui.end_row();
+                        });
+
+                        // Info rows
+                        tui.style(Style {
+                            flex_direction: FlexDirection::Column,
+                            gap: TaffySize::length(12.),
+                            ..Default::default()
+                        })
+                        .add(|tui| {
+                            // Server row
+                            let server_label = details
+                                .server_name
+                                .as_ref()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "unknown".to_string());
+                            render_info_row(tui, "Server", |tui| {
+                                tui.wrap_mode(TextWrapMode::Extend).label(&server_label);
+                            });
+
+                            // Common groups row
+                            render_info_row(tui, "Common groups", |tui| {
+                                if details.common_groups.is_empty() {
+                                    tui.wrap_mode(TextWrapMode::Extend).label("None");
+                                } else {
+                                    tui.style(Style {
+                                        flex_direction: FlexDirection::Column,
+                                        gap: TaffySize::length(4.),
+                                        ..Default::default()
+                                    })
+                                    .wrap_mode(TextWrapMode::Extend)
+                                    .add(|tui| {
+                                        for group in &details.common_groups {
+                                            tui.label(&format!("Group {}", short_group_id(group)));
+                                        }
+                                    });
+                                }
+                            });
+
+                            // Last message row
+                            render_info_row(tui, "Last message", |tui| {
+                                if let Some(last) = details.last_dm_message.as_ref() {
+                                    tui.style(Style {
+                                        flex_direction: FlexDirection::Column,
+                                        gap: TaffySize::length(4.),
+                                        ..Default::default()
+                                    })
+                                    .wrap_mode(TextWrapMode::Extend)
+                                    .add(|tui| {
+                                        let direction = match last.direction {
+                                            MessageDirection::Incoming => "Incoming",
+                                            MessageDirection::Outgoing => "Outgoing",
+                                        };
+                                        let time = format_timestamp(last.received_at);
+                                        tui.label(&format!("{direction} · {time}"));
+                                        tui.ui(|ui| {
+                                            ui.label(
+                                                RichText::new(&last.preview).color(Color32::GRAY),
+                                            );
+                                        });
+                                    });
+                                } else {
+                                    tui.wrap_mode(TextWrapMode::Extend).label("None");
+                                }
+                            });
+                        });
                     });
             });
 
@@ -137,6 +199,23 @@ impl Widget for UserInfo {
 
         ui.response()
     }
+}
+
+fn render_info_row(tui: &mut Tui, label: &str, content: impl FnOnce(&mut Tui)) {
+    tui.style(Style {
+        display: Display::Grid,
+        grid_template_columns: vec![length(120.0), fr(1.0)],
+        grid_auto_rows: vec![auto()],
+        gap: TaffySize::length(16.),
+        ..Default::default()
+    })
+    .add(|tui| {
+        // Label (fixed width via grid column)
+        tui.wrap_mode(TextWrapMode::Extend).label(label);
+
+        // Content (flexible via grid column)
+        tui.add(|tui| content(tui));
+    });
 }
 
 fn format_timestamp(ts: Option<NanoTimestamp>) -> String {

@@ -388,12 +388,12 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
     let send_now = enter_pressed;
     if send_now && !draft.trim().is_empty() {
         let body = Bytes::from(draft.clone());
-        send_message(app, convo_id, body);
+        send_message(convo_id, body);
         draft.clear();
     }
 }
 
-fn send_message(_app: &mut NullspaceApp, convo_id: &ConvoId, body: Bytes) {
+fn send_message(convo_id: &ConvoId, body: Bytes) {
     let convo_id = convo_id.clone();
     tokio::spawn(async move {
         let _ = flatten_rpc(

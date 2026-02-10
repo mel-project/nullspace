@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use poll_promise::Promise;
@@ -9,14 +10,15 @@ use nullspace_structs::username::UserName;
 
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
+use crate::utils::profile_cache;
 
 const PROFILE_RETRY_BACKOFF: Duration = Duration::from_secs(60);
 
-#[derive(Default)]
 pub struct ProfileLoader {
     entries: HashMap<UserName, ProfileEntry>,
     label_counts: HashMap<String, usize>,
     label_index_dirty: bool,
+    cache_dir: PathBuf,
 }
 
 #[derive(Default)]
@@ -30,6 +32,26 @@ struct ProfileEntry {
 }
 
 impl ProfileLoader {
+    pub fn new(cache_dir: PathBuf) -> Self {
+        let mut entries = HashMap::new();
+        let initial = profile_cache::load_all(&cache_dir);
+        for (username, details) in initial {
+            entries.insert(
+                username,
+                ProfileEntry {
+                    last_good: Some(details),
+                    ..ProfileEntry::default()
+                },
+            );
+        }
+        Self {
+            entries,
+            label_counts: HashMap::new(),
+            label_index_dirty: true,
+            cache_dir,
+        }
+    }
+
     pub fn view(&mut self, username: &UserName) -> Option<UserDetails> {
         let entry = match self.entries.entry(username.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -51,6 +73,9 @@ impl ProfileLoader {
                         entry.last_good = Some(profile);
                         entry.last_error = None;
                         entry.retry_after = None;
+                        if let Some(details) = entry.last_good.as_ref() {
+                            profile_cache::write_entry(&self.cache_dir, details);
+                        }
                         let next_display = entry
                             .last_good
                             .as_ref()

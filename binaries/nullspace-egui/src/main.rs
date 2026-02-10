@@ -63,7 +63,6 @@ struct NullspaceApp {
     state: AppState,
 }
 
-#[derive(Default)]
 struct AppState {
     logged_in: Option<bool>,
     msg_updates: u64,
@@ -141,6 +140,10 @@ impl NullspaceApp {
             None
         };
         let supports_hide = supports_hide_window();
+        let cache_dir = prefs_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("profile-cache");
         Self {
             recv_event,
             focused,
@@ -152,9 +155,18 @@ impl NullspaceApp {
             pending_quit: false,
             supports_hide,
             state: AppState {
+                logged_in: None,
+                msg_updates: 0,
+                error_dialog: None,
                 prefs: prefs.clone(),
                 last_saved_prefs: prefs,
-                ..AppState::default()
+                profile_loader: ProfileLoader::new(cache_dir),
+                attach_updates: 0,
+                upload_progress: BTreeMap::new(),
+                upload_done: BTreeMap::new(),
+                upload_error: BTreeMap::new(),
+                download_progress: BTreeMap::new(),
+                download_error: BTreeMap::new(),
             },
         }
     }

@@ -2,14 +2,16 @@ use core::f32;
 use std::path::PathBuf;
 
 use eframe::egui::{Response, RichText, Widget};
-use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, ProgressBar, TextFormat, TextStyle, text::LayoutJob};
+use egui::{
+    Align, Color32, CornerRadius, Frame, Layout, Margin, ProgressBar, TextFormat, TextStyle,
+    text::LayoutJob,
+};
 use egui_hooks::UseHookExt;
 use nullspace_client::internal::{ConvoMessage, MessageContent};
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::timestamp::NanoTimestamp;
+use nullspace_structs::{timestamp::NanoTimestamp, username::UserName};
 use pollster::FutureExt;
 
-use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
@@ -18,14 +20,12 @@ use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::utils::units::{format_filesize, unit_for_bytes};
 use crate::widgets::smooth::SmoothImage;
+use crate::{NullspaceApp, widgets::avatar::Avatar};
 
 pub struct ConvoRow<'a> {
     pub app: &'a mut NullspaceApp,
     pub message: &'a ConvoMessage,
-    pub sender_label: String,
     pub style: ConvoRowStyle,
-    pub is_outgoing: bool,
-    pub show_sender: bool,
 }
 
 impl Widget for ConvoRow<'_> {
@@ -39,120 +39,79 @@ impl Widget for ConvoRow<'_> {
 
 impl ConvoRow<'_> {
     fn text_ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let font_id = ui
-            .style()
-            .text_styles
-            .get(&TextStyle::Body)
-            .cloned()
-            .unwrap();
-        let mut base_text_format = TextFormat {
-            color: Color32::BLACK,
-            font_id,
-            ..Default::default()
-        };
-        if self.message.send_error.is_some() {
-            base_text_format.strikethrough = egui::Stroke::new(1.0, Color32::BLACK);
-        }
+        let sender_label = self
+            .app
+            .state
+            .profile_loader
+            .label_for(&self.message.sender);
+
         let sender_color = username_color(&self.message.sender);
         let timestamp = format_timestamp(self.message.received_at);
 
         ui.horizontal_top(|ui| {
             ui.label(RichText::new(format!("[{timestamp}]")).color(Color32::GRAY));
-            ui.colored_label(sender_color, format!("{}: ", self.sender_label));
-            render_message_body(ui, self.app, self.message, base_text_format);
+            ui.colored_label(sender_color, format!("{}: ", sender_label));
+            render_message_body(ui, self.app, self.message);
         });
         ui.add_space(4.0);
         ui.response()
     }
 
     fn bubble_ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let font_id = ui
-            .style()
-            .text_styles
-            .get(&TextStyle::Body)
-            .cloned()
-            .unwrap();
-        let mut base_text_format = TextFormat {
-            color: ui.visuals().text_color(),
-            font_id,
-            ..Default::default()
-        };
-        if self.message.send_error.is_some() {
-            base_text_format.strikethrough = egui::Stroke::new(1.0, ui.visuals().text_color());
-        }
-
-        let bg = if self.is_outgoing {
-            ui.visuals().selection.bg_fill
-        } else {
-            ui.visuals().faint_bg_color
-        };
-        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-        let max_width = (ui.available_width() * 0.72).max(260.0);
-        let timestamp = format_timestamp(self.message.received_at);
+        let sender_label = self
+            .app
+            .state
+            .profile_loader
+            .label_for(&self.message.sender);
         let sender_color = username_color(&self.message.sender);
-
-        ui.horizontal(|ui| {
-            if self.is_outgoing {
-                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                    Frame::new()
-                        .fill(bg)
-                        .stroke(stroke)
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(Margin::symmetric(10, 7))
-                        .show(ui, |ui| {
-                            ui.set_max_width(max_width);
-                            if self.show_sender {
-                                ui.label(RichText::new(&self.sender_label).color(sender_color).strong());
-                                ui.add_space(2.0);
-                            }
-                            render_message_body(
-                                ui,
-                                self.app,
-                                self.message,
-                                base_text_format.clone(),
-                            );
-                            ui.add_space(2.0);
-                            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                                ui.label(RichText::new(timestamp).size(11.0).weak());
-                            });
-                        });
+        let avatar = self
+            .app
+            .state
+            .profile_loader
+            .view(&self.message.sender)
+            .and_then(|details| details.avatar);
+        let timestamp = format_timestamp(self.message.received_at);
+        ui.push_id(self.message.received_at, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.add(Avatar {
+                    sender: self.message.sender.clone(),
+                    attachment: avatar,
+                    size: 36.0,
                 });
-            } else {
-                Frame::new()
-                    .fill(bg)
-                    .stroke(stroke)
-                    .corner_radius(CornerRadius::same(12))
-                    .inner_margin(Margin::symmetric(10, 7))
-                    .show(ui, |ui| {
-                        ui.set_max_width(max_width);
-                        if self.show_sender {
-                            ui.label(RichText::new(&self.sender_label).color(sender_color).strong());
-                            ui.add_space(2.0);
-                        }
-                        render_message_body(
-                            ui,
-                            self.app,
-                            self.message,
-                            base_text_format.clone(),
+                ui.vertical(|ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.label(
+                            RichText::new(sender_label)
+                                .color(sender_color)
+                                .family(egui::FontFamily::Name("main_bold".into())),
                         );
-                        ui.add_space(2.0);
-                        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                            ui.label(RichText::new(timestamp).size(11.0).weak());
-                        });
+                        ui.label(RichText::new(format!("{timestamp}")).color(Color32::GRAY));
                     });
-            }
-        });
-        ui.add_space(4.0);
-        ui.response()
+                    render_message_body(ui, self.app, self.message);
+                })
+            });
+            ui.add_space(8.0);
+            ui.response()
+        })
+        .response
     }
 }
 
-fn render_message_body(
-    ui: &mut eframe::egui::Ui,
-    app: &mut NullspaceApp,
-    message: &ConvoMessage,
-    base_text_format: TextFormat,
-) {
+fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, message: &ConvoMessage) {
+    let font_id = ui
+        .style()
+        .text_styles
+        .get(&TextStyle::Body)
+        .cloned()
+        .unwrap();
+    let mut base_text_format = TextFormat {
+        color: Color32::BLACK,
+        font_id,
+        ..Default::default()
+    };
+    if message.send_error.is_some() {
+        base_text_format.strikethrough = egui::Stroke::new(1.0, Color32::BLACK);
+    }
     ui.vertical(|ui| {
         match &message.body {
             MessageContent::GroupInvite { invite_id } => {
@@ -234,7 +193,8 @@ impl Widget for AttachmentContent<'_> {
         });
         let (unit_scale, unit_suffix) = unit_for_bytes(self.size);
         let size_text = format_filesize(self.size, unit_scale);
-        let attachment_label = format!("\u{ea7b} [{} {}] {}", size_text, unit_suffix, self.filename);
+        let attachment_label =
+            format!("\u{ea7b} [{} {}] {}", size_text, unit_suffix, self.filename);
 
         ui.colored_label(Color32::DARK_BLUE, attachment_label);
 
@@ -243,7 +203,11 @@ impl Widget for AttachmentContent<'_> {
                 let box_width = ui.available_width().min(500.0);
                 let max_box = egui::vec2(ui.available_width(), box_width * 0.6);
 
-                ui.add(SmoothImage::new(path.as_path()).fit_to_size(max_box));
+                ui.add(
+                    SmoothImage::new(path.as_path())
+                        .fit_to_size(max_box)
+                        .corner_radius(CornerRadius::ZERO.at_least(8)),
+                );
             } else if !*image_downloading
                 && let Some(limit) = self.app.state.prefs.max_auto_image_download_bytes
                 && self.size <= limit

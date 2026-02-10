@@ -28,7 +28,7 @@ impl Widget for Preferences<'_> {
                             ComboBox::from_id_salt("zoom_percent")
                                 .selected_text(format!("{}%", self.app.state.prefs.zoom_percent))
                                 .show_ui(ui, |ui| {
-                                    for percent in (75u16..=200).step_by(25) {
+                                    for percent in (70u16..=200).step_by(10) {
                                         ui.selectable_value(
                                             &mut self.app.state.prefs.zoom_percent,
                                             percent,

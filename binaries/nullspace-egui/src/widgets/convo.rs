@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{Key, Response, RichText, Widget};
-use egui::{Button, Color32, Label, ProgressBar, ScrollArea, TextEdit};
+use egui::{Align, Button, Color32, Label, ProgressBar, ScrollArea, Sense, TextEdit};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ConvoId, ConvoMessage};
@@ -38,6 +38,7 @@ struct ConvoState {
     last_update_count_seen: u64,
     initialized: bool,
     no_more_older: bool,
+    pending_scroll_to_bottom: bool,
 }
 
 impl ConvoState {
@@ -187,7 +188,7 @@ fn render_convo(app: &mut NullspaceApp, ui: &mut eframe::egui::Ui, convo_id: Con
         render_messages(ui, app, &convo_id, &mut state);
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
-        render_composer(ui, app, &convo_id);
+        render_composer(ui, app, &convo_id, &mut state);
     });
 
     render_roster(ui, app, &convo_id, &mut show_roster, &mut user_info_target);
@@ -253,12 +254,6 @@ fn render_messages(
     convo_id: &ConvoId,
     state: &mut Var<ConvoState>,
 ) {
-    let own_username = ui.use_memo(
-        || flatten_rpc(get_rpc().own_username().block_on()),
-        (),
-    );
-    let own_username = own_username.as_ref().ok();
-    let is_group = matches!(convo_id, ConvoId::Group { .. });
     let style: ConvoRowStyle = app.state.prefs.convo_row_style;
     let scroll_output = ScrollArea::vertical()
         .id_salt("scroll")
@@ -275,16 +270,18 @@ fn render_messages(
                     ui.add_space(4.0);
                     last_date = Some(date);
                 }
-                let label = app.state.profile_loader.label_for(&item.sender);
-                let is_outgoing = own_username.is_some_and(|username| *username == item.sender);
+
                 ui.add(ConvoRow {
                     app,
                     message: item,
-                    sender_label: label,
                     style,
-                    is_outgoing,
-                    show_sender: is_group && !is_outgoing,
                 });
+            }
+
+            let anchor_response = ui.allocate_response(egui::vec2(1.0, 1.0), Sense::hover());
+            if state.pending_scroll_to_bottom {
+                anchor_response.scroll_to_me(Some(Align::BOTTOM));
+                state.pending_scroll_to_bottom = false;
             }
         });
 
@@ -307,7 +304,12 @@ fn start_upload(_app: &mut NullspaceApp, attachment: &mut Var<Option<i64>>, path
     attachment.replace(upload_id);
 }
 
-fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId) {
+fn render_composer(
+    ui: &mut egui::Ui,
+    app: &mut NullspaceApp,
+    convo_id: &ConvoId,
+    state: &mut Var<ConvoState>,
+) {
     ui.add_space(8.0);
     let mut attachment: Var<Option<i64>> = ui.use_state(|| None, convo_id.clone()).into_var();
     let key = convo_key(convo_id);
@@ -347,6 +349,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
                 );
             });
             *attachment = None;
+            state.pending_scroll_to_bottom = true;
             app.state.upload_done.remove(&upload_id);
             app.state.upload_progress.remove(&upload_id);
             app.state.upload_error.remove(&upload_id);
@@ -406,6 +409,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
         let body = Bytes::from(draft.clone());
         send_message(convo_id, body);
         draft.clear();
+        state.pending_scroll_to_bottom = true;
     }
 }
 

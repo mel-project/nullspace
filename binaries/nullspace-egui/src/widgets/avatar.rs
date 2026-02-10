@@ -19,7 +19,8 @@ pub struct Avatar {
 
 impl Widget for Avatar {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        ui.push_id(&self.attachment, |ui| {
+        let id = ui.next_auto_id().with(&self.attachment);
+        ui.push_id(id, |ui| {
             let radius_u8 = (self.size / 2.0).round().clamp(0.0, u8::MAX as f32) as u8;
             let circle_corner_radius = eframe::egui::CornerRadius::same(radius_u8);
             let sense = eframe::egui::Sense::click();
@@ -70,7 +71,7 @@ impl Widget for Avatar {
                 response
             }
         })
-        .inner
+        .response
     }
 }
 

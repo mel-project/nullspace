@@ -3,13 +3,13 @@ use std::path::PathBuf;
 
 use eframe::egui::{Response, RichText, Widget};
 use egui::{
-    Align, Color32, CornerRadius, Frame, Layout, Margin, ProgressBar, TextFormat, TextStyle,
+    Color32, CornerRadius, ProgressBar, TextFormat, TextStyle,
     text::LayoutJob,
 };
 use egui_hooks::UseHookExt;
 use nullspace_client::internal::{ConvoMessage, MessageContent};
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::{timestamp::NanoTimestamp, username::UserName};
+use nullspace_structs::timestamp::NanoTimestamp;
 use pollster::FutureExt;
 
 use crate::promises::flatten_rpc;
@@ -85,7 +85,7 @@ impl ConvoRow<'_> {
                                 .color(sender_color)
                                 .family(egui::FontFamily::Name("main_bold".into())),
                         );
-                        ui.label(RichText::new(format!("{timestamp}")).color(Color32::GRAY));
+                        ui.label(RichText::new(timestamp.to_string()).color(Color32::GRAY));
                     });
                     render_message_body(ui, self.app, self.message);
                 })

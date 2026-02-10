@@ -109,15 +109,15 @@ impl NullspaceApp {
             style.spacing.button_padding = egui::vec2(6.0, 4.0);
             style.spacing.indent = 16.0;
             // style.spacing.scroll = ScrollStyle::solid();
-            // for wid in [
-            //     &mut style.visuals.widgets.active,
-            //     &mut style.visuals.widgets.hovered,
-            //     &mut style.visuals.widgets.noninteractive,
-            //     &mut style.visuals.widgets.open,
-            //     &mut style.visuals.widgets.inactive,
-            // ] {
-            //     wid.corner_radius = egui::CornerRadius::ZERO.at_least(4);
-            // }
+            for wid in [
+                &mut style.visuals.widgets.active,
+                &mut style.visuals.widgets.hovered,
+                &mut style.visuals.widgets.noninteractive,
+                &mut style.visuals.widgets.open,
+                &mut style.visuals.widgets.inactive,
+            ] {
+                wid.corner_radius = egui::CornerRadius::ZERO.at_least(4);
+            }
             // style.debug.debug_on_hover = true; // show callstack / rects on hover
             // style.debug.show_expand_width = true; // highlight width expanders
             // style.debug.show_expand_height = true; // highlight height expanders

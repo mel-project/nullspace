@@ -1,4 +1,3 @@
-use clap::builder::Str;
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, TextFormat, TextStyle, Ui};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};

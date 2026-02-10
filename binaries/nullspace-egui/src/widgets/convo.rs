@@ -1,9 +1,12 @@
+use arboard::Clipboard;
 use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDate};
 use eframe::egui::{Key, Response, RichText, Widget};
-use egui::{Align, Button, Color32, Label, ProgressBar, ScrollArea, Sense, TextEdit};
+use egui::{Align, Button, Color32, Image, Label, Modal, ProgressBar, ScrollArea, Sense, TextEdit};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
+use image::codecs::png::PngEncoder;
+use image::{ColorType, ImageEncoder};
 use nullspace_client::internal::{ConvoId, ConvoMessage};
 use nullspace_structs::event::EventPayload;
 use nullspace_structs::fragment::Attachment;
@@ -23,7 +26,9 @@ use crate::utils::speed::speed_fmt;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::convo_row::ConvoRow;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const INITIAL_LIMIT: u16 = 10;
 const PAGE_LIMIT: u16 = 10;
@@ -39,6 +44,14 @@ struct ConvoState {
     initialized: bool,
     no_more_older: bool,
     pending_scroll_to_bottom: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PasteImage {
+    png_bytes: Vec<u8>,
+    width: usize,
+    height: usize,
+    uri: String,
 }
 
 impl ConvoState {
@@ -314,6 +327,10 @@ fn render_composer(
     let mut attachment: Var<Option<i64>> = ui.use_state(|| None, convo_id.clone()).into_var();
     let key = convo_key(convo_id);
     let mut draft: Var<String> = ui.use_state(String::new, (key.clone(), "draft")).into_var();
+    let mut pasted_image: Var<Option<PasteImage>> = ui
+        .use_state(|| None, (key.clone(), "paste_image"))
+        .into_var();
+    let text_id = ui.make_persistent_id((key.clone(), "composer_text"));
 
     // attachment part
     if let Some(in_progress) = attachment.as_ref() {
@@ -370,9 +387,23 @@ fn render_composer(
             ui.spinner();
         }
     } else {
-        if ui.button("\u{f067} Attach").clicked() {
-            app.file_dialog.pick_file();
-        }
+        ui.horizontal(|ui| {
+            if ui.button("\u{ea7f} Attach").clicked() {
+                app.file_dialog.pick_file();
+            }
+            if ui.button("\u{ed7a} Clipboard image").clicked() {
+                if pasted_image.is_none() {
+                    match read_clipboard_image() {
+                        Ok(image) => {
+                            *pasted_image = Some(image);
+                        }
+                        Err(err) => {
+                            app.state.error_dialog = Some(err);
+                        }
+                    }
+                }
+            }
+        });
         app.file_dialog.update(ui.ctx());
         if let Some(path) = app.file_dialog.take_picked() {
             start_upload(app, &mut attachment, path);
@@ -389,6 +420,7 @@ fn render_composer(
             ui.add_sized(
                 ui.available_size(),
                 TextEdit::multiline(&mut *draft)
+                    .id(text_id)
                     .desired_rows(1)
                     .hint_text("Enter a message...")
                     .desired_width(f32::INFINITY)
@@ -411,6 +443,40 @@ fn render_composer(
         draft.clear();
         state.pending_scroll_to_bottom = true;
     }
+
+    if let Some(paste) = pasted_image.clone() {
+        let modal_id = format!("paste_image_modal_{key}");
+        Modal::new(modal_id.into()).show(ui.ctx(), |ui| {
+            ui.heading("Send pasted image?");
+            let size_kb = paste.png_bytes.len() as f32 / 1024.0;
+            ui.label(format!(
+                "{} x {} ({} KB)",
+                paste.width,
+                paste.height,
+                size_kb.ceil() as u64
+            ));
+            ui.add(Image::from_bytes(paste.uri.clone(), paste.png_bytes.clone()).max_width(320.0));
+            ui.horizontal(|ui| {
+                let busy = attachment.is_some();
+                if ui.add_enabled(!busy, Button::new("Send")).clicked() {
+                    let path = temp_paste_path();
+                    if let Err(err) = fs::write(&path, &paste.png_bytes) {
+                        app.state.error_dialog =
+                            Some(format!("failed to write pasted image: {err}"));
+                        return;
+                    }
+                    start_upload(app, &mut attachment, path);
+                    *pasted_image = None;
+                }
+                if ui.button("Cancel").clicked() {
+                    *pasted_image = None;
+                }
+                if busy {
+                    ui.label("Upload in progress");
+                }
+            });
+        });
+    }
 }
 
 fn send_message(convo_id: &ConvoId, body: Bytes) {
@@ -422,6 +488,45 @@ fn send_message(convo_id: &ConvoId, body: Bytes) {
                 .await,
         );
     });
+}
+
+fn read_clipboard_image() -> Result<PasteImage, String> {
+    let mut clipboard = Clipboard::new().map_err(|err| format!("clipboard error: {err}"))?;
+    let image = clipboard
+        .get_image()
+        .map_err(|err| format!("clipboard has no image ({err})"))?;
+    let width = image.width;
+    let height = image.height;
+    let bytes = image.bytes.into_owned();
+    let mut png_bytes = Vec::new();
+    let encoder = PngEncoder::new(&mut png_bytes);
+    encoder
+        .write_image(
+            bytes.as_slice(),
+            width as u32,
+            height as u32,
+            ColorType::Rgba8.into(),
+        )
+        .map_err(|err| format!("failed to encode clipboard image: {err}"))?;
+    let uri = format!("bytes://paste-image-{}", unix_nanos());
+    Ok(PasteImage {
+        png_bytes,
+        width,
+        height,
+        uri,
+    })
+}
+
+fn temp_paste_path() -> PathBuf {
+    let name = format!("nullspace-paste-{}.png", unix_nanos());
+    std::env::temp_dir().join(name)
+}
+
+fn unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
 }
 
 fn render_roster(

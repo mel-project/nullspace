@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,5 +29,12 @@ impl NanoTimestamp {
             .duration_since(UNIX_EPOCH)
             .expect("system time is before unix epoch");
         Self(duration.as_nanos() as u64)
+    }
+
+    pub fn naive_date(self) -> Option<NaiveDate> {
+        let secs = i64::try_from(self.0 / 1_000_000_000).ok()?;
+        let nsec = u32::try_from(self.0 % 1_000_000_000).ok()?;
+        let dt = DateTime::from_timestamp(secs, nsec)?;
+        Some(dt.with_timezone(&Local).date_naive())
     }
 }

@@ -144,7 +144,7 @@ impl Widget for UserInfo {
                                     .wrap_mode(TextWrapMode::Extend)
                                     .add(|tui| {
                                         for group in &details.common_groups {
-                                            tui.label(format!("Group {}", short_group_id(group)));
+                                            tui.label(format!("Group {}", group.short_id()));
                                         }
                                     });
                                 }
@@ -201,13 +201,4 @@ fn format_timestamp(ts: Option<NanoTimestamp>) -> String {
     dt.with_timezone(&Local)
         .format("%Y-%m-%d %H:%M")
         .to_string()
-}
-
-fn short_group_id(group: &nullspace_structs::group::GroupId) -> String {
-    let bytes = group.as_bytes();
-    let mut out = String::with_capacity(8);
-    for byte in bytes.iter().take(4) {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
 }

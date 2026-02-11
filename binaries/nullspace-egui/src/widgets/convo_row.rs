@@ -23,6 +23,8 @@ pub struct ConvoRow<'a> {
     pub app: &'a mut NullspaceApp,
     pub message: &'a ConvoMessage,
     pub style: ConvoRowStyle,
+    pub is_beginning: bool,
+    pub is_end: bool,
 }
 
 impl Widget for ConvoRow<'_> {

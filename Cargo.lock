@@ -4877,6 +4877,7 @@ dependencies = [
  "async-trait",
  "bcs",
  "bytes",
+ "chrono",
  "criterion",
  "derivative",
  "nanorpc",

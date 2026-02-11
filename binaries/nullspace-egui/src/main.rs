@@ -96,7 +96,7 @@ impl NullspaceApp {
         tokio::spawn(event_loop(ctx, event_tx, focused.clone(), audio_tx));
         egui_extras::install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::light());
-        catppuccin_egui::set_theme(&cc.egui_ctx, catppuccin_egui::LATTE);
+        // catppuccin_egui::set_theme(&cc.egui_ctx, catppuccin_egui::LATTE);
 
         // Enable multi-pass layout for egui_taffy
         cc.egui_ctx.options_mut(|options| {

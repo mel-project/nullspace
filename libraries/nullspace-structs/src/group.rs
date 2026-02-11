@@ -74,6 +74,15 @@ impl GroupId {
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(Hash::from_bytes(bytes))
     }
+
+    pub fn short_id(self) -> String {
+        let bytes = self.as_bytes();
+        let mut out = String::with_capacity(8);
+        for byte in bytes.iter().take(4) {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    }
 }
 
 impl fmt::Display for GroupId {

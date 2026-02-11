@@ -152,7 +152,7 @@ impl<'a> SteadyState<'a> {
                                 self.0.state.profile_loader.label_for(peer)
                             }
                             ConvoId::Group { group_id } => {
-                                format!("Group {}", short_group_id(group_id))
+                                format!("Group {}", group_id.short_id())
                             }
                         };
                         if ui
@@ -175,13 +175,4 @@ impl<'a> SteadyState<'a> {
             ui.add(Convo(self.0, selection.clone()));
         }
     }
-}
-
-fn short_group_id(group: &nullspace_structs::group::GroupId) -> String {
-    let bytes = group.as_bytes();
-    let mut out = String::with_capacity(8);
-    for byte in bytes.iter().take(4) {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
 }

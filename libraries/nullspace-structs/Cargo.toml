@@ -10,6 +10,10 @@ anyhow = "1.0.100"
 async-trait = "0.1.89"
 bcs = "0.1.6"
 bytes = { version = "1.11.0", features = ["serde"] }
+chrono = { version = "0.4.41", default-features = false, features = [
+    "clock",
+    "std",
+] }
 derivative = "2.2.0"
 nanorpc = "0.1"
 paste = "1"

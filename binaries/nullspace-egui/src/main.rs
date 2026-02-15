@@ -23,6 +23,15 @@ use crate::fonts::load_fonts;
 use crate::utils::prefs::PrefData;
 use crate::utils::profile_loader::ProfileLoader;
 
+macro_rules! ui_unwrap {
+    ($ui:ident, $res:expr) => {
+        match $res {
+            Ok(res) => res,
+            Err(err) => return $ui.label(err),
+        }
+    };
+}
+
 mod events;
 mod fonts;
 mod notify;

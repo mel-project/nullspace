@@ -14,6 +14,7 @@ use crate::screens::preferences::Preferences;
 use crate::screens::profile::Profile;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::convo::Convo;
+use crate::widgets::convo_select::ConvoSelect;
 
 pub struct SteadyState<'a>(pub &'a mut NullspaceApp);
 
@@ -31,18 +32,12 @@ impl Widget for SteadyState<'_> {
     fn ui(mut self, ui: &mut eframe::egui::Ui) -> Response {
         let mut state: Var<SsState> = ui.use_state(SsState::default, ()).into_var();
         let convos = ui.use_memo(
-            || {
-                let result = pollster::block_on(get_rpc().convo_list());
-                flatten_rpc(result)
-            },
+            || flatten_rpc(pollster::block_on(get_rpc().convo_list())),
             self.0.state.msg_updates,
         );
         let convos = ui_unwrap!(ui, convos);
         let own_username = ui.use_memo(
-            || {
-                let result = pollster::block_on(get_rpc().own_username());
-                flatten_rpc(result)
-            },
+            || flatten_rpc(pollster::block_on(get_rpc().own_username())),
             (),
         );
         let own_username = ui_unwrap!(ui, own_username);
@@ -149,7 +144,10 @@ impl<'a> SteadyState<'a> {
                     }
                 };
                 if ui
-                    .selectable_label(state.selected_chat == Some(selection.clone()), label)
+                    .add(ConvoSelect {
+                        selected: state.selected_chat == Some(selection.clone()),
+                        label,
+                    })
                     .clicked()
                 {
                     state.selected_chat.replace(selection);

@@ -15,7 +15,6 @@ use smol_str::{SmolStr, format_smolstr};
 use thiserror::Error;
 use url::Url;
 
-use crate::certificate::CertificateChain;
 use crate::fragment::Fragment;
 use crate::group::GroupId;
 use crate::profile::UserProfile;
@@ -32,18 +31,18 @@ pub trait ServerProtocol {
     // /// Posts to a provisioning channel. Must provide a valid auth token for rate limiting purposes.
     // async fn v1_provision_send(&self, channel: u64, value: Blob) -> Result<(), ServerRpcError>;
 
-    /// Authenticates a device, returning the AuthToken proper to it. This is idempotent and should only return one AuthToken per unique device. If the device successfully authenticates, and this server is proper to the username, the device certificate chain served to others is updated for that device.
-    async fn v1_device_auth(
+    /// Start challenge/response authentication for a device.
+    async fn v1_device_auth_start(
         &self,
         username: UserName,
-        cert: CertificateChain,
-    ) -> Result<AuthToken, ServerRpcError>;
+        device_pk: SigningPublic,
+    ) -> Result<DeviceAuthChallenge, ServerRpcError>;
 
-    /// Retrieve the devices for a given username.
-    async fn v1_device_certs(
+    /// Finish challenge/response authentication for a device.
+    async fn v1_device_auth_finish(
         &self,
-        username: UserName,
-    ) -> Result<Option<BTreeMap<Hash, CertificateChain>>, ServerRpcError>;
+        request: SignedDeviceAuthRequest,
+    ) -> Result<AuthToken, ServerRpcError>;
 
     /// Retrieve the medium-term keys for a given username.
     async fn v1_device_medium_pks(
@@ -137,6 +136,39 @@ pub struct SignedMediumPk {
 impl Signable for SignedMediumPk {
     fn signed_value(&self) -> Vec<u8> {
         bcs::to_bytes(&(&self.medium_pk, &self.created)).unwrap()
+    }
+
+    fn signature_mut(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DeviceAuthChallenge {
+    pub challenge: [u8; 32],
+    pub expires_at: Timestamp,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DeviceAuthRequest {
+    pub username: UserName,
+    pub device_pk: SigningPublic,
+    pub challenge: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SignedDeviceAuthRequest {
+    pub request: DeviceAuthRequest,
+    pub signature: Signature,
+}
+
+impl Signable for SignedDeviceAuthRequest {
+    fn signed_value(&self) -> Vec<u8> {
+        bcs::to_bytes(&self.request).expect("bcs serialization failed")
     }
 
     fn signature_mut(&mut self) -> &mut Signature {

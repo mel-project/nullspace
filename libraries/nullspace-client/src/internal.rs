@@ -6,14 +6,17 @@ use nanorpc::nanorpc_derive;
 use nullspace_crypt::dh::DhSecret;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::{Signable, Signature};
-use nullspace_structs::certificate::{CertificateChain, DeviceSecret};
+use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::event::EventPayload;
 use nullspace_structs::fragment::Attachment;
 use nullspace_structs::group::{GroupId, GroupInviteMsg};
 use nullspace_structs::profile::UserProfile;
-use nullspace_structs::server::{AuthToken, ServerClient, ServerName, SignedMediumPk};
+use nullspace_structs::server::{
+    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest,
+    SignedMediumPk,
+};
 use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
-use nullspace_structs::username::{UserDescriptor, UserName};
+use nullspace_structs::username::{PreparedUserAction, UserAction, UserDescriptor, UserName};
 use serde::{Deserialize, Serialize};
 use serde_with::base64::{Base64, UrlSafe};
 use serde_with::formats::Unpadded;
@@ -261,10 +264,15 @@ impl InternalProtocol for InternalImpl {
             tracing::debug!(username = %username, "register_start not found");
             return Ok(None);
         };
-        tracing::debug!(username = %username, server = %descriptor.server_name, "register_start found");
+        let Some(server_name) = descriptor.server_name.clone() else {
+            return Err(InternalRpcError::Other(
+                "username exists but no server binding found".into(),
+            ));
+        };
+        tracing::debug!(username = %username, server = %server_name, "register_start found");
         Ok(Some(RegisterStartInfo {
             username,
-            server_name: descriptor.server_name,
+            server_name,
         }))
     }
 
@@ -291,27 +299,34 @@ impl InternalProtocol for InternalImpl {
     ) -> Result<NewDeviceBundle, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db).await.map_err(internal_err)?;
-        let issuer_cert = identity.cert_chain.last_device();
-        let issuer_can_issue =
-            issuer_cert.pk == identity.device_secret.public() && issuer_cert.can_issue;
-        if !issuer_can_issue {
-            return Err(InternalRpcError::AccessDenied);
-        }
+        let dir = self.ctx.get(DIR_CLIENT);
+        let descriptor = dir
+            .get_user_descriptor(&identity.username)
+            .await
+            .map_err(internal_err)?
+            .ok_or_else(|| InternalRpcError::Other("username not found in directory".into()))?;
+        ensure_issuer_device(&identity, &descriptor)?;
+
         let new_secret = DeviceSecret::random();
-        let cert =
-            identity
-                .device_secret
-                .issue_certificate(&new_secret.public(), expiry, can_issue);
-        let mut ancestors = identity.cert_chain.ancestors.clone();
-        ancestors.push(identity.cert_chain.this.clone());
-        let chain = CertificateChain {
-            ancestors,
-            this: cert,
-        };
+        let nonce = next_nonce(descriptor.nonce_max);
+        let add_device_action = dir
+            .prepare_user_action(
+                &identity.username,
+                UserAction::AddDevice {
+                    device_pk: new_secret.public().signing_public(),
+                    can_issue,
+                    expiry,
+                },
+                nonce,
+                &identity.device_secret,
+            )
+            .await
+            .map_err(internal_err)?;
+
         let bundle = BundleInner {
             username: identity.username,
             device_secret: new_secret,
-            cert_chain: chain,
+            add_device_action,
         };
         let encoded = bcs::to_bytes(&bundle).map_err(internal_err)?;
         Ok(NewDeviceBundle(Bytes::from(encoded)))
@@ -580,30 +595,23 @@ async fn register_bootstrap(
     }
     let server = server_from_name(&ctx, &server_name).await?;
     let device_secret = DeviceSecret::random();
-    let root_cert = device_secret.self_signed(Timestamp(u64::MAX), true);
-    let cert_chain = CertificateChain {
-        ancestors: Vec::new(),
-        this: root_cert.clone(),
-    };
-    let user_descriptor = UserDescriptor {
-        server_name: server_name.clone(),
-        root_cert_hash: root_cert.pk.bcs_hash(),
-    };
-    dir.add_owner(
+    let nonce_add = next_nonce(0);
+    let nonce_bind = next_nonce(nonce_add);
+
+    dir.add_device(
         &username,
         device_secret.public().signing_public(),
+        true,
+        Timestamp(u64::MAX),
+        nonce_add,
         &device_secret,
     )
     .await
     .map_err(internal_err)?;
-    dir.insert_user_descriptor(&username, &user_descriptor, &device_secret)
+    dir.bind_server(&username, &server_name, nonce_bind, &device_secret)
         .await
         .map_err(internal_err)?;
-    let auth = server
-        .v1_device_auth(username.clone(), cert_chain.clone())
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    let auth = authenticate_device(&server, &username, &device_secret).await?;
     let medium_sk = register_medium_key(&server, auth, &device_secret).await?;
 
     persist_identity(
@@ -611,7 +619,6 @@ async fn register_bootstrap(
         username,
         server_name,
         device_secret,
-        cert_chain,
         medium_sk,
     )
     .await?;
@@ -625,28 +632,54 @@ async fn register_add_device(
 ) -> Result<(), InternalRpcError> {
     let bundle: BundleInner = bcs::from_bytes(&bundle.0).map_err(internal_err)?;
     let dir = ctx.get(DIR_CLIENT);
-    let user_descriptor = dir
+    if bundle.add_device_action.signer_pk == bundle.device_secret.public().signing_public() {
+        return Err(InternalRpcError::Other(
+            "bundle signer must be an existing different device".into(),
+        ));
+    }
+    let UserAction::AddDevice { device_pk, .. } = &bundle.add_device_action.action else {
+        return Err(InternalRpcError::Other(
+            "bundle does not contain add_device action".into(),
+        ));
+    };
+    if *device_pk != bundle.device_secret.public().signing_public() {
+        return Err(InternalRpcError::Other(
+            "bundle device secret does not match add_device action".into(),
+        ));
+    }
+    dir.submit_prepared_user_action(&bundle.username, bundle.add_device_action.clone())
+        .await
+        .map_err(internal_err)?;
+
+    let descriptor = dir
         .get_user_descriptor(&bundle.username)
         .await
         .map_err(internal_err)?
         .ok_or_else(|| InternalRpcError::Other("username not found".into()))?;
-    bundle
-        .cert_chain
-        .verify(user_descriptor.root_cert_hash)
-        .map_err(internal_err)?;
-    let server = server_from_name(&ctx, &user_descriptor.server_name).await?;
-    let auth = server
-        .v1_device_auth(bundle.username.clone(), bundle.cert_chain.clone())
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    let now = Timestamp::now().0;
+    let self_hash = bundle.device_secret.public().signing_public().bcs_hash();
+    let Some(device_state) = descriptor.devices.get(&self_hash) else {
+        return Err(InternalRpcError::Other(
+            "add-device action committed but device is absent".into(),
+        ));
+    };
+    if !device_state.active || device_state.is_expired(now) {
+        return Err(InternalRpcError::Other(
+            "device is inactive or expired after add-device".into(),
+        ));
+    }
+    let server_name = descriptor
+        .server_name
+        .clone()
+        .ok_or_else(|| InternalRpcError::Other("username has no bound server".into()))?;
+    let server = server_from_name(&ctx, &server_name).await?;
+    let auth = authenticate_device(&server, &bundle.username, &bundle.device_secret).await?;
     let medium_sk = register_medium_key(&server, auth, &bundle.device_secret).await?;
     persist_identity(
         ctx.get(DATABASE),
         bundle.username,
-        user_descriptor.server_name.clone(),
+        server_name,
         bundle.device_secret,
-        bundle.cert_chain,
         medium_sk,
     )
     .await?;
@@ -695,18 +728,16 @@ async fn persist_identity(
     username: UserName,
     server_name: ServerName,
     device_secret: DeviceSecret,
-    cert_chain: CertificateChain,
     medium_sk: DhSecret,
 ) -> Result<(), InternalRpcError> {
     sqlx::query(
         "INSERT INTO client_identity \
-         (id, username, server_name, device_secret, cert_chain, medium_sk_current, medium_sk_prev) \
-         VALUES (1, ?, ?, ?, ?, ?, ?)",
+         (id, username, server_name, device_secret, medium_sk_current, medium_sk_prev) \
+         VALUES (1, ?, ?, ?, ?, ?)",
     )
     .bind(username.as_str())
     .bind(server_name.as_str())
     .bind(bcs::to_bytes(&device_secret).map_err(internal_err)?)
-    .bind(bcs::to_bytes(&cert_chain).map_err(internal_err)?)
     .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
     .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
     .execute(db)
@@ -719,7 +750,54 @@ async fn persist_identity(
 struct BundleInner {
     username: UserName,
     device_secret: DeviceSecret,
-    cert_chain: CertificateChain,
+    add_device_action: PreparedUserAction,
+}
+
+fn ensure_issuer_device(
+    identity: &Identity,
+    state: &UserDescriptor,
+) -> Result<(), InternalRpcError> {
+    let now = Timestamp::now().0;
+    let self_hash = identity.device_secret.public().signing_public().bcs_hash();
+    let Some(device_state) = state.devices.get(&self_hash) else {
+        return Err(InternalRpcError::AccessDenied);
+    };
+    if !device_state.active || device_state.is_expired(now) || !device_state.can_issue {
+        return Err(InternalRpcError::AccessDenied);
+    }
+    Ok(())
+}
+
+fn next_nonce(previous: u64) -> u64 {
+    let now = NanoTimestamp::now().0;
+    now.max(previous.saturating_add(1))
+}
+
+async fn authenticate_device(
+    server: &ServerClient,
+    username: &UserName,
+    device_secret: &DeviceSecret,
+) -> Result<AuthToken, InternalRpcError> {
+    let device_pk = device_secret.public().signing_public();
+    let challenge = server
+        .v1_device_auth_start(username.clone(), device_pk)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    let mut request = SignedDeviceAuthRequest {
+        request: DeviceAuthRequest {
+            username: username.clone(),
+            device_pk,
+            challenge: challenge.challenge,
+        },
+        signature: Signature::from_bytes([0u8; 64]),
+    };
+    request.sign(device_secret);
+    server
+        .v1_device_auth_finish(request)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))
 }
 
 pub(crate) fn internal_err(err: impl std::fmt::Display) -> InternalRpcError {
@@ -910,29 +988,6 @@ async fn last_dm_message_summary(
         direction: MessageDirection::Incoming,
         preview: String::new(),
     }))
-}
-
-fn message_preview(body: &MessageContent) -> String {
-    match body {
-        MessageContent::PlainText(text) => preview_text(text, 80),
-        MessageContent::Attachment { .. } => "Attachment".to_string(),
-        MessageContent::GroupInvite { .. } => "Group invite".to_string(),
-    }
-}
-
-fn preview_text(text: &str, limit: usize) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    for _ in 0..limit {
-        let Some(ch) = chars.next() else {
-            return out;
-        };
-        out.push(ch);
-    }
-    if chars.next().is_some() {
-        out.push('…');
-    }
-    out
 }
 
 async fn decode_message_content(

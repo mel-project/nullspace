@@ -3,22 +3,22 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::dh::{DhPublic, DhSecret};
-use nullspace_crypt::hash::{BcsHashExt, Hash};
-use nullspace_crypt::signing::{Signable, Signature};
+use nullspace_crypt::hash::BcsHashExt;
+use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use nullspace_crypt::stream::StreamKey;
 
 use crate::Blob;
-use crate::certificate::{CertificateChain, DeviceSecret};
+use crate::certificate::DeviceSecret;
 use crate::username::UserName;
 
 /// A device-signed payload that authenticates the sender and body.
 ///
-/// The signature is computed over the BCS encoding of `(sender, cert_chain, body)`
+/// The signature is computed over the BCS encoding of `(sender, sender_device_pk, body)`
 /// to provide defense-in-depth against malleability.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceSigned {
     pub sender: UserName,
-    pub cert_chain: CertificateChain,
+    pub sender_device_pk: SigningPublic,
     pub body: Bytes,
     pub signature: Signature,
 }
@@ -37,7 +37,7 @@ pub enum DeviceSignedError {
 impl Signable for DeviceSigned {
     fn signed_value(&self) -> Vec<u8> {
         // Sign the full tuple to avoid malleability of metadata or body bytes.
-        bcs::to_bytes(&(&self.sender, &self.cert_chain, &self.body))
+        bcs::to_bytes(&(&self.sender, &self.sender_device_pk, &self.body))
             .expect("bcs serialization failed")
     }
 
@@ -55,12 +55,12 @@ impl DeviceSigned {
     pub fn sign_bytes(
         body: Bytes,
         sender: UserName,
-        cert_chain: CertificateChain,
+        sender_device_pk: SigningPublic,
         sender_device: &DeviceSecret,
     ) -> Self {
         let mut signed = Self {
             sender,
-            cert_chain,
+            sender_device_pk,
             body,
             signature: Signature::from_bytes([0u8; 64]),
         };
@@ -72,14 +72,14 @@ impl DeviceSigned {
     pub fn sign_blob(
         message: &Blob,
         sender: UserName,
-        cert_chain: CertificateChain,
+        sender_device_pk: SigningPublic,
         sender_device: &DeviceSecret,
     ) -> Result<Self, DeviceSignedError> {
         let body = bcs::to_bytes(message).map_err(|_| DeviceSignedError::Encode)?;
         Ok(Self::sign_bytes(
             Bytes::from(body),
             sender,
-            cert_chain,
+            sender_device_pk,
             sender_device,
         ))
     }
@@ -89,20 +89,20 @@ impl DeviceSigned {
         &self.sender
     }
 
+    pub fn sender_device_pk(&self) -> SigningPublic {
+        self.sender_device_pk
+    }
+
     /// Verify and return the raw body bytes.
-    pub fn verify_bytes(self, sender_root_hash: Hash) -> Result<Bytes, DeviceSignedError> {
-        self.cert_chain
-            .verify(sender_root_hash)
-            .map_err(|_| DeviceSignedError::Verify)?;
-        let device = self.cert_chain.last_device();
-        self.verify(device.pk.signing_public())
+    pub fn verify_bytes(self) -> Result<Bytes, DeviceSignedError> {
+        self.verify(self.sender_device_pk)
             .map_err(|_| DeviceSignedError::Verify)?;
         Ok(self.body)
     }
 
     /// Verify and decode the body as a blob.
-    pub fn verify_blob(self, sender_root_hash: Hash) -> Result<Blob, DeviceSignedError> {
-        let body = self.verify_bytes(sender_root_hash)?;
+    pub fn verify_blob(self) -> Result<Blob, DeviceSignedError> {
+        let body = self.verify_bytes()?;
         bcs::from_bytes(&body).map_err(|_| DeviceSignedError::Decode)
     }
 }

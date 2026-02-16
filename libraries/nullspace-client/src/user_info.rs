@@ -3,11 +3,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use futures_concurrency::future::TryJoin;
-use nullspace_crypt::hash::{BcsHashExt, Hash};
-use nullspace_structs::certificate::CertificateChain;
+use nullspace_crypt::hash::Hash;
+use nullspace_crypt::signing::Signable;
 use nullspace_structs::server::{ServerClient, ServerName, SignedMediumPk};
-use nullspace_structs::username::{UserDescriptor, UserName};
+use nullspace_structs::username::{DeviceState, UserDescriptor, UserName};
 use tracing::warn;
 
 use crate::config::Config;
@@ -19,7 +18,7 @@ pub struct UserInfo {
     pub username: UserName,
     pub server: Arc<ServerClient>,
     pub server_name: ServerName,
-    pub device_chains: BTreeMap<Hash, CertificateChain>,
+    pub devices: BTreeMap<Hash, DeviceState>,
     pub medium_pks: BTreeMap<Hash, SignedMediumPk>,
 }
 
@@ -31,9 +30,10 @@ pub async fn get_user_descriptor(
 ) -> anyhow::Result<UserDescriptor> {
     let db = ctx.get(DATABASE);
     if let Some((descriptor, fetched_at)) = load_cached_descriptor(db, username).await?
-        && is_fresh(fetched_at) {
-            return Ok(descriptor);
-        }
+        && is_fresh(fetched_at)
+    {
+        return Ok(descriptor);
+    }
 
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir
@@ -51,79 +51,56 @@ pub async fn get_user_info(
     let db = ctx.get(DATABASE);
     let start = Instant::now();
     let descriptor = get_user_descriptor(ctx, username).await?;
-    let root_hash = descriptor.root_cert_hash;
-    let server = get_server_client(ctx, &descriptor.server_name).await?;
+    let server_name = descriptor
+        .server_name
+        .clone()
+        .context("username has no bound server")?;
+    let server = get_server_client(ctx, &server_name).await?;
 
-    let mut cached_device_chains = load_cached_device_chains(db, username).await?;
+    let now = now_seconds();
+    let devices: BTreeMap<Hash, DeviceState> = descriptor
+        .devices
+        .iter()
+        .filter(|(_hash, state)| state.active && !state.is_expired(now as u64))
+        .map(|(hash, state)| (*hash, state.clone()))
+        .collect();
+    if devices.is_empty() {
+        return Err(anyhow::anyhow!("no active devices for {username}"));
+    }
+
+    let mut cached_devices = load_cached_devices(db, username).await?;
     let mut cached_medium_pks = load_cached_medium_pks(db, username).await?;
     let cached_fetched_at = load_cached_user_info_fetched_at(db, username).await?;
     let cache_fresh = cached_fetched_at.map(is_fresh).unwrap_or(false);
 
-    let should_refresh = !cache_fresh || cached_device_chains.is_empty();
-
+    let should_refresh = !cache_fresh || cached_devices != devices;
     if should_refresh {
-        let (chains, medium_pks) = (
-            fetch_chains(&server, username),
-            fetch_medium_pks(&server, username),
-        )
-            .try_join()
-            .await?;
-
-        cached_device_chains = chains;
+        let medium_pks = fetch_medium_pks(&server, username).await?;
+        cached_devices = devices.clone();
         cached_medium_pks = merge_monotonic_medium_pks(username, cached_medium_pks, medium_pks);
-        store_cached_user_info(db, username, &cached_device_chains, &cached_medium_pks).await?;
+        store_cached_user_info(db, username, &cached_devices, &cached_medium_pks).await?;
         tracing::debug!(username=%username, elapsed=debug(start.elapsed()), "refreshed peer info");
     }
 
-    let mut device_chains = BTreeMap::new();
-    for (device_hash, chain) in cached_device_chains {
-        if chain.verify(root_hash).is_err() {
-            warn!(username=%username, device_hash=%device_hash, "invalid device certificate chain");
+    let mut valid_medium_pks = BTreeMap::new();
+    for (device_hash, medium_pk) in cached_medium_pks {
+        let Some(device) = devices.get(&device_hash) else {
+            continue;
+        };
+        if medium_pk.verify(device.device_pk).is_err() {
+            warn!(username=%username, device_hash=%device_hash, "invalid medium-term key signature");
             continue;
         }
-        let chain_hash = chain.last_device().pk.bcs_hash();
-        if chain_hash != device_hash {
-            warn!(
-                username=%username,
-                device_hash=%device_hash,
-                chain_hash=%chain_hash,
-                "device certificate hash mismatch"
-            );
-            continue;
-        }
-        device_chains.insert(device_hash, chain);
-    }
-    if device_chains.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no valid device certificate chains for {username}"
-        ));
+        valid_medium_pks.insert(device_hash, medium_pk);
     }
 
     Ok(Arc::new(UserInfo {
         username: username.clone(),
         server,
-        server_name: descriptor.server_name.clone(),
-        device_chains,
-        medium_pks: cached_medium_pks,
+        server_name,
+        devices,
+        medium_pks: valid_medium_pks,
     }))
-}
-
-pub async fn get_user_root_hash(
-    ctx: &anyctx::AnyCtx<Config>,
-    username: &UserName,
-) -> anyhow::Result<Hash> {
-    Ok(get_user_descriptor(ctx, username).await?.root_cert_hash)
-}
-
-async fn fetch_chains(
-    server: &ServerClient,
-    username: &UserName,
-) -> anyhow::Result<BTreeMap<Hash, CertificateChain>> {
-    server
-        .v1_device_certs(username.clone())
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?
-        .context("username has no certificate chains")
 }
 
 async fn fetch_medium_pks(
@@ -220,21 +197,21 @@ async fn load_cached_user_info_fetched_at(
     Ok(row)
 }
 
-async fn load_cached_device_chains(
+async fn load_cached_devices(
     db: &sqlx::SqlitePool,
     username: &UserName,
-) -> anyhow::Result<BTreeMap<Hash, CertificateChain>> {
+) -> anyhow::Result<BTreeMap<Hash, DeviceState>> {
     let row = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT chains FROM user_device_certs_cache WHERE username = ?",
+        "SELECT devices FROM user_devices_cache WHERE username = ?",
     )
     .bind(username.as_str())
     .fetch_optional(db)
     .await?;
-    let Some(chains_bytes) = row else {
+    let Some(devices_bytes) = row else {
         return Ok(BTreeMap::new());
     };
-    let chains = bcs::from_bytes(&chains_bytes)?;
-    Ok(chains)
+    let devices = bcs::from_bytes(&devices_bytes)?;
+    Ok(devices)
 }
 
 async fn load_cached_medium_pks(
@@ -257,15 +234,15 @@ async fn load_cached_medium_pks(
 async fn store_cached_user_info(
     db: &sqlx::SqlitePool,
     username: &UserName,
-    device_chains: &BTreeMap<Hash, CertificateChain>,
+    devices: &BTreeMap<Hash, DeviceState>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;
 
-    let chains_bytes = bcs::to_bytes(device_chains)?;
-    sqlx::query("INSERT OR REPLACE INTO user_device_certs_cache (username, chains) VALUES (?, ?)")
+    let devices_bytes = bcs::to_bytes(devices)?;
+    sqlx::query("INSERT OR REPLACE INTO user_devices_cache (username, devices) VALUES (?, ?)")
         .bind(username.as_str())
-        .bind(chains_bytes)
+        .bind(devices_bytes)
         .execute(tx.as_mut())
         .await?;
 

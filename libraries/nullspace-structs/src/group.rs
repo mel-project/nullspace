@@ -7,10 +7,11 @@ use thiserror::Error;
 use nullspace_crypt::{
     aead::AeadKey,
     hash::{Hash, HashParseError},
+    signing::SigningPublic,
 };
 
 use crate::{
-    certificate::{CertificateChain, DeviceSecret},
+    certificate::DeviceSecret,
     e2ee::DeviceSigned,
     event::{Event, EventPayload},
     server::{AuthToken, ServerName},
@@ -112,7 +113,7 @@ impl GroupMessage {
     pub fn encrypt_message(
         message: &Event,
         sender_username: UserName,
-        sender_chain: CertificateChain,
+        sender_device_pk: SigningPublic,
         sender_device: &DeviceSecret,
         key: &AeadKey,
     ) -> Result<Self, GroupMessageError> {
@@ -124,7 +125,7 @@ impl GroupMessage {
         let signed = DeviceSigned::sign_blob(
             &message_blob,
             sender_username,
-            sender_chain,
+            sender_device_pk,
             sender_device,
         )
         .map_err(|_| GroupMessageError::Encode)?;

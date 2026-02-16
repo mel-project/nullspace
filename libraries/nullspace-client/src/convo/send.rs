@@ -4,17 +4,16 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use anyhow::Context;
 use bytes::Bytes;
-use nullspace_crypt::hash::{BcsHashExt, Hash};
+use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::Signable;
 use nullspace_structs::Blob;
-use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::EventPayload;
 use nullspace_structs::event::{Event, Recipient};
 use nullspace_structs::group::GroupMessage;
 use nullspace_structs::server::{AuthToken, MailboxId, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
-use nullspace_structs::username::UserName;
+use nullspace_structs::username::{DeviceState, UserName};
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -208,7 +207,7 @@ async fn send_dm_once(
     let signed = DeviceSigned::sign_blob(
         message,
         identity.username.clone(),
-        identity.cert_chain.clone(),
+        identity.device_secret.public().signing_public(),
         &identity.device_secret,
     )?;
     let signed_bytes = bcs::to_bytes(&signed)?;
@@ -245,7 +244,7 @@ async fn send_group_message(
     let group_message = GroupMessage::encrypt_message(
         &content,
         identity.username.clone(),
-        identity.cert_chain.clone(),
+        identity.device_secret.public().signing_public(),
         &identity.device_secret,
         &group.group_key_current,
     )
@@ -265,27 +264,16 @@ async fn send_group_message(
 
 fn collect_recipients(
     username: &UserName,
-    chains: &BTreeMap<Hash, CertificateChain>,
+    devices: &BTreeMap<Hash, DeviceState>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<nullspace_crypt::dh::DhPublic>> {
     let mut recipients = Vec::new();
-    for (device_hash, chain) in chains {
-        let cert = chain.last_device();
-        let cert_hash = cert.pk.bcs_hash();
-        if &cert_hash != device_hash {
-            warn!(
-                username = %username,
-                device_hash = %device_hash,
-                cert_hash = %cert_hash,
-                "device certificate hash mismatch"
-            );
-            continue;
-        }
+    for (device_hash, device) in devices {
         let Some(medium_pk) = medium_pks.get(device_hash) else {
             warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
-        if medium_pk.verify(cert.pk.signing_public()).is_err() {
+        if medium_pk.verify(device.device_pk).is_err() {
             warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
@@ -298,7 +286,7 @@ fn collect_recipients(
 }
 
 fn recipients_from_peer(peer: &UserInfo) -> anyhow::Result<Vec<nullspace_crypt::dh::DhPublic>> {
-    collect_recipients(&peer.username, &peer.device_chains, &peer.medium_pks)
+    collect_recipients(&peer.username, &peer.devices, &peer.medium_pks)
 }
 
 async fn mark_message_sent(

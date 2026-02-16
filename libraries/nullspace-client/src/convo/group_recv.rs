@@ -3,12 +3,15 @@ use std::time::Duration;
 
 use anyctx::AnyCtx;
 use anyhow::Context;
+use nullspace_crypt::hash::BcsHashExt;
+use nullspace_crypt::signing::SigningPublic;
 use futures_concurrency::future::Race;
 use nullspace_structs::Blob;
 use nullspace_structs::event::{Event, EventPayload, Recipient};
 use nullspace_structs::group::{GroupId, GroupManageMsg, GroupMessage};
 use nullspace_structs::server::MailboxId;
 use nullspace_structs::timestamp::NanoTimestamp;
+use nullspace_structs::timestamp::Timestamp;
 use tracing::warn;
 
 use crate::database::{
@@ -173,8 +176,9 @@ async fn process_group_message_entry(
         .get_user_descriptor(&sender)
         .await?
         .context("sender username not in directory")?;
+    ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let message = signed
-        .verify_blob(sender_descriptor.root_cert_hash)
+        .verify_blob()
         .map_err(|_| anyhow::anyhow!("failed to verify group message"))?;
     if message.kind != Blob::V1_MESSAGE_CONTENT {
         warn!(kind = %message.kind, "ignoring non-message-content group message");
@@ -234,8 +238,9 @@ async fn process_group_management_entry(
         .get_user_descriptor(&sender)
         .await?
         .context("sender username not in directory")?;
+    ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let message = signed
-        .verify_blob(sender_descriptor.root_cert_hash)
+        .verify_blob()
         .map_err(|_| anyhow::anyhow!("failed to verify management message"))?;
     if message.kind != Blob::V1_MESSAGE_CONTENT {
         warn!(
@@ -271,6 +276,20 @@ async fn process_group_management_entry(
     tx.commit().await?;
     if changed {
         DbNotify::touch();
+    }
+    Ok(())
+}
+
+fn ensure_sender_device_allowed(
+    sender_descriptor: &nullspace_structs::username::UserDescriptor,
+    sender_device_pk: SigningPublic,
+) -> anyhow::Result<()> {
+    let sender_hash = sender_device_pk.bcs_hash();
+    let Some(device) = sender_descriptor.devices.get(&sender_hash) else {
+        anyhow::bail!("sender device not found in directory state");
+    };
+    if !device.active || device.is_expired(Timestamp::now().0) {
+        anyhow::bail!("sender device is inactive or expired");
     }
     Ok(())
 }

@@ -1,22 +1,26 @@
 #![doc = include_str!(concat!(env!("OUT_DIR"), "/README-rustdocified.md"))]
 
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
 use moka::future::Cache;
 use nanorpc::{DynRpcTransport, RpcTransport};
 use nullspace_crypt::{
-    hash::Hash,
-    signing::{Signable, Signature, SigningPublic, SigningSecret},
+    hash::{BcsHashExt, Hash},
+    signing::{Signable, SigningPublic, SigningSecret},
 };
 use nullspace_structs::directory::{
-    DirectoryAnchor, DirectoryClient, DirectoryHistoryIterExt, DirectoryResponse, DirectoryUpdate,
-    DirectoryUpdateInner, PowSolution,
+    DirectoryAnchor, DirectoryClient, DirectoryKeyState, DirectoryResponse, DirectoryUpdate,
+    PowSolution,
 };
 use nullspace_structs::{
-    Blob,
     server::{ServerDescriptor, ServerName},
-    username::{UserDescriptor, UserName},
+    timestamp::Timestamp,
+    username::{DeviceState, PreparedUserAction, UserAction, UserDescriptor, UserName},
 };
 use sqlx::SqlitePool;
-use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
 mod header_sync;
 mod pow;
 
@@ -26,15 +30,7 @@ pub struct DirClient {
     anchor_pk: SigningPublic,
     pool: SqlitePool,
     anchor_cache: Cache<u64, DirectoryAnchor>,
-}
-
-/// Derived listing information for a directory key.
-#[derive(Clone, Debug)]
-pub struct DirectoryListing {
-    /// Latest content message for the key, if present.
-    pub latest: Option<Blob>,
-    /// Current owners for the key, after applying ownership updates in order.
-    pub owners: Vec<SigningPublic>,
+    local_pending: Mutex<BTreeMap<String, Vec<DirectoryUpdate>>>,
 }
 
 impl DirClient {
@@ -62,6 +58,7 @@ impl DirClient {
             anchor_pk,
             pool,
             anchor_cache: Cache::new(1024),
+            local_pending: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -70,15 +67,19 @@ impl DirClient {
         &self.raw
     }
 
-    /// Fetch and verify a directory item by key.
-    ///
-    /// This validates the signed anchor, syncs headers, checks the SMT proof,
-    /// and returns a derived listing.
-    pub async fn query_raw(&self, key: impl Into<String>) -> anyhow::Result<DirectoryListing> {
+    /// Fetch and verify the raw state for a directory key.
+    pub async fn query_key_state(
+        &self,
+        key: impl Into<String>,
+    ) -> anyhow::Result<Option<DirectoryKeyState>> {
+        self.get_committed_key_state(&key.into()).await
+    }
+
+    /// Fetch and verify raw value bytes for a directory key.
+    pub async fn query_raw(&self, key: impl Into<String>) -> anyhow::Result<Option<Vec<u8>>> {
         let key = key.into();
-        let response = self.fetch_verified_response(&key).await?;
-        let listing = build_listing(&response)?;
-        Ok(listing)
+        let state = self.get_committed_key_state(&key).await?;
+        Ok(state.and_then(|state| state.value.map(|value| value.to_vec())))
     }
 
     /// Fetch and decode the user descriptor for a username.
@@ -86,16 +87,16 @@ impl DirClient {
         &self,
         username: &UserName,
     ) -> anyhow::Result<Option<UserDescriptor>> {
-        let listing = self.query_raw(username.as_str()).await?;
-        let latest = match listing.latest {
-            Some(latest) => latest,
-            None => return Ok(None),
-        };
-        if latest.kind != Blob::V1_USER_DESCRIPTOR {
-            anyhow::bail!("unexpected message kind: {}", latest.kind);
-        }
-        let descriptor: UserDescriptor = bcs::from_bytes(&latest.inner)?;
-        Ok(Some(descriptor))
+        let state = self.get_committed_key_state(username.as_str()).await?;
+        decode_user_descriptor(state)
+    }
+
+    /// Backward-compatible alias for retrieving typed user state.
+    pub async fn get_user_state(
+        &self,
+        username: &UserName,
+    ) -> anyhow::Result<Option<UserDescriptor>> {
+        self.get_user_descriptor(username).await
     }
 
     /// Fetch and decode the server descriptor for a server name.
@@ -103,160 +104,179 @@ impl DirClient {
         &self,
         server_name: &ServerName,
     ) -> anyhow::Result<Option<ServerDescriptor>> {
-        let listing = self.query_raw(server_name.as_str()).await?;
-        let latest = match listing.latest {
-            Some(latest) => latest,
-            None => return Ok(None),
+        let state = self.get_committed_key_state(server_name.as_str()).await?;
+        let Some(state) = state else {
+            return Ok(None);
         };
-        if latest.kind != Blob::V1_SERVER_DESCRIPTOR {
-            anyhow::bail!("unexpected message kind: {}", latest.kind);
-        }
-        let descriptor: ServerDescriptor = bcs::from_bytes(&latest.inner)?;
+        let Some(value) = state.value else {
+            return Ok(None);
+        };
+        let descriptor: ServerDescriptor = bcs::from_bytes(&value)?;
         Ok(Some(descriptor))
     }
 
-    /// Build and submit a user descriptor update for a username.
-    pub async fn insert_user_descriptor(
-        &self,
-        username: &UserName,
-        descriptor: &UserDescriptor,
-        signer: &SigningSecret,
-    ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(username.as_str()).await?;
-        response
-            .history
-            .iter()
-            .verify_history()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let prev_update_hash = prev_update_hash(&response.history)?;
-        let update = signed_update(
-            prev_update_hash,
-            DirectoryUpdateInner::Update(Blob {
-                kind: Blob::V1_USER_DESCRIPTOR.into(),
-                inner: bcs::to_bytes(descriptor)?.into(),
-            }),
-            signer,
-        );
-        self.insert_raw(username.as_str(), update).await?;
-        Ok(())
-    }
-
-    /// Build and submit a server descriptor update for a server name.
-    pub async fn insert_server_descriptor(
+    /// Submit a server descriptor update.
+    pub async fn set_server_descriptor(
         &self,
         server_name: &ServerName,
         descriptor: &ServerDescriptor,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(server_name.as_str()).await?;
-        response
-            .history
-            .iter()
-            .verify_history()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let prev_update_hash = prev_update_hash(&response.history)?;
-        let update = signed_update(
-            prev_update_hash,
-            DirectoryUpdateInner::Update(Blob {
-                kind: Blob::V1_SERVER_DESCRIPTOR.into(),
-                inner: bcs::to_bytes(descriptor)?.into(),
-            }),
-            signer,
-        );
+        let signer_pk = signer.public_key();
+        if descriptor.server_pk != signer_pk {
+            anyhow::bail!("server descriptor public key must match signer key");
+        }
+
+        let current = self.get_effective_key_state(server_name.as_str()).await?;
+        let mut update = DirectoryUpdate {
+            nonce: next_nonce(current.nonce_max),
+            signer_pk,
+            owners: vec![signer_pk],
+            value: Some(bcs::to_bytes(descriptor)?.into()),
+            signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+        };
+        canonicalize_owners(&mut update.owners);
+        update.sign(signer);
         self.insert_raw(server_name.as_str(), update).await?;
+        self.wait_for_server_descriptor(server_name, descriptor).await?;
         Ok(())
     }
 
-    /// Add an owner to a username.
-    pub async fn add_owner(
+    /// Prepare a signed typed user action that can be submitted later.
+    pub async fn prepare_user_action(
         &self,
         username: &UserName,
-        owner: SigningPublic,
+        action: UserAction,
+        nonce: u64,
         signer: &SigningSecret,
-    ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(username.as_str()).await?;
-        response
-            .history
-            .iter()
-            .verify_history()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let prev_update_hash = prev_update_hash(&response.history)?;
-        let update = signed_update(
-            prev_update_hash,
-            DirectoryUpdateInner::AddOwner(owner),
-            signer,
-        );
-        self.insert_raw(username.as_str(), update).await?;
-        Ok(())
+    ) -> anyhow::Result<PreparedUserAction> {
+        let signer_pk = signer.public_key();
+        let state = self.get_effective_key_state(username.as_str()).await?;
+        if nonce <= state.nonce_max {
+            anyhow::bail!(
+                "nonce {} must be greater than current nonce {}",
+                nonce,
+                state.nonce_max
+            );
+        }
+
+        let current = decode_user_descriptor(Some(state))?;
+        let next_descriptor = apply_user_action(current, &action, signer_pk, nonce)?;
+
+        let mut prepared = PreparedUserAction {
+            nonce,
+            signer_pk,
+            action,
+            next_descriptor,
+            signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+        };
+        prepared.sign(signer);
+        Ok(prepared)
     }
 
-    /// Add an owner to a server name.
-    pub async fn add_server_owner(
-        &self,
-        server_name: &ServerName,
-        owner: SigningPublic,
-        signer: &SigningSecret,
-    ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(server_name.as_str()).await?;
-        response
-            .history
-            .iter()
-            .verify_history()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let prev_update_hash = prev_update_hash(&response.history)?;
-        let update = signed_update(
-            prev_update_hash,
-            DirectoryUpdateInner::AddOwner(owner),
-            signer,
-        );
-        self.insert_raw(server_name.as_str(), update).await?;
-        Ok(())
-    }
-
-    /// Remove an owner from a username.
-    pub async fn del_owner(
+    /// Submit a previously prepared user action.
+    pub async fn submit_prepared_user_action(
         &self,
         username: &UserName,
-        owner: SigningPublic,
-        signer: &SigningSecret,
+        prepared: PreparedUserAction,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(username.as_str()).await?;
-        response
-            .history
-            .iter()
-            .verify_history()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let prev_update_hash = prev_update_hash(&response.history)?;
-        let update = signed_update(
-            prev_update_hash,
-            DirectoryUpdateInner::DelOwner(owner),
-            signer,
-        );
+        prepared.verify(prepared.signer_pk)?;
+
+        let state = self.get_effective_key_state(username.as_str()).await?;
+        if prepared.nonce <= state.nonce_max {
+            anyhow::bail!(
+                "nonce {} must be greater than current nonce {}",
+                prepared.nonce,
+                state.nonce_max
+            );
+        }
+        let current = decode_user_descriptor(Some(state))?;
+        let expected = apply_user_action(
+            current,
+            &prepared.action,
+            prepared.signer_pk,
+            prepared.nonce,
+        )?;
+        if expected != prepared.next_descriptor {
+            anyhow::bail!("prepared user action descriptor does not match computed transition");
+        }
+
+        let update = prepared.to_directory_update()?;
+        update.verify(update.signer_pk)?;
+
         self.insert_raw(username.as_str(), update).await?;
+        self.wait_for_user_nonce(username, prepared.nonce).await?;
         Ok(())
     }
 
-    /// Remove an owner from a server name.
-    pub async fn del_server_owner(
+    /// Prepare and submit a typed user action.
+    pub async fn submit_user_action(
         &self,
-        server_name: &ServerName,
-        owner: SigningPublic,
+        username: &UserName,
+        action: UserAction,
+        nonce: u64,
         signer: &SigningSecret,
     ) -> anyhow::Result<()> {
-        let response = self.fetch_verified_response(server_name.as_str()).await?;
-        response
-            .history
-            .iter()
-            .verify_history()
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        let prev_update_hash = prev_update_hash(&response.history)?;
-        let update = signed_update(
-            prev_update_hash,
-            DirectoryUpdateInner::DelOwner(owner),
+        let prepared = self
+            .prepare_user_action(username, action, nonce, signer)
+            .await?;
+        self.submit_prepared_user_action(username, prepared).await
+    }
+
+    pub async fn add_device(
+        &self,
+        username: &UserName,
+        device_pk: SigningPublic,
+        can_issue: bool,
+        expiry: Timestamp,
+        nonce: u64,
+        signer: &SigningSecret,
+    ) -> anyhow::Result<()> {
+        self.submit_user_action(
+            username,
+            UserAction::AddDevice {
+                device_pk,
+                can_issue,
+                expiry,
+            },
+            nonce,
             signer,
-        );
-        self.insert_raw(server_name.as_str(), update).await?;
-        Ok(())
+        )
+        .await
+    }
+
+    pub async fn remove_device(
+        &self,
+        username: &UserName,
+        device_pk: SigningPublic,
+        nonce: u64,
+        signer: &SigningSecret,
+    ) -> anyhow::Result<()> {
+        self.submit_user_action(
+            username,
+            UserAction::RemoveDevice { device_pk },
+            nonce,
+            signer,
+        )
+        .await
+    }
+
+    pub async fn bind_server(
+        &self,
+        username: &UserName,
+        server_name: &ServerName,
+        nonce: u64,
+        signer: &SigningSecret,
+    ) -> anyhow::Result<()> {
+        self.submit_user_action(
+            username,
+            UserAction::BindServer {
+                server_name: server_name.clone(),
+            },
+            nonce,
+            signer,
+        )
+        .await
     }
 
     async fn fetch_verified_response(&self, key: &str) -> anyhow::Result<DirectoryResponse> {
@@ -293,6 +313,49 @@ impl DirClient {
         Ok(response)
     }
 
+    async fn get_committed_key_state(&self, key: &str) -> anyhow::Result<Option<DirectoryKeyState>> {
+        let response = self.fetch_verified_response(key).await?;
+        let state = decode_key_state_from_response(&response)?;
+        if let Some(state) = &state {
+            self.prune_local_pending_to_nonce(key, state.nonce_max).await;
+        }
+        Ok(state)
+    }
+
+    async fn get_effective_key_state(&self, key: &str) -> anyhow::Result<DirectoryKeyState> {
+        let committed = self.get_committed_key_state(key).await?.unwrap_or_default();
+        let pending = {
+            let pending_map = self.local_pending.lock().await;
+            pending_map.get(key).cloned().unwrap_or_default()
+        };
+        if pending.is_empty() {
+            return Ok(committed);
+        }
+
+        let mut state = committed;
+        let mut sorted = pending;
+        sorted.sort_by_key(|update| update.nonce);
+        for update in &sorted {
+            apply_directory_update(&mut state, update)?;
+        }
+        Ok(state)
+    }
+
+    async fn prune_local_pending_to_nonce(&self, key: &str, nonce_max: u64) {
+        let mut pending = self.local_pending.lock().await;
+        if let Some(list) = pending.get_mut(key) {
+            list.retain(|update| update.nonce > nonce_max);
+            if list.is_empty() {
+                pending.remove(key);
+            }
+        }
+    }
+
+    async fn push_local_pending(&self, key: String, update: DirectoryUpdate) {
+        let mut pending = self.local_pending.lock().await;
+        pending.entry(key).or_default().push(update);
+    }
+
     /// Submit a raw directory update for a key.
     pub async fn insert_raw(
         &self,
@@ -300,13 +363,12 @@ impl DirClient {
         update: DirectoryUpdate,
     ) -> anyhow::Result<()> {
         let key = key.into();
-        let update_hash = update_hash(&update)?;
         let pow = self.solve_pow().await?;
         self.raw
-            .v1_insert_update(key.clone(), update, pow)
+            .v1_insert_update(key.clone(), update.clone(), pow)
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        self.wait_for_update(&key, update_hash).await?;
+        self.push_local_pending(key, update).await;
         Ok(())
     }
 
@@ -329,23 +391,187 @@ impl DirClient {
         pow::solve_pow(&seed)
     }
 
-    async fn wait_for_update(&self, key: &str, expected_hash: Hash) -> anyhow::Result<()> {
+    pub async fn wait_for_user_nonce(&self, username: &UserName, nonce: u64) -> anyhow::Result<()> {
         let start = Instant::now();
         let timeout = Duration::from_secs(90);
         let poll = Duration::from_millis(500);
         loop {
-            let response = self.fetch_verified_response(key).await?;
-            for update in &response.history {
-                if update_hash(update)? == expected_hash {
-                    return Ok(());
-                }
+            if let Some(state) = self.get_committed_key_state(username.as_str()).await?
+                && state.nonce_max >= nonce
+            {
+                self.prune_local_pending_to_nonce(username.as_str(), state.nonce_max)
+                    .await;
+                return Ok(());
             }
             if start.elapsed() > timeout {
-                anyhow::bail!("update did not land before timeout");
+                anyhow::bail!("user action did not land before timeout");
             }
             tokio::time::sleep(poll).await;
         }
     }
+
+    async fn wait_for_server_descriptor(
+        &self,
+        server_name: &ServerName,
+        expected: &ServerDescriptor,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        let timeout = Duration::from_secs(90);
+        let poll = Duration::from_millis(500);
+        loop {
+            if let Some(current) = self.get_server_descriptor(server_name).await?
+                && &current == expected
+            {
+                return Ok(());
+            }
+            if start.elapsed() > timeout {
+                anyhow::bail!("server descriptor update did not land before timeout");
+            }
+            tokio::time::sleep(poll).await;
+        }
+    }
+}
+
+fn decode_key_state_from_response(response: &DirectoryResponse) -> anyhow::Result<Option<DirectoryKeyState>> {
+    match &response.value {
+        Some(value) => Ok(Some(bcs::from_bytes(value)?)),
+        None => Ok(None),
+    }
+}
+
+fn decode_user_descriptor(state: Option<DirectoryKeyState>) -> anyhow::Result<Option<UserDescriptor>> {
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let Some(value) = state.value else {
+        return Ok(None);
+    };
+    let mut descriptor: UserDescriptor = bcs::from_bytes(&value)?;
+    descriptor.nonce_max = state.nonce_max;
+    Ok(Some(descriptor))
+}
+
+fn apply_user_action(
+    current: Option<UserDescriptor>,
+    action: &UserAction,
+    signer_pk: SigningPublic,
+    nonce: u64,
+) -> anyhow::Result<UserDescriptor> {
+    let now = Timestamp::now().0;
+    match current {
+        Some(mut descriptor) => {
+            let signer_hash = signer_pk.bcs_hash();
+            let Some(signer_state) = descriptor.devices.get(&signer_hash) else {
+                anyhow::bail!("signer is not a known device for username");
+            };
+            if !signer_state.active || signer_state.is_expired(now) {
+                anyhow::bail!("signer device is inactive or expired");
+            }
+            if signer_state.device_pk != signer_pk {
+                anyhow::bail!("directory user descriptor is inconsistent for signer device");
+            }
+
+            if matches!(action, UserAction::AddDevice { .. } | UserAction::RemoveDevice { .. })
+                && !signer_state.can_issue
+            {
+                anyhow::bail!("signer device cannot issue add/remove actions");
+            }
+
+            match action {
+                UserAction::AddDevice {
+                    device_pk,
+                    can_issue,
+                    expiry,
+                } => {
+                    descriptor.devices.insert(
+                        device_pk.bcs_hash(),
+                        DeviceState {
+                            device_pk: *device_pk,
+                            can_issue: *can_issue,
+                            expiry: *expiry,
+                            active: true,
+                        },
+                    );
+                }
+                UserAction::RemoveDevice { device_pk } => {
+                    let device_hash = device_pk.bcs_hash();
+                    let Some(device_state) = descriptor.devices.get_mut(&device_hash) else {
+                        anyhow::bail!("cannot remove unknown device");
+                    };
+                    if device_state.device_pk != *device_pk {
+                        anyhow::bail!("directory user descriptor is inconsistent for removed device");
+                    }
+                    device_state.active = false;
+                }
+                UserAction::BindServer { server_name } => {
+                    descriptor.server_name = Some(server_name.clone());
+                }
+            }
+
+            descriptor.nonce_max = nonce;
+            Ok(descriptor)
+        }
+        None => {
+            let UserAction::AddDevice {
+                device_pk,
+                can_issue,
+                expiry,
+            } = action
+            else {
+                anyhow::bail!("first user action must be add_device");
+            };
+            if signer_pk != *device_pk {
+                anyhow::bail!("first add_device must be self-signed by added device");
+            }
+            let mut devices = BTreeMap::new();
+            devices.insert(
+                device_pk.bcs_hash(),
+                DeviceState {
+                    device_pk: *device_pk,
+                    can_issue: *can_issue,
+                    expiry: *expiry,
+                    active: true,
+                },
+            );
+            Ok(UserDescriptor {
+                server_name: None,
+                nonce_max: nonce,
+                devices,
+            })
+        }
+    }
+}
+
+fn apply_directory_update(state: &mut DirectoryKeyState, update: &DirectoryUpdate) -> anyhow::Result<()> {
+    update.verify(update.signer_pk)?;
+    if update.nonce <= state.nonce_max {
+        anyhow::bail!(
+            "nonce {} must be greater than current nonce {}",
+            update.nonce,
+            state.nonce_max
+        );
+    }
+
+    let mut owners = update.owners.clone();
+    canonicalize_owners(&mut owners);
+
+    if state.owners.is_empty() {
+        if !owners.contains(&update.signer_pk) {
+            anyhow::bail!("first update must include signer in owners list");
+        }
+    } else if !state.owners.contains(&update.signer_pk) {
+        anyhow::bail!("signer is not an owner of this key");
+    }
+
+    state.nonce_max = update.nonce;
+    state.owners = owners;
+    state.value = update.value.clone();
+    Ok(())
+}
+
+fn canonicalize_owners(owners: &mut Vec<SigningPublic>) {
+    owners.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
+    owners.dedup();
 }
 
 async fn verify_response(
@@ -364,66 +590,27 @@ async fn verify_response(
         .decompress()
         .ok_or_else(|| anyhow::anyhow!("failed to decompress proof"))?;
     let key_hash = Hash::digest(key.as_bytes());
-    // an empty history means simply *absence* in the SMT
-    let value = if response.history.is_empty() {
-        vec![]
-    } else {
-        bcs::to_bytes(&response.history)?
-    };
+    let value = response
+        .value
+        .clone()
+        .map(|value| value.to_vec())
+        .unwrap_or_default();
     if !proof.verify(root.to_bytes(), key_hash.to_bytes(), &value) {
         anyhow::bail!("invalid proof");
     }
     Ok(())
 }
 
-fn build_listing(response: &DirectoryResponse) -> anyhow::Result<DirectoryListing> {
-    response
-        .history
+pub fn active_devices(descriptor: &UserDescriptor, now_unix: u64) -> BTreeMap<Hash, DeviceState> {
+    descriptor
+        .devices
         .iter()
-        .verify_history()
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    let mut owners = Vec::new();
-    let mut latest = None;
-    for update in &response.history {
-        match &update.update_type {
-            DirectoryUpdateInner::AddOwner(owner) => {
-                if !owners.contains(owner) {
-                    owners.push(*owner);
-                }
-            }
-            DirectoryUpdateInner::DelOwner(owner) => {
-                owners.retain(|existing| existing != owner);
-            }
-            DirectoryUpdateInner::Update(message) => {
-                latest = Some(message.clone());
-            }
-        }
-    }
-    Ok(DirectoryListing { latest, owners })
+        .filter(|(_hash, state)| state.active && !state.is_expired(now_unix))
+        .map(|(hash, state)| (*hash, state.clone()))
+        .collect()
 }
 
-fn update_hash(update: &DirectoryUpdate) -> anyhow::Result<Hash> {
-    let bytes = bcs::to_bytes(update)?;
-    Ok(Hash::digest(&bytes))
-}
-
-fn prev_update_hash(history: &[DirectoryUpdate]) -> anyhow::Result<Hash> {
-    match history.last() {
-        Some(update) => update_hash(update),
-        None => Ok(Hash::from_bytes([0u8; 32])),
-    }
-}
-
-fn signed_update(
-    prev_update_hash: Hash,
-    update_type: DirectoryUpdateInner,
-    signer: &SigningSecret,
-) -> DirectoryUpdate {
-    let mut update = DirectoryUpdate {
-        prev_update_hash,
-        update_type,
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    update.sign(signer);
-    update
+fn next_nonce(previous: u64) -> u64 {
+    let now = nullspace_structs::timestamp::NanoTimestamp::now().0;
+    now.max(previous.saturating_add(1))
 }

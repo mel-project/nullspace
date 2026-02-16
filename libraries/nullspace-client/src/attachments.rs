@@ -236,7 +236,8 @@ pub async fn attachment_download_oneshot(
         .get_user_descriptor(&sender)
         .await?
         .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
-        .server_name;
+        .server_name
+        .ok_or_else(|| anyhow::anyhow!("sender has no bound server"))?;
     let client = get_server_client(ctx, &server_name).await?;
     download_attachment_to_path(ctx, client, &attachment, None, &save_to).await
 }
@@ -269,7 +270,8 @@ async fn download_inner(
         .get_user_descriptor(&sender)
         .await?
         .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
-        .server_name;
+        .server_name
+        .ok_or_else(|| anyhow::anyhow!("sender has no bound server"))?;
     let client = get_server_client(ctx, &server_name).await?;
 
     tokio::fs::create_dir_all(&save_dir).await?;

@@ -1,14 +1,21 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use nullspace_crypt::hash::Hash;
+use bytes::Bytes;
+use nullspace_crypt::{
+    hash::{BcsHashExt, Hash},
+    signing::{Signable, Signature, SigningPublic},
+};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::{SmolStr, format_smolstr};
 use thiserror::Error;
 
+use crate::directory::DirectoryUpdate;
 use crate::server::ServerName;
+use crate::timestamp::Timestamp;
 
 /// A username that matches the rules for usernames.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -17,8 +24,101 @@ pub struct UserName(SmolStr);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserDescriptor {
-    pub server_name: ServerName,
-    pub root_cert_hash: Hash,
+    pub server_name: Option<ServerName>,
+    pub nonce_max: u64,
+    pub devices: BTreeMap<Hash, DeviceState>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceState {
+    pub device_pk: SigningPublic,
+    pub can_issue: bool,
+    pub expiry: Timestamp,
+    pub active: bool,
+}
+
+impl DeviceState {
+    pub fn hash(&self) -> Hash {
+        self.device_pk.bcs_hash()
+    }
+
+    pub fn is_expired(&self, now_unix: u64) -> bool {
+        self.expiry.0 <= now_unix
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UserAction {
+    AddDevice {
+        device_pk: SigningPublic,
+        can_issue: bool,
+        expiry: Timestamp,
+    },
+    RemoveDevice {
+        device_pk: SigningPublic,
+    },
+    BindServer {
+        server_name: ServerName,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreparedUserAction {
+    pub nonce: u64,
+    pub signer_pk: SigningPublic,
+    pub action: UserAction,
+    pub next_descriptor: UserDescriptor,
+    pub signature: Signature,
+}
+
+impl PreparedUserAction {
+    pub fn to_directory_update(&self) -> anyhow::Result<DirectoryUpdate> {
+        let value = Some(Bytes::from(bcs::to_bytes(&self.next_descriptor)?));
+        let owners = self.next_descriptor.owner_keys();
+        Ok(DirectoryUpdate {
+            nonce: self.nonce,
+            signer_pk: self.signer_pk,
+            owners,
+            value,
+            signature: self.signature,
+        })
+    }
+}
+
+impl Signable for PreparedUserAction {
+    fn signed_value(&self) -> Vec<u8> {
+        let value = Some(
+            Bytes::from(
+                bcs::to_bytes(&self.next_descriptor).expect("bcs serialization failed"),
+            ),
+        );
+        let owners = self.next_descriptor.owner_keys();
+        bcs::to_bytes(&(&self.nonce, &self.signer_pk, &owners, &value))
+            .expect("bcs serialization failed")
+    }
+
+    fn signature_mut(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+}
+
+impl UserDescriptor {
+    pub fn owner_keys(&self) -> Vec<SigningPublic> {
+        let mut owners: Vec<SigningPublic> = self
+            .devices
+            .values()
+            .filter(|state| state.active)
+            .map(|state| state.device_pk)
+            .collect();
+        owners.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
+        owners.dedup();
+        owners
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]

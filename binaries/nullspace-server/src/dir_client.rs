@@ -40,13 +40,9 @@ pub async fn init_name() -> anyhow::Result<()> {
             );
         }
     } else {
-        tracing::info!("registering name step 1: adding server owner...");
-        client
-            .add_server_owner(&CONFIG.server_name, server_pk, &signing_sk)
-            .await?;
         tracing::info!("registering name step 1: inserting server descriptor...");
         client
-            .insert_server_descriptor(&CONFIG.server_name, &descriptor, &signing_sk)
+            .set_server_descriptor(&CONFIG.server_name, &descriptor, &signing_sk)
             .await?;
         tracing::info!(
             "registering name step 1: done! Registered {}",

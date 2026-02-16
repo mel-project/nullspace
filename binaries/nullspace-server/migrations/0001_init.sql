@@ -3,10 +3,10 @@ CREATE TABLE IF NOT EXISTS server_meta (
     created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS device_certificates (
+CREATE TABLE IF NOT EXISTS device_identities (
     device_hash BLOB PRIMARY KEY,
     username TEXT NOT NULL,
-    cert_chain BLOB NOT NULL
+    device_pk BLOB NOT NULL
 );
-CREATE INDEX IF NOT EXISTS device_certificates_username_idx
-    ON device_certificates (username);
+CREATE INDEX IF NOT EXISTS device_identities_username_idx
+    ON device_identities (username);

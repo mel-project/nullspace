@@ -3,18 +3,18 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use nanorpc::nanorpc_derive;
+use nullspace_crypt::{
+    hash::Hash,
+    signing::{Signable, Signature, SigningPublic},
+};
 use serde::{Deserialize, Serialize};
 use serde_with::base64::{Base64, UrlSafe};
 use serde_with::formats::Unpadded;
 use serde_with::{FromInto, IfIsHumanReadable, serde_as};
 use smol_str::SmolStr;
 use thiserror::Error;
-use nullspace_crypt::{
-    hash::Hash,
-    signing::{Signable, Signature, SigningPublic},
-};
 
-use crate::{Blob, timestamp::Timestamp};
+use crate::timestamp::Timestamp;
 
 #[nanorpc_derive]
 #[async_trait]
@@ -101,17 +101,56 @@ pub struct DirectoryChunk {
     pub updates: BTreeMap<String, Vec<DirectoryUpdate>>,
 }
 
-/// A whole chunk of directory updates.
+/// State of a key in the raw directory key-value store.
+#[serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectoryKeyState {
+    pub nonce_max: u64,
+    pub owners: Vec<SigningPublic>,
+    #[serde_as(as = "Option<IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>>")]
+    pub value: Option<Bytes>,
+}
+
+impl Default for DirectoryKeyState {
+    fn default() -> Self {
+        Self {
+            nonce_max: 0,
+            owners: Vec::new(),
+            value: None,
+        }
+    }
+}
+
+/// Signed update that replaces a key's current state (owners + value).
+#[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectoryUpdate {
-    pub prev_update_hash: Hash,
-    pub update_type: DirectoryUpdateInner,
+    pub nonce: u64,
+    pub signer_pk: SigningPublic,
+    pub owners: Vec<SigningPublic>,
+    #[serde_as(as = "Option<IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>>")]
+    pub value: Option<Bytes>,
     pub signature: Signature,
 }
 
 impl DirectoryUpdate {
-    fn hash(&self) -> Hash {
-        Hash::digest(&bcs::to_bytes(self).unwrap())
+    pub fn hash(&self) -> Hash {
+        Hash::digest(&bcs::to_bytes(self).expect("bcs serialization failed"))
+    }
+}
+
+impl Signable for DirectoryUpdate {
+    fn signed_value(&self) -> Vec<u8> {
+        bcs::to_bytes(&(&self.nonce, &self.signer_pk, &self.owners, &self.value))
+            .expect("bcs serialization failed")
+    }
+
+    fn signature_mut(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
     }
 }
 
@@ -129,110 +168,12 @@ impl Signable for DirectoryAnchor {
     }
 }
 
-impl Signable for DirectoryUpdate {
-    fn signed_value(&self) -> Vec<u8> {
-        bcs::to_bytes(&(&self.prev_update_hash, &self.update_type))
-            .expect("bcs serialization failed")
-    }
-
-    fn signature_mut(&mut self) -> &mut Signature {
-        &mut self.signature
-    }
-
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub enum DirectoryUpdateInner {
-    AddOwner(SigningPublic),
-    DelOwner(SigningPublic),
-    Update(Blob),
-}
-
-#[derive(Error, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum DirectoryHistoryError {
-    #[error("no owners available to verify update")]
-    NoOwners,
-    #[error("invalid update signature")]
-    InvalidSignature,
-    #[error("update hash does not link to previous update")]
-    InvalidPrevHash,
-}
-
-pub trait DirectoryHistoryIterExt<'a>: Iterator<Item = &'a DirectoryUpdate> + Sized {
-    fn verify_history(self) -> Result<(), DirectoryHistoryError>;
-}
-
-impl<'a, I> DirectoryHistoryIterExt<'a> for I
-where
-    I: Iterator<Item = &'a DirectoryUpdate>,
-{
-    fn verify_history(self) -> Result<(), DirectoryHistoryError> {
-        let mut owners: Vec<SigningPublic> = Vec::new();
-        let zero_hash = Hash::from_bytes([0u8; 32]);
-        let mut prev_hash: Option<Hash> = None;
-        for update in self {
-            match prev_hash {
-                Some(expected) => {
-                    if update.prev_update_hash != expected {
-                        return Err(DirectoryHistoryError::InvalidPrevHash);
-                    }
-                }
-                None => {
-                    if update.prev_update_hash != zero_hash {
-                        return Err(DirectoryHistoryError::InvalidPrevHash);
-                    }
-                }
-            };
-
-            let (is_valid, can_verify) = if owners.is_empty() {
-                match &update.update_type {
-                    DirectoryUpdateInner::AddOwner(owner_pk) => {
-                        (update.verify(*owner_pk).is_ok(), true)
-                    }
-                    _ => (false, false),
-                }
-            } else {
-                (
-                    owners.iter().any(|owner| update.verify(*owner).is_ok()),
-                    true,
-                )
-            };
-
-            if !is_valid {
-                return Err(if can_verify {
-                    DirectoryHistoryError::InvalidSignature
-                } else {
-                    DirectoryHistoryError::NoOwners
-                });
-            }
-
-            match &update.update_type {
-                DirectoryUpdateInner::AddOwner(owner_pk) => {
-                    if !owners.contains(owner_pk) {
-                        owners.push(*owner_pk);
-                    }
-                }
-                DirectoryUpdateInner::DelOwner(owner_pk) => {
-                    owners.retain(|existing| existing != owner_pk);
-                }
-                DirectoryUpdateInner::Update(_) => {}
-            }
-
-            prev_hash = Some(update.hash());
-        }
-        Ok(())
-    }
-}
-
 /// A response to a directory query.
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectoryResponse {
-    pub history: Vec<DirectoryUpdate>,
+    #[serde_as(as = "Option<IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>>")]
+    pub value: Option<Bytes>,
     pub proof_height: u64,
     #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
     pub proof_merkle_branch: Bytes,

@@ -2,96 +2,138 @@
 
 ## Primitives
 
-A **device public key** (DPK) is a long-lived Ed25519 signing public key for a device that stays stable for the lifetime of the device.
+A **device public key** (DPK) is a long-lived Ed25519 signing public key for one device.
 
-A **device secret key** (DSK) is the corresponding Ed25519 signing secret key for the device.
+A **device secret key** (DSK) is the corresponding private key.
 
-A **device certificate** is BCS-encoded as:
-
-```
-[pk, expiry, can_issue, signature]
-```
-
-- `pk`: the device public key being certified
-- `expiry`: a Unix timestamp after which the certificate is invalid
-- `can_issue`: whether this key is allowed to issue further device certificates
-- `signature`: an Ed25519 signature (by the issuer) over `bcs_encode([pk, expiry, can_issue])`
-
-A **certificate chain** is BCS-encoded as:
+At the raw directory layer, each key stores:
 
 ```
-[ancestors, this]
+[nonce_max, owners, value]
 ```
 
-- `ancestors`: an ordered list of certificates that lead from a trusted root certificate to the issuer of `this`
-- `this`: the device certificate being authenticated
-
-The chain always contains at least one certificate because the `this` field is required. For a self-signed root device certificate, `ancestors` is empty and `this` is the root certificate.
-
-## Verification rules
-
-Given a trusted root public key hash:
-- The chain must include a certificate whose public key hash matches the trusted root hash.
-- The root certificate must be self-signed by its own public key.
-- A non-expired certificate is accepted only if its signature verifies under a trusted signer.
-- Any certificate with `can_issue = true` adds its public key to the trusted signer set.
-- The `this` certificate must be non-expired and verifiable by a trusted signer.
-- Expired certificates are ignored.
-- Verification fails if no trusted root is found or if any remaining certificates cannot be verified.
-
-## Adding a device
-
-### "Proper" flow
-
-To add a new device to an existing username, an already-authorized device issues a device certificate for the new device public key, and the new device publishes its updated certificate chain.
-
-1) **New device generates keys**
-   - Generate a fresh device signing keypair `(new_dsk, new_dpk)`.
-
-2) **New device asks an authorized issuer to certify it**
-   - The issuer is any existing device whose certificate is valid and has `can_issue = true` (often the root device).
-   - The request should be authenticated out-of-band (for example, by scanning a QR code) and should include `new_dpk` and the requested `expiry` and `can_issue` policy.
-
-3) **Issuer creates a device certificate**
-   - The issuer signs `bcs_encode([new_dpk, expiry, can_issue])` with its device secret key, producing `signature`.
-   - The resulting certificate is `new_cert = [new_dpk, expiry, can_issue, signature]`.
-
-4) **Issuer constructs the new device's certificate chain**
-   - If `issuer_chain = [ancestors, issuer_cert]`, then the new chain is:
+For username keys (`@...`), the value is interpreted as a user descriptor:
 
 ```
-issue_device_cert(issuer_dsk, new_dpk, expiry, can_issue):
-    payload = [new_dpk, expiry, can_issue]
-    signature = ed25519_sign(issuer_dsk, bcs_encode(payload))
-    return [new_dpk, expiry, can_issue, signature]
-
-extend_chain(issuer_chain, new_cert):
-    [ancestors, issuer_cert] = issuer_chain
-    return [ancestors + [issuer_cert], new_cert]
+[nonce_max, server_name_or_none, devices_map]
 ```
 
-5) **New device publishes its chain**
-   - The new device uploads its certificate chain to its current server so that other clients can fetch and verify it.
-   - No directory update is required as long as the trusted root public key hash for the username is unchanged.
+where `devices_map` is keyed by `hash(bcs_encode(device_pk))` and each device entry is:
 
-### In practice
+```
+[device_pk, can_issue, expiry, active]
+```
 
-A client may implement adding a device as a **single transfer** from an existing device to the new device.
+- `device_pk`: device signing public key
+- `can_issue`: whether this device can add/remove devices
+- `expiry`: Unix timestamp after which this device cannot authorize typed user actions
+- `active`: whether this device is currently enabled
 
-Instead of having the new device generate a keypair and send only its public key to the issuer, the existing device generates a complete **device bundle** that contains everything the new device needs to become a fully functional device:
+## Typed username actions
 
-- the username
-- a freshly generated device signing secret key (so the new device can authenticate as that device)
-- a certificate chain for the corresponding public key, issued by the existing device, with the chosen `expiry` and `can_issue` settings
+The raw directory is untyped. Username semantics are implemented by directory client logic.
 
-This bundle is encoded as opaque bytes for the UI to transfer (typically as a single QR code, or as copy/paste text). The UI does not need to understand any of the contents.
+Typed username actions are:
+- add device: `["add_device", device_pk, can_issue, expiry]`
+- remove device: `["remove_device", device_pk]`
+- bind server: `["bind_server", server_name]`
 
-On the new device, the client:
+A prepared username action carries:
 
-1) decodes the bundle
-2) looks up the user descriptor in the directory to obtain the trusted root public key hash and the current server name
-3) verifies the bundled certificate chain against that trusted root
-4) authenticates to the server using the bundled certificate chain (which also causes the server to start serving that chain for this device)
-5) generates fresh medium-term Diffie-Hellman keys locally and registers the public key on the server, signed by the bundled device signing key
+```
+[nonce, signer_pk, action, next_user_descriptor, signature]
+```
 
-The device bundle contains a device signing secret key, so it must be transferred over a confidential, in-person channel (QR on a trusted screen, etc).
+The signature is checked against the raw update tuple derived from `next_user_descriptor`:
+
+```
+[nonce, signer_pk, owners(next_user_descriptor), bcs(next_user_descriptor)]
+```
+
+where `owners(next_user_descriptor)` is the sorted unique list of active device public keys.
+
+Typed validation rules:
+- signer must be active and non-expired in current user descriptor
+- add/remove device require signer with `can_issue = true`
+- for an uninitialized username, the first action must be self-signed add-device
+- nonce must be strictly greater than current nonce floor
+
+## Mempool and nonce behavior
+
+The directory accepts raw updates into a per-key mempool before chunk commit.
+
+Nonce policy at the raw layer:
+- new nonce must be greater than committed nonce and any accepted pending nonce for that key
+- nonces can skip values
+
+To support multi-step flows without waiting for chunk commit, the directory client keeps a local pending overlay for keys it has updated. This allows generating subsequent typed actions against the latest locally accepted state.
+
+At commit time, updates for each key are applied in nonce order and the SMT leaf is replaced by the resulting key state.
+
+## Add-device flow
+
+### Bundle producer (existing device)
+
+The existing device creates a bundle for the new device that contains:
+
+- `username`
+- a newly generated `new_device_secret`
+- a prepared add-device action
+
+Pseudocode:
+
+```
+make_bundle(existing_device, username, can_issue, expiry):
+    descriptor = directory_get_user_descriptor(username)
+    assert existing_device is active, non-expired, can_issue in descriptor
+
+    new_device_secret = random_device_secret()
+    nonce = choose_nonce_greater_than(descriptor.nonce_max)
+
+    action = ["add_device", public(new_device_secret), can_issue, expiry]
+    next_descriptor = apply_typed_action(descriptor, action, signer=public(existing_device), nonce)
+
+    signature = sign(
+        existing_device,
+        bcs_encode([
+            nonce,
+            public(existing_device),
+            owners(next_descriptor),
+            bcs_encode(next_descriptor)
+        ])
+    )
+
+    prepared = [nonce, public(existing_device), action, next_descriptor, signature]
+    return encode([username, new_device_secret, prepared])
+```
+
+### Bundle receiver (new device)
+
+The new device submits the bundled prepared action through the directory client, then authenticates to the bound server.
+
+```
+consume_bundle(bundle):
+    [username, new_device_secret, prepared] = decode(bundle)
+
+    dirclient_submit_prepared_user_action(username, prepared)
+    wait_until_committed(username, prepared.nonce)
+
+    descriptor = directory_get_user_descriptor(username)
+    assert public(new_device_secret) is active in descriptor
+    server_name = descriptor.server_name
+
+    auth = server_auth_challenge(username, new_device_secret)
+    publish_medium_key(auth, sign_medium_key(new_device_secret))
+```
+
+## Server authentication
+
+Device authentication is challenge/response:
+
+1) client asks server for challenge with `(username, device_pk)`
+2) server checks directory state membership and returns a short-lived challenge
+3) client signs `[username, device_pk, challenge]` with the device key
+4) server verifies signature and re-checks directory state
+5) server returns/reuses an auth token bound to `(username, device_hash)`
+
+No certificate chain exchange is required.

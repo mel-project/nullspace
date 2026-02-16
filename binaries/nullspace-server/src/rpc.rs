@@ -10,10 +10,10 @@ use bytes::Bytes;
 use moka::future::Cache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
 use nullspace_rpc_pool::PooledTransport;
-use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::server::{
-    AuthToken, MailboxAcl, MailboxEntry, MailboxId, MailboxRecvArgs, ProxyError, ServerName,
-    ServerProtocol, ServerRpcError, ServerService, SignedMediumPk,
+    AuthToken, DeviceAuthChallenge, MailboxAcl, MailboxEntry, MailboxId, MailboxRecvArgs,
+    ProxyError, ServerName, ServerProtocol, ServerRpcError, ServerService, SignedDeviceAuthRequest,
+    SignedMediumPk,
 };
 use nullspace_structs::{Blob, profile::UserProfile, timestamp::NanoTimestamp, username::UserName};
 
@@ -44,20 +44,19 @@ pub async fn rpc_handler(body: Bytes) -> impl IntoResponse {
 
 #[async_trait::async_trait]
 impl ServerProtocol for ServerRpc {
-    async fn v1_device_auth(
+    async fn v1_device_auth_start(
         &self,
         username: UserName,
-        cert: CertificateChain,
-    ) -> Result<AuthToken, ServerRpcError> {
-        device::device_auth(username, cert).await
+        device_pk: nullspace_crypt::signing::SigningPublic,
+    ) -> Result<DeviceAuthChallenge, ServerRpcError> {
+        device::device_auth_start(username, device_pk).await
     }
 
-    async fn v1_device_certs(
+    async fn v1_device_auth_finish(
         &self,
-        username: UserName,
-    ) -> Result<Option<BTreeMap<nullspace_crypt::hash::Hash, CertificateChain>>, ServerRpcError>
-    {
-        device::device_list(username).await
+        request: SignedDeviceAuthRequest,
+    ) -> Result<AuthToken, ServerRpcError> {
+        device::device_auth_finish(request).await
     }
 
     async fn v1_mailbox_send(

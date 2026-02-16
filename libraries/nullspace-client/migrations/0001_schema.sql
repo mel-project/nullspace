@@ -3,7 +3,6 @@ CREATE TABLE client_identity (
     username TEXT NOT NULL,
     server_name TEXT,
     device_secret BLOB NOT NULL,
-    cert_chain BLOB NOT NULL,
     medium_sk_current BLOB NOT NULL,
     medium_sk_prev BLOB NOT NULL
 );

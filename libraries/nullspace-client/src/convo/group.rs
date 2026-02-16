@@ -43,7 +43,7 @@ pub async fn create_group(
         .get_user_descriptor(&identity.username)
         .await?
         .context("identity username not in directory")?;
-    if user_descriptor.server_name != server_name {
+    if user_descriptor.server_name.as_ref() != Some(&server_name) {
         anyhow::bail!("group server must match username server");
     }
 
@@ -331,7 +331,7 @@ async fn send_management_message(
     let group_message = GroupMessage::encrypt_message(
         &content,
         identity.username.clone(),
-        identity.cert_chain.clone(),
+        identity.device_secret.public().signing_public(),
         &identity.device_secret,
         &group.descriptor.management_key,
     )

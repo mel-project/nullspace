@@ -4,7 +4,10 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use anyhow::Context;
 use moka::future::Cache;
-use nullspace_structs::server::{AuthToken, ServerClient, ServerName};
+use nullspace_crypt::signing::Signable;
+use nullspace_structs::server::{
+    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest,
+};
 
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
@@ -24,12 +27,26 @@ pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
     let cache = ctx.get(AUTH_TOKEN_CACHE);
     let cache_key = server_name.clone();
     let username = identity.username.clone();
-    let cert_chain = identity.cert_chain.clone();
+    let device_secret = identity.device_secret.clone();
     cache
         .try_get_with(cache_key, async move {
             let server = server_client_direct(ctx, &server_name).await?;
+            let device_pk = device_secret.public().signing_public();
+            let challenge = server
+                .v1_device_auth_start(username.clone(), device_pk)
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let mut request = SignedDeviceAuthRequest {
+                request: DeviceAuthRequest {
+                    username,
+                    device_pk,
+                    challenge: challenge.challenge,
+                },
+                signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+            };
+            request.sign(&device_secret);
             let auth = server
-                .v1_device_auth(username, cert_chain)
+                .v1_device_auth_finish(request)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             Ok(auth)
@@ -51,8 +68,12 @@ async fn own_server_name(
         .get_user_descriptor(&identity.username)
         .await?
         .context("identity username not in directory")?;
-    store_server_name(db, &descriptor.server_name).await?;
-    Ok(descriptor.server_name)
+    let server_name = descriptor
+        .server_name
+        .clone()
+        .context("identity username has no server binding")?;
+    store_server_name(db, &server_name).await?;
+    Ok(server_name)
 }
 
 async fn server_client_direct(

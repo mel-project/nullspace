@@ -2,19 +2,18 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     response::IntoResponse,
 };
 use bytes::Bytes;
 use nanorpc::{JrpcRequest, RpcService};
 use nullspace_crypt::{hash::Hash, signing::Signable};
 use nullspace_structs::directory::{
-    DirectoryAnchor, DirectoryChunk, DirectoryErr, DirectoryHeader, DirectoryHistoryIterExt,
+    DirectoryAnchor, DirectoryChunk, DirectoryErr, DirectoryHeader, DirectoryKeyState,
     DirectoryProtocol, DirectoryResponse, DirectoryService, DirectoryUpdate, PowAlgo, PowSeed,
     PowSolution,
 };
 use nullspace_structs::timestamp::Timestamp;
-
 use serde_json::json;
 
 use crate::{db, mirror, pow, state::DirectoryState};
@@ -120,9 +119,9 @@ impl DirectoryProtocol for DirectoryServer {
             .await
             .map_err(map_db_err)?
             .ok_or(DirectoryErr::RetryLater)?;
-        let (history, proof) = build_history_and_proof(&self.state, &key, header.smt_root).await?;
+        let (value, proof) = build_value_and_proof(&self.state, &key, header.smt_root).await?;
         Ok(DirectoryResponse {
-            history,
+            value,
             proof_height: height,
             proof_merkle_branch: proof,
         })
@@ -161,16 +160,17 @@ impl DirectoryProtocol for DirectoryServer {
             .await
             .map_err(map_db_err)?
             .ok_or(DirectoryErr::RetryLater)?;
-        let mut history = load_history_from_smt(&self.state, header.smt_root, &key).await?;
+
+        let committed = load_value_from_smt(&self.state, header.smt_root, &key).await?;
+
         let mut staging = self.state.staging.lock().await;
-        if let Some(pending) = staging.get(&key) {
-            history.extend(pending.iter().cloned());
-        }
-        history.push(update.clone());
-        history
-            .iter()
-            .verify_history()
-            .map_err(|err| DirectoryErr::UpdateRejected(err.to_string()))?;
+        let pending: Vec<DirectoryUpdate> = staging
+            .get(&key)
+            .map(|list| list.to_vec())
+            .unwrap_or_default();
+
+        validate_update(committed, &pending, &update)?;
+
         staging.entry(key).or_default().push(update);
         Ok(())
     }
@@ -181,6 +181,7 @@ pub async fn commit_chunk(state: Arc<DirectoryState>) -> anyhow::Result<()> {
         let mut staging = state.staging.lock().await;
         std::mem::take(&mut *staging)
     };
+
     let (height, prev_hash, last_header) = match db::load_last_header(&state.pool).await? {
         Some((last_height, header)) => {
             let prev_hash = Hash::digest(&bcs::to_bytes(&header)?);
@@ -189,40 +190,27 @@ pub async fn commit_chunk(state: Arc<DirectoryState>) -> anyhow::Result<()> {
         None => (0, Hash::from_bytes([0u8; 32]), None),
     };
 
-    if !updates.is_empty() {
-        for (key, list) in &updates {
-            let mut history = match last_header {
-                Some((_last_height, header)) => {
-                    load_history_from_smt(&state, header.smt_root, key).await?
-                }
-                None => Vec::new(),
-            };
-            history.extend(list.iter().cloned());
-            history
-                .iter()
-                .verify_history()
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        }
-    }
-
     let mut tree = match last_header {
         Some((_last_height, header)) => {
             novasmt::Tree::open(state.merkle.as_ref(), header.smt_root.to_bytes())
         }
         None => novasmt::Tree::empty(state.merkle.as_ref()),
     };
+
+    let base_root = last_header.map(|(_, header)| header.smt_root);
     for (key, list) in &updates {
-        let mut history = match last_header {
-            Some((_last_height, header)) => {
-                load_history_from_smt(&state, header.smt_root, key).await?
-            }
-            None => Vec::new(),
+        let committed = match base_root {
+            Some(root) => load_value_from_smt(&state, root, key).await?,
+            None => None,
         };
-        history.extend(list.iter().cloned());
+        let next = apply_updates_for_key(committed.map(Bytes::from), list)
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
         let key_hash = Hash::digest(key.as_bytes());
-        let val = bcs::to_bytes(&history)?;
-        tree = tree.with(key_hash.to_bytes(), &val)?;
+        let value_bytes = next.map(|b| b.to_vec()).unwrap_or_default();
+        tree = tree.with(key_hash.to_bytes(), &value_bytes)?;
     }
+
     let smt_root = tree.commit()?;
     state.merkle.flush();
 
@@ -238,46 +226,122 @@ pub async fn commit_chunk(state: Arc<DirectoryState>) -> anyhow::Result<()> {
     tracing::debug!(
         height,
         update_count,
-        header = debug(&header),
+        header = ?header,
         "committed directory chunk"
     );
     Ok(())
 }
 
-async fn build_history_and_proof(
-    state: &DirectoryState,
-    key: &str,
-    root: Hash,
-) -> Result<(Vec<DirectoryUpdate>, Bytes), DirectoryErr> {
-    let tree = novasmt::Tree::open(state.merkle.as_ref(), root.to_bytes());
-    let key_hash = Hash::digest(key.as_bytes());
-    let (val, proof) = tree
-        .get_with_proof(key_hash.to_bytes())
-        .map_err(|_| DirectoryErr::RetryLater)?;
-    let compressed = proof.compress();
-    let history = if val.is_empty() {
-        Vec::new()
-    } else {
-        bcs::from_bytes(&val).map_err(|_| DirectoryErr::RetryLater)?
-    };
-    Ok((history, Bytes::from(compressed.0)))
-}
-
-async fn load_history_from_smt(
+pub async fn load_value_from_smt(
     state: &DirectoryState,
     root: Hash,
     key: &str,
-) -> Result<Vec<DirectoryUpdate>, DirectoryErr> {
+) -> Result<Option<Vec<u8>>, DirectoryErr> {
     let tree = novasmt::Tree::open(state.merkle.as_ref(), root.to_bytes());
     let key_hash = Hash::digest(key.as_bytes());
     let val = tree
         .get(key_hash.to_bytes())
         .map_err(|_| DirectoryErr::RetryLater)?;
     if val.is_empty() {
-        Ok(Vec::new())
+        Ok(None)
     } else {
-        bcs::from_bytes(&val).map_err(|_| DirectoryErr::RetryLater)
+        Ok(Some(val.to_vec()))
     }
+}
+
+pub async fn build_value_and_proof(
+    state: &DirectoryState,
+    key: &str,
+    root: Hash,
+) -> Result<(Option<Bytes>, Bytes), DirectoryErr> {
+    let tree = novasmt::Tree::open(state.merkle.as_ref(), root.to_bytes());
+    let key_hash = Hash::digest(key.as_bytes());
+    let (val, proof) = tree
+        .get_with_proof(key_hash.to_bytes())
+        .map_err(|_| DirectoryErr::RetryLater)?;
+    let compressed = proof.compress();
+    let value = if val.is_empty() {
+        None
+    } else {
+        Some(Bytes::from(val.to_vec()))
+    };
+    Ok((value, Bytes::from(compressed.0)))
+}
+
+fn validate_update(
+    committed: Option<Vec<u8>>,
+    pending: &[DirectoryUpdate],
+    update: &DirectoryUpdate,
+) -> Result<(), DirectoryErr> {
+    let mut state = decode_key_state(committed.as_deref())?;
+    let mut sorted_pending = pending.to_vec();
+    sorted_pending.sort_by_key(|item| item.nonce);
+    for pending_update in &sorted_pending {
+        apply_update(&mut state, pending_update)?;
+    }
+    apply_update(&mut state, update)?;
+    Ok(())
+}
+
+pub fn apply_updates_for_key(
+    committed: Option<Bytes>,
+    updates: &[DirectoryUpdate],
+) -> Result<Option<Bytes>, DirectoryErr> {
+    let mut state = decode_key_state(committed.as_deref())?;
+    let mut sorted_updates = updates.to_vec();
+    sorted_updates.sort_by_key(|item| item.nonce);
+    for update in &sorted_updates {
+        apply_update(&mut state, update)?;
+    }
+
+    Ok(Some(Bytes::from(
+        bcs::to_bytes(&state).map_err(|_| DirectoryErr::RetryLater)?,
+    )))
+}
+
+fn decode_key_state(raw: Option<&[u8]>) -> Result<DirectoryKeyState, DirectoryErr> {
+    match raw {
+        Some(raw) => bcs::from_bytes(raw).map_err(|_| DirectoryErr::RetryLater),
+        None => Ok(DirectoryKeyState::default()),
+    }
+}
+
+fn apply_update(state: &mut DirectoryKeyState, update: &DirectoryUpdate) -> Result<(), DirectoryErr> {
+    update
+        .verify(update.signer_pk)
+        .map_err(|_| DirectoryErr::UpdateRejected("invalid update signature".into()))?;
+
+    if update.nonce <= state.nonce_max {
+        return Err(DirectoryErr::UpdateRejected(format!(
+            "nonce {} must be greater than current nonce {}",
+            update.nonce, state.nonce_max
+        )));
+    }
+
+    let owners = canonicalize_owners(&update.owners);
+    if state.owners.is_empty() {
+        if !owners.contains(&update.signer_pk) {
+            return Err(DirectoryErr::UpdateRejected(
+                "first update must include signer in owners list".into(),
+            ));
+        }
+    } else if !state.owners.contains(&update.signer_pk) {
+        return Err(DirectoryErr::UpdateRejected(
+            "signer is not an owner of this key".into(),
+        ));
+    }
+
+    state.nonce_max = update.nonce;
+    state.owners = owners;
+    state.value = update.value.clone();
+    Ok(())
+}
+
+fn canonicalize_owners(owners: &[nullspace_crypt::signing::SigningPublic]) -> Vec<nullspace_crypt::signing::SigningPublic> {
+    let mut out = owners.to_vec();
+    out.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
+    out.dedup();
+    out
 }
 
 fn map_db_err(err: anyhow::Error) -> DirectoryErr {

@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use nanorpc::DynRpcTransport;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::directory::{DirectoryAnchor, DirectoryClient, DirectoryHeader};

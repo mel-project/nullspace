@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -6,14 +5,17 @@ use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
-use nullspace_crypt::hash::{BcsHashExt, Hash};
+use nullspace_crypt::signing::Signable;
 use nullspace_rpc_pool::RpcPool;
 use nullspace_structs::{
     Blob,
-    certificate::{CertificateChain, DeviceCertificate, DeviceSecret},
-    server::{AuthToken, ServerClient, MailboxId, MailboxRecvArgs},
+    certificate::DeviceSecret,
+    server::{
+        AuthToken, DeviceAuthRequest, MailboxId, MailboxRecvArgs, ServerClient,
+        SignedDeviceAuthRequest,
+    },
+    timestamp::NanoTimestamp,
     username::UserName,
-    timestamp::{NanoTimestamp, Timestamp},
 };
 
 use crate::shared::{GlobalArgs, build_dir_client, print_json};
@@ -26,65 +28,28 @@ pub struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    List {
-        username: UserName,
-    },
     Auth {
         username: UserName,
         #[arg(long)]
-        chain: PathBuf,
+        device_secret: PathBuf,
     },
     NewSecret {
         #[arg(long)]
         out: PathBuf,
     },
-    ChainInit {
-        #[arg(long)]
-        root_secret: PathBuf,
-        #[arg(long)]
-        ttl_secs: Option<u64>,
-        #[arg(long)]
-        leaf: bool,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    ChainIssue {
-        #[arg(long)]
-        chain: PathBuf,
-        #[arg(long)]
-        issuer_secret: PathBuf,
-        #[arg(long)]
-        subject_secret: PathBuf,
-        #[arg(long)]
-        ttl_secs: Option<u64>,
-        #[arg(long)]
-        leaf: bool,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    ChainDump {
-        #[arg(long)]
-        chain: PathBuf,
-    },
     MailboxSend {
         username: UserName,
         #[arg(long)]
-        chain: PathBuf,
+        device_secret: PathBuf,
         message: String,
     },
     MailboxRecv {
         username: UserName,
         #[arg(long)]
-        chain: PathBuf,
+        device_secret: PathBuf,
         #[arg(long, default_value_t = 30000)]
         timeout_ms: u64,
     },
-}
-
-#[derive(Serialize)]
-struct ChainListOutput {
-    found: bool,
-    chains: Option<BTreeMap<Hash, CertificateChain>>,
 }
 
 #[derive(Serialize)]
@@ -93,36 +58,17 @@ struct AuthOutput {
     auth_token: AuthToken,
 }
 
-#[derive(Serialize)]
-struct ChainDumpEntry {
-    cert: DeviceCertificate,
-    pk_hash: nullspace_crypt::hash::Hash,
-}
-
 pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
     let rpc_pool = RpcPool::new();
     match args.command {
-        Command::List { username } => {
+        Command::Auth {
+            username,
+            device_secret,
+        } => {
+            let device_secret = read_bcs::<DeviceSecret>(&device_secret)?;
             let endpoint = resolve_server_endpoint(global, &username).await?;
             let client = ServerClient::from(rpc_pool.rpc(endpoint));
-            let chains = client
-                .v1_device_certs(username)
-                .await?
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-            let output = ChainListOutput {
-                found: chains.is_some(),
-                chains,
-            };
-            print_json(&output)?;
-        }
-        Command::Auth { username, chain } => {
-            let chain = read_bcs::<CertificateChain>(&chain)?;
-            let endpoint = resolve_server_endpoint(global, &username).await?;
-            let client = ServerClient::from(rpc_pool.rpc(endpoint));
-            let auth_token = client
-                .v1_device_auth(username, chain)
-                .await?
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let auth_token = authenticate(&client, &username, &device_secret).await?;
             let output = AuthOutput {
                 status: "ok",
                 auth_token,
@@ -133,67 +79,15 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             let secret = DeviceSecret::random();
             write_secret_file(&out, &secret)?;
         }
-        Command::ChainInit {
-            root_secret,
-            ttl_secs,
-            leaf,
-            out,
-        } => {
-            let root_secret = read_bcs::<DeviceSecret>(&root_secret)?;
-            let expiry = expiry_from_ttl(ttl_secs);
-            let cert = root_secret.self_signed(expiry, !leaf);
-            let chain = CertificateChain {
-                ancestors: Vec::new(),
-                this: cert,
-            };
-            write_bcs(&out, &chain)?;
-        }
-        Command::ChainIssue {
-            chain,
-            issuer_secret,
-            subject_secret,
-            ttl_secs,
-            leaf,
-            out,
-        } => {
-            let chain = read_bcs::<CertificateChain>(&chain)?;
-            let issuer_secret = read_bcs::<DeviceSecret>(&issuer_secret)?;
-            let subject_secret = read_bcs::<DeviceSecret>(&subject_secret)?;
-            let expiry = expiry_from_ttl(ttl_secs);
-            let cert = issuer_secret.issue_certificate(&subject_secret.public(), expiry, !leaf);
-            let mut ancestors = chain.ancestors;
-            ancestors.push(chain.this);
-            let chain = CertificateChain {
-                ancestors,
-                this: cert,
-            };
-            write_bcs(&out, &chain)?;
-        }
-        Command::ChainDump { chain } => {
-            let chain = read_bcs::<CertificateChain>(&chain)?;
-            let dump: Vec<ChainDumpEntry> = chain
-                .ancestors
-                .into_iter()
-                .chain(std::iter::once(chain.this))
-                .map(|cert| ChainDumpEntry {
-                    pk_hash: cert.pk.bcs_hash(),
-                    cert,
-                })
-                .collect();
-            print_json(&dump)?;
-        }
         Command::MailboxSend {
             username,
-            chain,
+            device_secret,
             message,
         } => {
             let endpoint = resolve_server_endpoint(global, &username).await?;
             let client = ServerClient::from(rpc_pool.rpc(endpoint));
-            let chain = read_bcs::<CertificateChain>(&chain)?;
-            let auth = client
-                .v1_device_auth(username.clone(), chain)
-                .await?
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let device_secret = read_bcs::<DeviceSecret>(&device_secret)?;
+            let auth = authenticate(&client, &username, &device_secret).await?;
             let mailbox = MailboxId::direct(&username);
             let msg = Blob {
                 kind: Blob::V1_PLAINTEXT_DIRECT_MESSAGE.into(),
@@ -206,16 +100,13 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
         }
         Command::MailboxRecv {
             username,
-            chain,
+            device_secret,
             timeout_ms,
         } => {
             let endpoint = resolve_server_endpoint(global, &username).await?;
             let client = ServerClient::from(rpc_pool.rpc(endpoint));
-            let chain = read_bcs::<CertificateChain>(&chain)?;
-            let auth = client
-                .v1_device_auth(username.clone(), chain)
-                .await?
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            let device_secret = read_bcs::<DeviceSecret>(&device_secret)?;
+            let auth = authenticate(&client, &username, &device_secret).await?;
             let mailbox = MailboxId::direct(&username);
             let mut after = NanoTimestamp(0);
             loop {
@@ -242,15 +133,43 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn authenticate(
+    client: &ServerClient,
+    username: &UserName,
+    device_secret: &DeviceSecret,
+) -> anyhow::Result<AuthToken> {
+    let device_pk = device_secret.public().signing_public();
+    let challenge = client
+        .v1_device_auth_start(username.clone(), device_pk)
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let mut request = SignedDeviceAuthRequest {
+        request: DeviceAuthRequest {
+            username: username.clone(),
+            device_pk,
+            challenge: challenge.challenge,
+        },
+        signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+    };
+    request.sign(device_secret);
+    client
+        .v1_device_auth_finish(request)
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
 async fn resolve_server_endpoint(global: &GlobalArgs, username: &UserName) -> anyhow::Result<Url> {
     let client = build_dir_client(global).await?;
     let descriptor = client
         .get_user_descriptor(username)
         .await?
         .with_context(|| format!("username not found: {}", username.as_str()))?;
-    let server_name = descriptor.server_name;
+    let server_name = descriptor
+        .server_name
+        .as_ref()
+        .with_context(|| format!("username has no server binding: {}", username.as_str()))?;
     let server = client
-        .get_server_descriptor(&server_name)
+        .get_server_descriptor(server_name)
         .await?
         .with_context(|| format!("server not found: {}", server_name.as_str()))?;
     let url = server
@@ -259,16 +178,6 @@ async fn resolve_server_endpoint(global: &GlobalArgs, username: &UserName) -> an
         .cloned()
         .context("server has no public URLs")?;
     Ok(url)
-}
-
-fn expiry_from_ttl(ttl_secs: Option<u64>) -> Timestamp {
-    match ttl_secs {
-        Some(ttl) => {
-            let now = Timestamp::now().0;
-            Timestamp(now.saturating_add(ttl))
-        }
-        None => Timestamp(u64::MAX),
-    }
 }
 
 fn read_bcs<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {

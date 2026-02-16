@@ -21,9 +21,8 @@ pub async fn get_profile(
     };
 
     let mut verified = false;
-    for chain in user.device_chains.values() {
-        let device = chain.last_device();
-        if profile.verify(device.pk.signing_public()).is_ok() {
+    for device in user.devices.values() {
+        if profile.verify(device.device_pk).is_ok() {
             verified = true;
             break;
         }

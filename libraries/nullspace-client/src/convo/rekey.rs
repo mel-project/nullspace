@@ -9,12 +9,12 @@ use tracing::warn;
 use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::dh::DhPublic;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
-use nullspace_crypt::signing::Signable;
+use nullspace_crypt::signing::{Signable, SigningPublic};
 use nullspace_structs::Blob;
-use nullspace_structs::certificate::CertificateChain;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::server::{MailboxId, SignedMediumPk};
-use nullspace_structs::username::UserName;
+use nullspace_structs::timestamp::Timestamp;
+use nullspace_structs::username::{DeviceState, UserName};
 
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
@@ -85,7 +85,7 @@ async fn send_group_rekey(
     let signed = DeviceSigned::sign_bytes(
         Bytes::from(payload),
         identity.username.clone(),
-        identity.cert_chain.clone(),
+        identity.device_secret.public().signing_public(),
         &identity.device_secret,
     );
     let signed_bytes = bcs::to_bytes(&signed)?;
@@ -119,8 +119,7 @@ async fn collect_group_recipients(
     for member in members.into_iter().filter(RosterMember::is_active) {
         let username = member.username;
         let peer = get_user_info(ctx, &username).await?;
-        let user_recipients =
-            collect_recipients(&username, &peer.device_chains, &peer.medium_pks)?;
+        let user_recipients = collect_recipients(&username, &peer.devices, &peer.medium_pks)?;
         if !user_recipients.is_empty() {
             handles.push(username);
             recipients.extend(user_recipients);
@@ -135,27 +134,16 @@ async fn collect_group_recipients(
 
 fn collect_recipients(
     username: &UserName,
-    chains: &BTreeMap<Hash, CertificateChain>,
+    devices: &BTreeMap<Hash, DeviceState>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<DhPublic>> {
     let mut recipients = Vec::new();
-    for (device_hash, chain) in chains {
-        let cert = chain.last_device();
-        let cert_hash = cert.pk.bcs_hash();
-        if &cert_hash != device_hash {
-            warn!(
-                username = %username,
-                device_hash = %device_hash,
-                cert_hash = %cert_hash,
-                "device certificate hash mismatch"
-            );
-            continue;
-        }
+    for (device_hash, device) in devices {
         let Some(medium_pk) = medium_pks.get(device_hash) else {
             warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
-        if medium_pk.verify(cert.pk.signing_public()).is_err() {
+        if medium_pk.verify(device.device_pk).is_err() {
             warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
@@ -194,8 +182,9 @@ pub(super) async fn process_group_rekey_entry(
         .get_user_descriptor(&sender_username)
         .await?
         .context("sender username not in directory")?;
+    ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let payload = signed
-        .verify_bytes(sender_descriptor.root_cert_hash)
+        .verify_bytes()
         .map_err(|_| anyhow::anyhow!("failed to verify device-signed rekey"))?;
     let (rekey_group, key_bytes): (nullspace_structs::group::GroupId, [u8; 32]) =
         bcs::from_bytes(&payload)?;
@@ -215,6 +204,20 @@ pub(super) async fn process_group_rekey_entry(
         .execute(db)
         .await?;
     DbNotify::touch();
+    Ok(())
+}
+
+fn ensure_sender_device_allowed(
+    sender_descriptor: &nullspace_structs::username::UserDescriptor,
+    sender_device_pk: SigningPublic,
+) -> anyhow::Result<()> {
+    let sender_hash = sender_device_pk.bcs_hash();
+    let Some(device) = sender_descriptor.devices.get(&sender_hash) else {
+        anyhow::bail!("sender device not found in directory state");
+    };
+    if !device.active || device.is_expired(Timestamp::now().0) {
+        anyhow::bail!("sender device is inactive or expired");
+    }
     Ok(())
 }
 

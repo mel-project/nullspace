@@ -33,7 +33,11 @@ async fn rotate_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         .get_user_descriptor(&identity.username)
         .await?
         .context("identity username not in directory")?;
-    let server = get_server_client(ctx, &descriptor.server_name).await?;
+    let server_name = descriptor
+        .server_name
+        .as_ref()
+        .context("identity username has no server binding")?;
+    let server = get_server_client(ctx, server_name).await?;
     let auth = get_auth_token(ctx).await?;
     let new_sk = DhSecret::random();
     let mut signed = SignedMediumPk {

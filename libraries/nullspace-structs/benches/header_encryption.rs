@@ -2,19 +2,15 @@ use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nullspace_crypt::dh::DhSecret;
 use nullspace_structs::Blob;
-use nullspace_structs::certificate::{CertificateChain, DeviceSecret};
+use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::username::UserName;
 use nullspace_structs::event::Event;
-use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
+use nullspace_structs::timestamp::NanoTimestamp;
 
 fn dm_benchmarks(c: &mut Criterion) {
     let sender_secret = DeviceSecret::random();
-    let sender_cert = sender_secret.self_signed(Timestamp(u64::MAX), true);
-    let sender_chain = CertificateChain {
-        ancestors: Vec::new(),
-        this: sender_cert,
-    };
+    let sender_device_pk = sender_secret.public().signing_public();
     let sender_username = UserName::parse("@sender01").expect("sender username");
     let recipient = UserName::parse("@rcpt01").expect("recipient username");
 
@@ -45,7 +41,7 @@ fn dm_benchmarks(c: &mut Criterion) {
             let signed = DeviceSigned::sign_blob(
                 &message,
                 sender_username.clone(),
-                sender_chain.clone(),
+                sender_device_pk,
                 &sender_secret,
             )
             .expect("sign");
@@ -61,7 +57,7 @@ fn dm_benchmarks(c: &mut Criterion) {
             let signed = DeviceSigned::sign_blob(
                 &message,
                 sender_username.clone(),
-                sender_chain.clone(),
+                sender_device_pk,
                 &sender_secret,
             )
             .expect("sign");

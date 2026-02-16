@@ -156,7 +156,7 @@ create_group():
 ```
 send_group_message(group_id, event):
     // sign the event
-    signed = device_sign(my_username, my_cert_chain, my_device_signing_sk, bcs_encode(event))
+    signed = device_sign(my_username, my_device_pk, my_device_signing_sk, bcs_encode(event))
 
     // encrypt under current group message key
     nonce = random_bytes(24)
@@ -173,7 +173,7 @@ recv_group_message_entry(body_bytes):
     signed_bytes = xchacha20_poly1305_decrypt(key=group_message_key_current, nonce=nonce, ciphertext=ct)
         or xchacha20_poly1305_decrypt(key=group_message_key_previous, nonce=nonce, ciphertext=ct)
 
-    (sender, payload_bytes) = device_verify(signed_bytes, directory_root_hash(sender))
+    (sender, payload_bytes) = device_verify(signed_bytes)
     event = bcs_decode(payload_bytes)
     assert event[0] == group_id
     return event
@@ -235,7 +235,7 @@ JSON encoding rules for binary values:
 send_group_management(group_id, manage_json):
     manage_event = [group_id, now_nanos, "application/vnd.nullspace.v1.group_manage", manage_json]
 
-    signed = device_sign(my_username, my_cert_chain, my_device_signing_sk, bcs_encode(manage_event))
+    signed = device_sign(my_username, my_device_pk, my_device_signing_sk, bcs_encode(manage_event))
     nonce = random_bytes(24)
     ct = xchacha20_poly1305_encrypt(key=management_key, nonce=nonce, plaintext=signed)
     mailbox_send(mailbox=group_management_mailbox_id, kind="v1.group_message", body=bcs_encode([nonce, ct]))

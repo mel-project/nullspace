@@ -51,7 +51,6 @@ impl ConvoRow<'_> {
             ui.colored_label(sender_color, format!("{}: ", sender_label));
             render_message_body(ui, self.app, self.message);
         });
-        ui.add_space(4.0);
         ui.response()
     }
 

@@ -2,11 +2,12 @@ use std::time::Duration;
 
 use anyctx::AnyCtx;
 use nullspace_crypt::hash::BcsHashExt;
+use nullspace_crypt::signing::SigningPublic;
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::{Event, EventPayload, Recipient};
 use nullspace_structs::server::{MailboxId, ServerName};
-use nullspace_structs::timestamp::NanoTimestamp;
+use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
 use tracing::warn;
 
 use crate::database::{
@@ -16,7 +17,6 @@ use crate::database::{
 use crate::identity::Identity;
 use crate::long_poll::LONG_POLLER;
 use crate::server::get_server_client;
-use crate::user_info::get_user_root_hash;
 use crate::{attachments::store_attachment_root, config::Config};
 
 use super::dm_common::{device_auth, refresh_own_server_name};
@@ -118,9 +118,14 @@ async fn process_mailbox_entry(
     };
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender_username = signed.sender().clone();
-    let sender_root_hash = get_user_root_hash(ctx, &sender_username).await?;
+    let sender_descriptor = ctx
+        .get(crate::directory::DIR_CLIENT)
+        .get_user_descriptor(&sender_username)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("sender username not in directory"))?;
+    ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let message = signed
-        .verify_blob(sender_root_hash)
+        .verify_blob()
         .map_err(|_| anyhow::anyhow!("failed to verify device-signed message"))?;
     if message.kind != Blob::V1_MESSAGE_CONTENT {
         warn!(kind = %message.kind, "ignoring non-message-content dm");
@@ -172,5 +177,19 @@ async fn process_mailbox_entry(
     .bind(entry.received_at.0 as i64)
     .execute(&mut *conn)
     .await?;
+    Ok(())
+}
+
+fn ensure_sender_device_allowed(
+    sender_descriptor: &nullspace_structs::username::UserDescriptor,
+    sender_device_pk: SigningPublic,
+) -> anyhow::Result<()> {
+    let sender_hash = sender_device_pk.bcs_hash();
+    let Some(device) = sender_descriptor.devices.get(&sender_hash) else {
+        anyhow::bail!("sender device not found in directory state");
+    };
+    if !device.active || device.is_expired(Timestamp::now().0) {
+        anyhow::bail!("sender device is inactive or expired");
+    }
     Ok(())
 }

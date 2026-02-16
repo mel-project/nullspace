@@ -31,7 +31,6 @@ pub trait DirectoryProtocol {
     async fn v1_get_item(&self, key: String) -> Result<DirectoryResponse, DirectoryErr>;
     async fn v1_insert_update(
         &self,
-        key: String,
         update: DirectoryUpdate,
         pow: PowSolution,
     ) -> Result<(), DirectoryErr>;
@@ -125,6 +124,7 @@ impl Default for DirectoryKeyState {
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectoryUpdate {
+    pub key: String,
     pub nonce: u64,
     pub signer_pk: SigningPublic,
     pub owners: Vec<SigningPublic>,
@@ -141,8 +141,14 @@ impl DirectoryUpdate {
 
 impl Signable for DirectoryUpdate {
     fn signed_value(&self) -> Vec<u8> {
-        bcs::to_bytes(&(&self.nonce, &self.signer_pk, &self.owners, &self.value))
-            .expect("bcs serialization failed")
+        bcs::to_bytes(&(
+            &self.key,
+            &self.nonce,
+            &self.signer_pk,
+            &self.owners,
+            &self.value,
+        ))
+        .expect("bcs serialization failed")
     }
 
     fn signature_mut(&mut self) -> &mut Signature {

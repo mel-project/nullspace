@@ -110,10 +110,7 @@ impl PerUrlPool {
     }
 
     async fn call_raw(&self, req: JrpcRequest) -> Result<JrpcResponse, anyhow::Error> {
-        let index = self
-            .next_index
-            .fetch_add(1, Ordering::Relaxed)
-            % self.max_concurrency;
+        let index = self.next_index.fetch_add(1, Ordering::Relaxed) % self.max_concurrency;
         let transport = self.get_or_init_transport(index);
         let result = transport.call_raw(req).await;
         if result.is_err() {
@@ -145,9 +142,10 @@ impl PerUrlPool {
             .expect("rpc pool transport lock poisoned");
         for slot in transports.iter_mut() {
             if let Some(existing) = slot.as_ref()
-                && Arc::ptr_eq(existing, target) {
-                    *slot = None;
-                }
+                && Arc::ptr_eq(existing, target)
+            {
+                *slot = None;
+            }
         }
     }
 }

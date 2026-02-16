@@ -40,15 +40,10 @@ impl MirrorState {
 
 pub async fn forward_insert(
     mirror: &MirrorState,
-    key: String,
     update: DirectoryUpdate,
     pow_solution: PowSolution,
 ) -> Result<(), DirectoryErr> {
-    match mirror
-        .client
-        .v1_insert_update(key, update, pow_solution)
-        .await
-    {
+    match mirror.client.v1_insert_update(update, pow_solution).await {
         Ok(res) => res,
         Err(err) => {
             tracing::warn!(error = ?err, "mirror insert upstream failed");
@@ -159,7 +154,7 @@ async fn apply_chunk(
                 .map(bytes::Bytes::from),
             None => None,
         };
-        let next = apply_updates_for_key(committed, updates)
+        let next = apply_updates_for_key(key.as_str(), committed, updates)
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         let key_hash = Hash::digest(key.as_bytes());
         let val = next.map(|value| value.to_vec()).unwrap_or_default();

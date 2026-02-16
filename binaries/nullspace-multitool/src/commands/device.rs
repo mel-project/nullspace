@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use serde::{Serialize, de::DeserializeOwned};
-use url::Url;
 use nullspace_crypt::signing::Signable;
 use nullspace_rpc_pool::RpcPool;
 use nullspace_structs::{
@@ -17,6 +15,8 @@ use nullspace_structs::{
     timestamp::NanoTimestamp,
     username::UserName,
 };
+use serde::{Serialize, de::DeserializeOwned};
+use url::Url;
 
 use crate::shared::{GlobalArgs, build_dir_client, print_json};
 

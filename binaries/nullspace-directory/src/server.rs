@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::IntoResponse,
 };
 use bytes::Bytes;
@@ -129,12 +129,12 @@ impl DirectoryProtocol for DirectoryServer {
 
     async fn v1_insert_update(
         &self,
-        key: String,
         update: DirectoryUpdate,
         pow_solution: PowSolution,
     ) -> Result<(), DirectoryErr> {
+        let key = update.key.clone();
         if let Some(mirror) = &self.state.mirror {
-            return mirror::forward_insert(mirror, key, update, pow_solution).await;
+            return mirror::forward_insert(mirror, update, pow_solution).await;
         }
         let now = unix_time();
         db::purge_pow_seeds(&self.state.pool, now)
@@ -169,7 +169,7 @@ impl DirectoryProtocol for DirectoryServer {
             .map(|list| list.to_vec())
             .unwrap_or_default();
 
-        validate_update(committed, &pending, &update)?;
+        validate_update(&key, committed, &pending, &update)?;
 
         staging.entry(key).or_default().push(update);
         Ok(())
@@ -203,7 +203,7 @@ pub async fn commit_chunk(state: Arc<DirectoryState>) -> anyhow::Result<()> {
             Some(root) => load_value_from_smt(&state, root, key).await?,
             None => None,
         };
-        let next = apply_updates_for_key(committed.map(Bytes::from), list)
+        let next = apply_updates_for_key(key, committed.map(Bytes::from), list)
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
         let key_hash = Hash::digest(key.as_bytes());
@@ -269,6 +269,7 @@ pub async fn build_value_and_proof(
 }
 
 fn validate_update(
+    key: &str,
     committed: Option<Vec<u8>>,
     pending: &[DirectoryUpdate],
     update: &DirectoryUpdate,
@@ -277,13 +278,14 @@ fn validate_update(
     let mut sorted_pending = pending.to_vec();
     sorted_pending.sort_by_key(|item| item.nonce);
     for pending_update in &sorted_pending {
-        apply_update(&mut state, pending_update)?;
+        apply_update(&mut state, key, pending_update)?;
     }
-    apply_update(&mut state, update)?;
+    apply_update(&mut state, key, update)?;
     Ok(())
 }
 
 pub fn apply_updates_for_key(
+    key: &str,
     committed: Option<Bytes>,
     updates: &[DirectoryUpdate],
 ) -> Result<Option<Bytes>, DirectoryErr> {
@@ -291,7 +293,7 @@ pub fn apply_updates_for_key(
     let mut sorted_updates = updates.to_vec();
     sorted_updates.sort_by_key(|item| item.nonce);
     for update in &sorted_updates {
-        apply_update(&mut state, update)?;
+        apply_update(&mut state, key, update)?;
     }
 
     Ok(Some(Bytes::from(
@@ -306,7 +308,15 @@ fn decode_key_state(raw: Option<&[u8]>) -> Result<DirectoryKeyState, DirectoryEr
     }
 }
 
-fn apply_update(state: &mut DirectoryKeyState, update: &DirectoryUpdate) -> Result<(), DirectoryErr> {
+fn apply_update(
+    state: &mut DirectoryKeyState,
+    key: &str,
+    update: &DirectoryUpdate,
+) -> Result<(), DirectoryErr> {
+    if update.key != key {
+        return Err(DirectoryErr::UpdateRejected("update key mismatch".into()));
+    }
+
     update
         .verify(update.signer_pk)
         .map_err(|_| DirectoryErr::UpdateRejected("invalid update signature".into()))?;
@@ -319,6 +329,11 @@ fn apply_update(state: &mut DirectoryKeyState, update: &DirectoryUpdate) -> Resu
     }
 
     let owners = canonicalize_owners(&update.owners);
+    if owners != update.owners {
+        return Err(DirectoryErr::UpdateRejected(
+            "owners list must be sorted unique".into(),
+        ));
+    }
     if state.owners.is_empty() {
         if !owners.contains(&update.signer_pk) {
             return Err(DirectoryErr::UpdateRejected(
@@ -337,7 +352,9 @@ fn apply_update(state: &mut DirectoryKeyState, update: &DirectoryUpdate) -> Resu
     Ok(())
 }
 
-fn canonicalize_owners(owners: &[nullspace_crypt::signing::SigningPublic]) -> Vec<nullspace_crypt::signing::SigningPublic> {
+fn canonicalize_owners(
+    owners: &[nullspace_crypt::signing::SigningPublic],
+) -> Vec<nullspace_crypt::signing::SigningPublic> {
     let mut out = owners.to_vec();
     out.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
     out.dedup();

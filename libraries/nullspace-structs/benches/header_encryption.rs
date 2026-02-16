@@ -4,9 +4,9 @@ use nullspace_crypt::dh::DhSecret;
 use nullspace_structs::Blob;
 use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
-use nullspace_structs::username::UserName;
 use nullspace_structs::event::Event;
 use nullspace_structs::timestamp::NanoTimestamp;
+use nullspace_structs::username::UserName;
 
 fn dm_benchmarks(c: &mut Criterion) {
     let sender_secret = DeviceSecret::random();

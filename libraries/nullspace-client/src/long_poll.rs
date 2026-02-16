@@ -6,11 +6,11 @@ use anyhow::Context;
 use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
 use futures_concurrency::future::Race;
-use tokio::sync::oneshot;
 use nullspace_structs::server::{
-    AuthToken, ServerClient, ServerRpcError, MailboxEntry, MailboxId, MailboxRecvArgs,
+    AuthToken, MailboxEntry, MailboxId, MailboxRecvArgs, ServerClient, ServerRpcError,
 };
 use nullspace_structs::timestamp::NanoTimestamp;
+use tokio::sync::oneshot;
 
 use crate::config::Ctx;
 
@@ -132,7 +132,8 @@ async fn run_server_worker(server: Arc<ServerClient>, receiver: Receiver<PollReq
                     }
                     Ok(Err(_)) => {}
                 }
-                if let Err(err) = username_poll_response(response, &mailbox_keys, &mut pending).await
+                if let Err(err) =
+                    username_poll_response(response, &mailbox_keys, &mut pending).await
                 {
                     tracing::warn!(error = %err, "long poller error");
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -182,10 +183,7 @@ fn build_args(
 }
 
 async fn username_poll_response(
-    response: Result<
-        Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerRpcError>,
-        anyhow::Error,
-    >,
+    response: Result<Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerRpcError>, anyhow::Error>,
     mailbox_keys: &HashMap<(MailboxId, AuthToken), Vec<usize>>,
     pending: &mut Vec<PollRequest>,
 ) -> anyhow::Result<()> {

@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use anyctx::AnyCtx;
 use anyhow::Context;
+use futures_concurrency::future::Race;
 use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::signing::SigningPublic;
-use futures_concurrency::future::Race;
 use nullspace_structs::Blob;
 use nullspace_structs::event::{Event, EventPayload, Recipient};
 use nullspace_structs::group::{GroupId, GroupManageMsg, GroupMessage};
@@ -200,9 +200,9 @@ async fn process_group_message_entry(
     if content.mime == nullspace_structs::fragment::Attachment::mime()
         && let Ok(root) =
             serde_json::from_slice::<nullspace_structs::fragment::Attachment>(&content.body)
-        {
-            let _ = store_attachment_root(&mut conn, &sender, &root).await;
-        }
+    {
+        let _ = store_attachment_root(&mut conn, &sender, &root).await;
+    }
     let convo_id = ensure_convo_id(&mut *conn, "group", &group.group_id.to_string()).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO convo_messages \

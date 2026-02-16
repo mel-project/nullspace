@@ -23,7 +23,7 @@ impl Widget for Avatar {
         ui.push_id(id, |ui| {
             let radius_u8 = (self.size / 2.0).round().clamp(0.0, u8::MAX as f32) as u8;
             let circle_corner_radius = eframe::egui::CornerRadius::same(radius_u8);
-            let sense = eframe::egui::Sense::click();
+            let sense = eframe::egui::Sense::empty();
             let Some(attachment) = self.attachment.as_ref() else {
                 let (rect, response) =
                     ui.allocate_exact_size(eframe::egui::vec2(self.size, self.size), sense);

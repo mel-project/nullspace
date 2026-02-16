@@ -107,9 +107,10 @@ impl ProfileLoader {
         if should_fetch {
             entry.force_refresh = false;
             let username = username.clone();
-            let promise = Promise::spawn_async(async move {
-                flatten_rpc(get_rpc().user_details(username).await)
-            });
+            let promise =
+                Promise::spawn_async(
+                    async move { flatten_rpc(get_rpc().user_details(username).await) },
+                );
             entry.inflight = Some(promise);
         }
 
@@ -152,10 +153,8 @@ impl ProfileLoader {
             }
             None => (username.as_str().to_string(), false),
         };
-        
-        if has_display
-            && self.label_counts.get(&base).copied().unwrap_or(0) > 1
-        {
+
+        if has_display && self.label_counts.get(&base).copied().unwrap_or(0) > 1 {
             format!("{base} ({})", username.as_str())
         } else {
             base

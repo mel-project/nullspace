@@ -294,10 +294,10 @@ impl GroupRoster {
         .await?;
         if let Some((existing_admin, existing_status)) = existing
             && existing_admin == i64::from(member.is_admin)
-                && existing_status == status_as_str(&member.status)
-            {
-                return Ok(false);
-            }
+            && existing_status == status_as_str(&member.status)
+        {
+            return Ok(false);
+        }
         sqlx::query(
             "INSERT INTO group_members (group_id, username, is_admin, status) \
              VALUES (?, ?, ?, ?) \

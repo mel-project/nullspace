@@ -1,10 +1,10 @@
 use std::{fs, net::SocketAddr, path::PathBuf, sync::LazyLock};
 
 use clap::Parser;
-use serde::Deserialize;
-use url::Url;
 use nullspace_crypt::signing::SigningPublic;
 use nullspace_structs::server::ServerName;
+use serde::Deserialize;
+use url::Url;
 
 #[derive(Parser, Debug)]
 #[command(name = "nullspace-server")]

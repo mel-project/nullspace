@@ -36,7 +36,11 @@ pub async fn show_notification(
         && !focused.load(Ordering::Relaxed)
         && let ConvoId::Direct { peer } = convo_id
     {
-        match flatten_rpc(get_rpc().convo_history(convo_id.clone(), None, None, 1).await) {
+        match flatten_rpc(
+            get_rpc()
+                .convo_history(convo_id.clone(), None, None, 1)
+                .await,
+        ) {
             Ok(messages) => {
                 if let Some(message) = messages.last()
                     && message.sender == *peer
@@ -57,11 +61,7 @@ pub async fn show_notification(
                     }
                     #[cfg(not(target_os = "linux"))]
                     {
-                        if let Err(err) = Notification::new()
-                            .summary(&title)
-                            .body(&body)
-                            .show()
-                        {
+                        if let Err(err) = Notification::new().summary(&title).body(&body).show() {
                             tracing::warn!(error = %err, "notification error");
                         }
                     }

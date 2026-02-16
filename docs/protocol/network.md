@@ -28,6 +28,7 @@ Servers do **not** define identity membership. Device membership is validated ag
 ### Directory service
 
 The directory is the root of trust, but its raw protocol is intentionally generic.
+See [directory](directory.md) for the raw directory specification and RPC API.
 
 Each key in the directory is an arbitrary string, and each key stores:
 - `nonce_max`
@@ -37,7 +38,7 @@ Each key in the directory is an arbitrary string, and each key stores:
 Each raw update is:
 
 ```
-[nonce, signer_pk, owners, value, signature]
+[key, nonce, signer_pk, owners, value, signature]
 ```
 
 Rules at the raw directory layer:

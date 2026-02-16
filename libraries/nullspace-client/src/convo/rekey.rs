@@ -4,8 +4,6 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use anyhow::Context;
 use bytes::Bytes;
-use rand::Rng;
-use tracing::warn;
 use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::dh::DhPublic;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
@@ -15,6 +13,8 @@ use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::server::{MailboxId, SignedMediumPk};
 use nullspace_structs::timestamp::Timestamp;
 use nullspace_structs::username::{DeviceState, UserName};
+use rand::Rng;
+use tracing::warn;
 
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
@@ -113,8 +113,12 @@ async fn collect_group_recipients(
     let mut handles = Vec::new();
     let db = ctx.get(DATABASE);
     let mut conn = db.acquire().await?;
-    let roster =
-        GroupRoster::load(&mut conn, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let roster = GroupRoster::load(
+        &mut conn,
+        group.group_id,
+        group.descriptor.init_admin.clone(),
+    )
+    .await?;
     let members = roster.list(&mut conn).await?;
     for member in members.into_iter().filter(RosterMember::is_active) {
         let username = member.username;
@@ -167,8 +171,12 @@ pub(super) async fn process_group_rekey_entry(
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender_username = signed.sender().clone();
     let mut conn = db.acquire().await?;
-    let roster =
-        GroupRoster::load(&mut conn, group.group_id, group.descriptor.init_admin.clone()).await?;
+    let roster = GroupRoster::load(
+        &mut conn,
+        group.group_id,
+        group.descriptor.init_admin.clone(),
+    )
+    .await?;
     let sender_member = roster.get(&mut conn, &sender_username).await?;
     if !sender_member
         .as_ref()

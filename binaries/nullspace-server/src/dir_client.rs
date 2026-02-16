@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use anyhow::Context;
-use rand::RngCore;
 use nullspace_crypt::signing::SigningSecret;
 use nullspace_dirclient::DirClient;
 use nullspace_structs::server::ServerDescriptor;
+use rand::RngCore;
 
 use crate::config::CONFIG;
 use crate::database::DATABASE;

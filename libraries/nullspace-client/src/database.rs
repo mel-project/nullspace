@@ -106,6 +106,7 @@ async fn message_event_loop(ctx: &AnyCtx<Config>) {
     let mut notify = DbNotify::new();
     let mut last_seen_id = current_max_msg(db).await.unwrap_or(0);
     let mut last_seen_received_at = current_max_received_at(db).await.unwrap_or(0);
+    let mut last_seen_read_rowid = current_max_read_rowid(db).await.unwrap_or(0);
     let mut group_versions = load_group_versions(db).await.unwrap_or_default();
     loop {
         notify.wait_for_change().await;
@@ -127,6 +128,15 @@ async fn message_event_loop(ctx: &AnyCtx<Config>) {
             };
         last_seen_received_at = new_received_at;
         convos.extend(received_convos);
+        let (new_read_rowid, read_convos) = match new_read_convos(db, last_seen_read_rowid).await {
+            Ok(result) => result,
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to query convo read updates");
+                continue;
+            }
+        };
+        last_seen_read_rowid = new_read_rowid;
+        convos.extend(read_convos);
         for convo_id in convos {
             emit_event(ctx, Event::ConvoUpdated { convo_id });
         }
@@ -165,6 +175,13 @@ async fn current_max_received_at(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
     )
     .fetch_one(db)
     .await?;
+    Ok(row.0.unwrap_or(0))
+}
+
+async fn current_max_read_rowid(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
+    let row = sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(rowid) FROM message_reads")
+        .fetch_one(db)
+        .await?;
     Ok(row.0.unwrap_or(0))
 }
 
@@ -222,6 +239,35 @@ async fn new_received_convos(
         }
     }
     Ok((max_received_at, convos.into_iter().collect()))
+}
+
+async fn new_read_convos(
+    db: &sqlx::SqlitePool,
+    last_seen_rowid: i64,
+) -> anyhow::Result<(i64, Vec<crate::convo::ConvoId>)> {
+    let rows = sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT mr.rowid, c.convo_type, c.convo_counterparty \
+         FROM message_reads mr \
+         JOIN convo_messages m ON m.id = mr.message_id \
+         JOIN convos c ON m.convo_id = c.id \
+         WHERE mr.rowid > ? \
+         ORDER BY mr.rowid",
+    )
+    .bind(last_seen_rowid)
+    .fetch_all(db)
+    .await?;
+    if rows.is_empty() {
+        return Ok((last_seen_rowid, Vec::new()));
+    }
+    let mut convos = HashSet::new();
+    let mut max_rowid = last_seen_rowid;
+    for (rowid, convo_type, counterparty) in rows {
+        max_rowid = max_rowid.max(rowid);
+        if let Some(convo_id) = parse_convo_id(&convo_type, &counterparty) {
+            convos.insert(convo_id);
+        }
+    }
+    Ok((max_rowid, convos.into_iter().collect()))
 }
 
 async fn load_group_versions(db: &sqlx::SqlitePool) -> anyhow::Result<HashMap<GroupId, i64>> {

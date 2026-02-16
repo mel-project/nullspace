@@ -38,11 +38,8 @@ impl Widget for GroupRoster<'_> {
                 match members {
                     Ok(members) => {
                         for member in members {
-                            let mut label = self
-                                .app
-                                .state
-                                .profile_loader
-                                .label_for(&member.username);
+                            let mut label =
+                                self.app.state.profile_loader.label_for(&member.username);
                             if member.is_admin {
                                 label.push_str(" [admin]");
                             }

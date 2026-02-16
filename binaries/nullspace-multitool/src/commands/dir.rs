@@ -1,13 +1,11 @@
 use clap::{Parser, Subcommand};
-use serde::Serialize;
-use nullspace_crypt::{
-    signing::{SigningPublic, SigningSecret},
-};
+use nullspace_crypt::signing::{SigningPublic, SigningSecret};
 use nullspace_structs::{
     server::{ServerDescriptor, ServerName},
     timestamp::{NanoTimestamp, Timestamp},
     username::UserName,
 };
+use serde::Serialize;
 
 use crate::shared::{GlobalArgs, build_dir_client, print_json};
 
@@ -115,12 +113,7 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
                 )
                 .await?;
             client
-                .bind_server(
-                    &username,
-                    &server_name,
-                    base.saturating_add(1),
-                    &secret_key,
-                )
+                .bind_server(&username, &server_name, base.saturating_add(1), &secret_key)
                 .await?;
         }
         Command::UsernameAddDevice {

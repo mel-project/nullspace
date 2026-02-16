@@ -2,12 +2,12 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use clap::Args;
-use serde::Serialize;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use url::Url;
 use nullspace_crypt::signing::SigningPublic;
 use nullspace_dirclient::DirClient;
 use nullspace_rpc_pool::RpcPool;
+use serde::Serialize;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use url::Url;
 
 #[derive(Args, Clone)]
 pub struct GlobalArgs {

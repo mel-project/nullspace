@@ -65,6 +65,7 @@ pub enum UserAction {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreparedUserAction {
+    pub username: UserName,
     pub nonce: u64,
     pub signer_pk: SigningPublic,
     pub action: UserAction,
@@ -77,6 +78,7 @@ impl PreparedUserAction {
         let value = Some(Bytes::from(bcs::to_bytes(&self.next_descriptor)?));
         let owners = self.next_descriptor.owner_keys();
         Ok(DirectoryUpdate {
+            key: self.username.as_str().to_owned(),
             nonce: self.nonce,
             signer_pk: self.signer_pk,
             owners,
@@ -88,14 +90,18 @@ impl PreparedUserAction {
 
 impl Signable for PreparedUserAction {
     fn signed_value(&self) -> Vec<u8> {
-        let value = Some(
-            Bytes::from(
-                bcs::to_bytes(&self.next_descriptor).expect("bcs serialization failed"),
-            ),
-        );
+        let value = Some(Bytes::from(
+            bcs::to_bytes(&self.next_descriptor).expect("bcs serialization failed"),
+        ));
         let owners = self.next_descriptor.owner_keys();
-        bcs::to_bytes(&(&self.nonce, &self.signer_pk, &owners, &value))
-            .expect("bcs serialization failed")
+        bcs::to_bytes(&(
+            &self.username.as_str(),
+            &self.nonce,
+            &self.signer_pk,
+            &owners,
+            &value,
+        ))
+        .expect("bcs serialization failed")
     }
 
     fn signature_mut(&mut self) -> &mut Signature {

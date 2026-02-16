@@ -5,19 +5,15 @@ use std::sync::LazyLock;
 
 use bytes::Bytes;
 use futures_concurrency::future::Race;
-use sqlx::{Sqlite, Transaction};
-use tokio::time::{Duration, timeout};
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_structs::server::{
-    AuthToken, ServerRpcError, MailboxAcl, MailboxId, MailboxRecvArgs,
+    AuthToken, MailboxAcl, MailboxId, MailboxRecvArgs, ServerRpcError,
 };
 use nullspace_structs::{
-    Blob,
-    server::MailboxEntry,
-    group::GroupId,
-    username::UserName,
-    timestamp::NanoTimestamp,
+    Blob, group::GroupId, server::MailboxEntry, timestamp::NanoTimestamp, username::UserName,
 };
+use sqlx::{Sqlite, Transaction};
+use tokio::time::{Duration, timeout};
 
 use crate::database::DATABASE;
 use crate::fatal_retry_later;
@@ -213,10 +209,7 @@ pub async fn update_dm_mailbox(
     Ok(())
 }
 
-pub async fn register_group(
-    auth: AuthToken,
-    group: GroupId,
-) -> Result<(), ServerRpcError> {
+pub async fn register_group(auth: AuthToken, group: GroupId) -> Result<(), ServerRpcError> {
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
     if !auth_token_exists(&mut tx, auth).await? {
         tracing::debug!(auth = ?auth, "group mailbox create denied: unknown auth token");

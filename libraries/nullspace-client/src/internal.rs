@@ -12,8 +12,7 @@ use nullspace_structs::fragment::Attachment;
 use nullspace_structs::group::{GroupId, GroupInviteMsg};
 use nullspace_structs::profile::UserProfile;
 use nullspace_structs::server::{
-    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest,
-    SignedMediumPk,
+    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest, SignedMediumPk,
 };
 use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
 use nullspace_structs::username::{PreparedUserAction, UserAction, UserDescriptor, UserName};
@@ -63,6 +62,11 @@ pub trait InternalProtocol {
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<ConvoMessage>, InternalRpcError>;
+    async fn convo_mark_read(
+        &self,
+        convo_id: ConvoId,
+        up_to_id: i64,
+    ) -> Result<(), InternalRpcError>;
     async fn convo_send(
         &self,
         convo_id: ConvoId,
@@ -108,10 +112,7 @@ pub trait InternalProtocol {
         avatar: Option<Attachment>,
     ) -> Result<(), InternalRpcError>;
 
-    async fn user_details(
-        &self,
-        username: UserName,
-    ) -> Result<UserDetails, InternalRpcError>;
+    async fn user_details(&self, username: UserName) -> Result<UserDetails, InternalRpcError>;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -324,7 +325,6 @@ impl InternalProtocol for InternalImpl {
             .map_err(internal_err)?;
 
         let bundle = BundleInner {
-            username: identity.username,
             device_secret: new_secret,
             add_device_action,
         };
@@ -374,6 +374,21 @@ impl InternalProtocol for InternalImpl {
         Ok(id)
     }
 
+    async fn convo_mark_read(
+        &self,
+        convo_id: ConvoId,
+        up_to_id: i64,
+    ) -> Result<(), InternalRpcError> {
+        let db = self.ctx.get(DATABASE);
+        let affected = mark_convo_read(db, convo_id, up_to_id)
+            .await
+            .map_err(internal_err)?;
+        if affected > 0 {
+            DbNotify::touch();
+        }
+        Ok(())
+    }
+
     async fn convo_create_group(&self, server: ServerName) -> Result<ConvoId, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         if !identity_exists(db).await.map_err(internal_err)? {
@@ -417,13 +432,10 @@ impl InternalProtocol for InternalImpl {
             .map_err(internal_err)?
             .ok_or_else(|| InternalRpcError::Other("group not found".into()))?;
         let mut conn = db.acquire().await.map_err(internal_err)?;
-        let roster = GroupRoster::load(
-            &mut conn,
-            group,
-            group_record.descriptor.init_admin.clone(),
-        )
-        .await
-        .map_err(internal_err)?;
+        let roster =
+            GroupRoster::load(&mut conn, group, group_record.descriptor.init_admin.clone())
+                .await
+                .map_err(internal_err)?;
         let members = roster.list(&mut conn).await.map_err(internal_err)?;
         let out = members
             .into_iter()
@@ -494,10 +506,7 @@ impl InternalProtocol for InternalImpl {
             .map_err(map_anyhow_err)
     }
 
-    async fn user_details(
-        &self,
-        username: UserName,
-    ) -> Result<UserDetails, InternalRpcError> {
+    async fn user_details(&self, username: UserName) -> Result<UserDetails, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         if !identity_exists(db).await.map_err(internal_err)? {
             return Err(InternalRpcError::NotReady);
@@ -631,6 +640,7 @@ async fn register_add_device(
     bundle: NewDeviceBundle,
 ) -> Result<(), InternalRpcError> {
     let bundle: BundleInner = bcs::from_bytes(&bundle.0).map_err(internal_err)?;
+    let username = bundle.add_device_action.username.clone();
     let dir = ctx.get(DIR_CLIENT);
     if bundle.add_device_action.signer_pk == bundle.device_secret.public().signing_public() {
         return Err(InternalRpcError::Other(
@@ -647,12 +657,12 @@ async fn register_add_device(
             "bundle device secret does not match add_device action".into(),
         ));
     }
-    dir.submit_prepared_user_action(&bundle.username, bundle.add_device_action.clone())
+    dir.submit_prepared_user_action(bundle.add_device_action.clone())
         .await
         .map_err(internal_err)?;
 
     let descriptor = dir
-        .get_user_descriptor(&bundle.username)
+        .get_user_descriptor(&username)
         .await
         .map_err(internal_err)?
         .ok_or_else(|| InternalRpcError::Other("username not found".into()))?;
@@ -673,11 +683,11 @@ async fn register_add_device(
         .clone()
         .ok_or_else(|| InternalRpcError::Other("username has no bound server".into()))?;
     let server = server_from_name(&ctx, &server_name).await?;
-    let auth = authenticate_device(&server, &bundle.username, &bundle.device_secret).await?;
+    let auth = authenticate_device(&server, &username, &bundle.device_secret).await?;
     let medium_sk = register_medium_key(&server, auth, &bundle.device_secret).await?;
     persist_identity(
         ctx.get(DATABASE),
-        bundle.username,
+        username,
         server_name,
         bundle.device_secret,
         medium_sk,
@@ -748,7 +758,6 @@ async fn persist_identity(
 
 #[derive(Serialize, Deserialize)]
 struct BundleInner {
-    username: UserName,
     device_secret: DeviceSecret,
     add_device_action: PreparedUserAction,
 }
@@ -819,19 +828,29 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
             String,
             String,
             i64,
+            i64,
             Option<i64>,
             Option<String>,
             Option<String>,
             Option<Vec<u8>>,
             Option<i64>,
+            Option<i64>,
             Option<String>,
         ),
     >(
         "SELECT c.convo_type, c.convo_counterparty, c.created_at, \
-                m.id, m.sender_username, m.mime, m.body, m.received_at, m.send_error \
+                (SELECT COUNT(*) FROM convo_messages um \
+                 JOIN client_identity ci ON ci.id = 1 \
+                 LEFT JOIN message_reads mr ON mr.message_id = um.id \
+                 WHERE um.convo_id = c.id \
+                   AND um.received_at IS NOT NULL \
+                   AND um.sender_username != ci.username \
+                   AND mr.message_id IS NULL) AS unread_count, \
+                m.id, m.sender_username, m.mime, m.body, m.received_at, mr.read_at, m.send_error \
          FROM convos c \
          LEFT JOIN convo_messages m \
            ON m.id = (SELECT MAX(id) FROM convo_messages WHERE convo_id = c.id) \
+         LEFT JOIN message_reads mr ON mr.message_id = m.id \
          ORDER BY (m.received_at IS NULL) DESC, m.received_at DESC, c.created_at DESC, c.id DESC",
     )
     .fetch_all(db)
@@ -841,11 +860,13 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
         convo_type,
         counterparty,
         _created_at,
+        unread_count,
         msg_id,
         sender_username,
         mime,
         body,
         received_at,
+        read_at,
         send_error,
     ) in rows
     {
@@ -862,6 +883,7 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
                     body,
                     send_error,
                     received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
+                    read_at: read_at.map(|ts| NanoTimestamp(ts as u64)),
                 })
             }
             _ => None,
@@ -869,6 +891,7 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
         out.push(ConvoSummary {
             convo_id,
             last_message,
+            unread_count: unread_count as u64,
         });
     }
     Ok(out)
@@ -885,25 +908,36 @@ async fn convo_history(
     let after = after.unwrap_or(i64::MIN);
     let convo_type = convo_id.convo_type();
     let counterparty = convo_id.counterparty();
-    let mut rows =
-        sqlx::query_as::<_, (i64, String, String, Vec<u8>, Option<i64>, Option<String>)>(
-            "SELECT m.id, m.sender_username, m.mime, m.body, m.received_at, m.send_error \
+    let mut rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            String,
+            Vec<u8>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        ),
+    >(
+        "SELECT m.id, m.sender_username, m.mime, m.body, m.received_at, mr.read_at, m.send_error \
          FROM convo_messages m \
          JOIN convos c ON m.convo_id = c.id \
+         LEFT JOIN message_reads mr ON mr.message_id = m.id \
          WHERE c.convo_type = ? AND c.convo_counterparty = ? AND m.id <= ? AND m.id >= ? \
          ORDER BY m.id DESC \
          LIMIT ?",
-        )
-        .bind(convo_type)
-        .bind(counterparty)
-        .bind(before)
-        .bind(after)
-        .bind(limit as i64)
-        .fetch_all(db)
-        .await?;
+    )
+    .bind(convo_type)
+    .bind(counterparty)
+    .bind(before)
+    .bind(after)
+    .bind(limit as i64)
+    .fetch_all(db)
+    .await?;
     rows.reverse();
     let mut out = Vec::with_capacity(rows.len());
-    for (id, sender_username, mime, body, received_at, send_error) in rows {
+    for (id, sender_username, mime, body, received_at, read_at, send_error) in rows {
         let sender = UserName::parse(sender_username)?;
         let body = match decode_message_content(db, id, &sender, &mime, &body).await {
             Ok(body) => body,
@@ -918,9 +952,38 @@ async fn convo_history(
             body,
             send_error,
             received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
+            read_at: read_at.map(|ts| NanoTimestamp(ts as u64)),
         });
     }
     Ok(out)
+}
+
+async fn mark_convo_read(
+    db: &sqlx::SqlitePool,
+    convo_id: ConvoId,
+    up_to_id: i64,
+) -> anyhow::Result<u64> {
+    let read_at = NanoTimestamp::now().0 as i64;
+    let affected = sqlx::query(
+        "INSERT OR IGNORE INTO message_reads (message_id, read_at) \
+         SELECT m.id, ? \
+         FROM convo_messages m \
+         JOIN convos c ON m.convo_id = c.id \
+         JOIN client_identity ci ON ci.id = 1 \
+         WHERE c.convo_type = ? \
+           AND c.convo_counterparty = ? \
+           AND m.id <= ? \
+           AND m.received_at IS NOT NULL \
+           AND m.sender_username != ci.username",
+    )
+    .bind(read_at)
+    .bind(convo_id.convo_type())
+    .bind(convo_id.counterparty())
+    .bind(up_to_id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(affected)
 }
 
 async fn common_groups(

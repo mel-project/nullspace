@@ -127,6 +127,8 @@ impl NullspaceApp {
             ] {
                 wid.corner_radius = egui::CornerRadius::ZERO.at_least(4);
             }
+
+            style.interaction.selectable_labels = false;
             // style.debug.debug_on_hover = true; // show callstack / rects on hover
             // style.debug.show_expand_width = true; // highlight width expanders
             // style.debug.show_expand_height = true; // highlight height expanders
@@ -333,12 +335,6 @@ impl eframe::App for NullspaceApp {
                 self.state.last_saved_prefs = self.state.prefs.clone();
             }
         }
-        let repaint_after = if self.tray_hidden {
-            Duration::from_secs(1)
-        } else {
-            Duration::from_millis(100)
-        };
-        ctx.request_repaint_after(repaint_after);
     }
 }
 

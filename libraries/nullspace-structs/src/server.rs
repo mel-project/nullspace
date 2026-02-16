@@ -51,8 +51,7 @@ pub trait ServerProtocol {
     ) -> Result<BTreeMap<Hash, SignedMediumPk>, ServerRpcError>;
 
     /// Retrieve a user's profile.
-    async fn v1_profile(&self, username: UserName)
-        -> Result<Option<UserProfile>, ServerRpcError>;
+    async fn v1_profile(&self, username: UserName) -> Result<Option<UserProfile>, ServerRpcError>;
 
     /// Set a user's profile.
     async fn v1_profile_set(

@@ -1,9 +1,9 @@
 use anyctx::AnyCtx;
 use std::path::PathBuf;
 
+use nullspace_crypt::signing::SigningPublic;
 use serde::{Deserialize, Serialize};
 use url::Url;
-use nullspace_crypt::signing::SigningPublic;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {

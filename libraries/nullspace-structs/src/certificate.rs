@@ -1,9 +1,9 @@
 use anyhow::bail;
-use serde::{Deserialize, Serialize};
 use nullspace_crypt::{
     hash::{BcsHashExt, Hash},
     signing::{Signable, Signature, SigningPublic, SigningSecret},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::timestamp::Timestamp;
 
@@ -98,8 +98,7 @@ pub struct CertificateChain {
 
 impl Signable for DeviceCertificate {
     fn signed_value(&self) -> Vec<u8> {
-        bcs::to_bytes(&(&self.pk, &self.expiry, &self.can_issue))
-            .expect("bcs serialization failed")
+        bcs::to_bytes(&(&self.pk, &self.expiry, &self.can_issue)).expect("bcs serialization failed")
     }
 
     fn signature_mut(&mut self) -> &mut Signature {
@@ -231,11 +230,8 @@ mod tests {
             Timestamp(u64::MAX),
             false,
         );
-        let leaf_cert = intermediate_secret.issue_certificate(
-            &leaf_secret.public(),
-            Timestamp(u64::MAX),
-            true,
-        );
+        let leaf_cert =
+            intermediate_secret.issue_certificate(&leaf_secret.public(), Timestamp(u64::MAX), true);
 
         let chain = CertificateChain {
             ancestors: vec![root_cert, intermediate_cert],
@@ -253,16 +249,10 @@ mod tests {
         let intermediate_secret = DeviceSecret::random();
         let leaf_secret = DeviceSecret::random();
 
-        let intermediate_cert = root_secret.issue_certificate(
-            &intermediate_secret.public(),
-            Timestamp(u64::MAX),
-            true,
-        );
-        let leaf_cert = intermediate_secret.issue_certificate(
-            &leaf_secret.public(),
-            Timestamp(u64::MAX),
-            true,
-        );
+        let intermediate_cert =
+            root_secret.issue_certificate(&intermediate_secret.public(), Timestamp(u64::MAX), true);
+        let leaf_cert =
+            intermediate_secret.issue_certificate(&leaf_secret.public(), Timestamp(u64::MAX), true);
 
         let chain = CertificateChain {
             ancestors: vec![root_cert, intermediate_cert],

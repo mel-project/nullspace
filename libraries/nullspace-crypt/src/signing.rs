@@ -10,8 +10,8 @@ use serde_with::formats::Unpadded;
 use serde_with::{Bytes, IfIsHumanReadable, serde_as};
 use thiserror::Error;
 
-use crate::encoding;
 use crate::ParseKeyError;
+use crate::encoding;
 
 /// Ed25519 public key used for signing verification.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

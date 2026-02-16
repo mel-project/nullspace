@@ -1,23 +1,23 @@
 use bytes::Bytes;
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::str::FromStr;
-use thiserror::Error;
 use nullspace_crypt::{
     aead::AeadKey,
     hash::{Hash, HashParseError},
     signing::SigningPublic,
 };
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
+use thiserror::Error;
 
 use crate::{
+    Blob,
     certificate::DeviceSecret,
     e2ee::DeviceSigned,
     event::{Event, EventPayload},
     server::{AuthToken, ServerName},
     timestamp::{NanoTimestamp, Timestamp},
     username::UserName,
-    Blob,
 };
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]

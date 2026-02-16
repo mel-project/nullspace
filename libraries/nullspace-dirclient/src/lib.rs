@@ -72,7 +72,8 @@ impl DirClient {
         &self,
         key: impl Into<String>,
     ) -> anyhow::Result<Option<DirectoryKeyState>> {
-        self.get_committed_key_state(&key.into()).await
+        let key = key.into();
+        self.get_committed_key_state(&key).await
     }
 
     /// Fetch and verify raw value bytes for a directory key.
@@ -129,6 +130,7 @@ impl DirClient {
 
         let current = self.get_effective_key_state(server_name.as_str()).await?;
         let mut update = DirectoryUpdate {
+            key: server_name.as_str().to_owned(),
             nonce: next_nonce(current.nonce_max),
             signer_pk,
             owners: vec![signer_pk],
@@ -137,8 +139,9 @@ impl DirClient {
         };
         canonicalize_owners(&mut update.owners);
         update.sign(signer);
-        self.insert_raw(server_name.as_str(), update).await?;
-        self.wait_for_server_descriptor(server_name, descriptor).await?;
+        self.insert_raw(update).await?;
+        self.wait_for_server_descriptor(server_name, descriptor)
+            .await?;
         Ok(())
     }
 
@@ -164,6 +167,7 @@ impl DirClient {
         let next_descriptor = apply_user_action(current, &action, signer_pk, nonce)?;
 
         let mut prepared = PreparedUserAction {
+            username: username.clone(),
             nonce,
             signer_pk,
             action,
@@ -177,9 +181,9 @@ impl DirClient {
     /// Submit a previously prepared user action.
     pub async fn submit_prepared_user_action(
         &self,
-        username: &UserName,
         prepared: PreparedUserAction,
     ) -> anyhow::Result<()> {
+        let username = prepared.username.clone();
         prepared.verify(prepared.signer_pk)?;
 
         let state = self.get_effective_key_state(username.as_str()).await?;
@@ -204,8 +208,8 @@ impl DirClient {
         let update = prepared.to_directory_update()?;
         update.verify(update.signer_pk)?;
 
-        self.insert_raw(username.as_str(), update).await?;
-        self.wait_for_user_nonce(username, prepared.nonce).await?;
+        self.insert_raw(update).await?;
+        self.wait_for_user_nonce(&username, prepared.nonce).await?;
         Ok(())
     }
 
@@ -220,7 +224,7 @@ impl DirClient {
         let prepared = self
             .prepare_user_action(username, action, nonce, signer)
             .await?;
-        self.submit_prepared_user_action(username, prepared).await
+        self.submit_prepared_user_action(prepared).await
     }
 
     pub async fn add_device(
@@ -313,11 +317,15 @@ impl DirClient {
         Ok(response)
     }
 
-    async fn get_committed_key_state(&self, key: &str) -> anyhow::Result<Option<DirectoryKeyState>> {
+    async fn get_committed_key_state(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Option<DirectoryKeyState>> {
         let response = self.fetch_verified_response(key).await?;
         let state = decode_key_state_from_response(&response)?;
         if let Some(state) = &state {
-            self.prune_local_pending_to_nonce(key, state.nonce_max).await;
+            self.prune_local_pending_to_nonce(key, state.nonce_max)
+                .await;
         }
         Ok(state)
     }
@@ -336,7 +344,7 @@ impl DirClient {
         let mut sorted = pending;
         sorted.sort_by_key(|update| update.nonce);
         for update in &sorted {
-            apply_directory_update(&mut state, update)?;
+            apply_directory_update(&mut state, key, update)?;
         }
         Ok(state)
     }
@@ -357,15 +365,11 @@ impl DirClient {
     }
 
     /// Submit a raw directory update for a key.
-    pub async fn insert_raw(
-        &self,
-        key: impl Into<String>,
-        update: DirectoryUpdate,
-    ) -> anyhow::Result<()> {
-        let key = key.into();
+    pub async fn insert_raw(&self, update: DirectoryUpdate) -> anyhow::Result<()> {
+        let key = update.key.clone();
         let pow = self.solve_pow().await?;
         self.raw
-            .v1_insert_update(key.clone(), update.clone(), pow)
+            .v1_insert_update(update.clone(), pow)
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         self.push_local_pending(key, update).await;
@@ -432,14 +436,18 @@ impl DirClient {
     }
 }
 
-fn decode_key_state_from_response(response: &DirectoryResponse) -> anyhow::Result<Option<DirectoryKeyState>> {
+fn decode_key_state_from_response(
+    response: &DirectoryResponse,
+) -> anyhow::Result<Option<DirectoryKeyState>> {
     match &response.value {
         Some(value) => Ok(Some(bcs::from_bytes(value)?)),
         None => Ok(None),
     }
 }
 
-fn decode_user_descriptor(state: Option<DirectoryKeyState>) -> anyhow::Result<Option<UserDescriptor>> {
+fn decode_user_descriptor(
+    state: Option<DirectoryKeyState>,
+) -> anyhow::Result<Option<UserDescriptor>> {
     let Some(state) = state else {
         return Ok(None);
     };
@@ -471,8 +479,10 @@ fn apply_user_action(
                 anyhow::bail!("directory user descriptor is inconsistent for signer device");
             }
 
-            if matches!(action, UserAction::AddDevice { .. } | UserAction::RemoveDevice { .. })
-                && !signer_state.can_issue
+            if matches!(
+                action,
+                UserAction::AddDevice { .. } | UserAction::RemoveDevice { .. }
+            ) && !signer_state.can_issue
             {
                 anyhow::bail!("signer device cannot issue add/remove actions");
             }
@@ -499,7 +509,9 @@ fn apply_user_action(
                         anyhow::bail!("cannot remove unknown device");
                     };
                     if device_state.device_pk != *device_pk {
-                        anyhow::bail!("directory user descriptor is inconsistent for removed device");
+                        anyhow::bail!(
+                            "directory user descriptor is inconsistent for removed device"
+                        );
                     }
                     device_state.active = false;
                 }
@@ -542,7 +554,14 @@ fn apply_user_action(
     }
 }
 
-fn apply_directory_update(state: &mut DirectoryKeyState, update: &DirectoryUpdate) -> anyhow::Result<()> {
+fn apply_directory_update(
+    state: &mut DirectoryKeyState,
+    key: &str,
+    update: &DirectoryUpdate,
+) -> anyhow::Result<()> {
+    if update.key != key {
+        anyhow::bail!("update key mismatch");
+    }
     update.verify(update.signer_pk)?;
     if update.nonce <= state.nonce_max {
         anyhow::bail!(
@@ -554,6 +573,9 @@ fn apply_directory_update(state: &mut DirectoryKeyState, update: &DirectoryUpdat
 
     let mut owners = update.owners.clone();
     canonicalize_owners(&mut owners);
+    if owners != update.owners {
+        anyhow::bail!("owners list must be sorted unique");
+    }
 
     if state.owners.is_empty() {
         if !owners.contains(&update.signer_pk) {

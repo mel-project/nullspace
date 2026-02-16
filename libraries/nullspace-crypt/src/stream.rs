@@ -1,5 +1,5 @@
-use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::XChaCha20;
+use chacha20::cipher::{KeyIvInit, StreamCipher};
 use derivative::Derivative;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,8 @@ use crate::redacted_debug;
 #[derivative(Debug)]
 pub struct StreamKey(
     #[derivative(Debug(format_with = "redacted_debug"))]
-    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")] [u8; 32],
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, Bytes>")]
+    [u8; 32],
 );
 
 impl StreamKey {

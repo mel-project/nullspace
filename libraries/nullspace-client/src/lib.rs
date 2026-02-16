@@ -1,7 +1,7 @@
+mod attachments;
+mod auth_tokens;
 mod c_api;
 mod config;
-mod auth_tokens;
-mod attachments;
 mod convo;
 mod database;
 mod directory;
@@ -12,8 +12,8 @@ mod long_poll;
 mod main_loop;
 mod medium_keys;
 mod profile;
-mod rpc_pool;
 mod retry;
+mod rpc_pool;
 mod server;
 mod user_info;
 

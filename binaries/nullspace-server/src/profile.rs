@@ -9,13 +9,12 @@ use crate::dir_client::DIR_CLIENT;
 use crate::fatal_retry_later;
 
 pub async fn profile_get(username: UserName) -> Result<Option<UserProfile>, ServerRpcError> {
-    let row = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT profile FROM user_profiles WHERE username = ?",
-    )
-    .bind(username.as_str())
-    .fetch_optional(&*DATABASE)
-    .await
-    .map_err(fatal_retry_later)?;
+    let row =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT profile FROM user_profiles WHERE username = ?")
+            .bind(username.as_str())
+            .fetch_optional(&*DATABASE)
+            .await
+            .map_err(fatal_retry_later)?;
 
     let Some(profile_bytes) = row else {
         return Ok(None);
@@ -25,10 +24,7 @@ pub async fn profile_get(username: UserName) -> Result<Option<UserProfile>, Serv
     Ok(Some(profile))
 }
 
-pub async fn profile_set(
-    username: UserName,
-    profile: UserProfile,
-) -> Result<(), ServerRpcError> {
+pub async fn profile_set(username: UserName, profile: UserProfile) -> Result<(), ServerRpcError> {
     let descriptor = DIR_CLIENT
         .get_user_descriptor(&username)
         .await

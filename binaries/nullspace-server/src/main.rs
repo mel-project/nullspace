@@ -14,9 +14,9 @@ use std::pin::Pin;
 
 use axum::{Router, routing::post};
 use futures_concurrency::future::Race;
+use nullspace_structs::server::{ServerRpcError, ServerService};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use nullspace_structs::server::{ServerRpcError, ServerService};
 
 use crate::config::CONFIG;
 use crate::rpc::ServerRpc;
@@ -33,7 +33,9 @@ async fn main() -> anyhow::Result<()> {
     let mut servers: Vec<Pin<Box<dyn Future<Output = anyhow::Result<()>>>>> = Vec::new();
 
     servers.push(Box::pin(async move {
-        axum::serve(listener, app).await.map_err(anyhow::Error::from)
+        axum::serve(listener, app)
+            .await
+            .map_err(anyhow::Error::from)
     }));
 
     if let Some(tcp_listen) = CONFIG.tcp_listen {

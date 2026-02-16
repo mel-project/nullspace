@@ -42,31 +42,30 @@ pub async fn get_server_client(
             let own_server_name = identity
                 .as_ref()
                 .and_then(|identity| identity.server_name.clone());
-            let proxy_info =
-                if let Some(own_server_name) = own_server_name {
-                    if &own_server_name == name {
-                        None
-                    } else {
-                        let descriptor = dir
-                            .get_server_descriptor(&own_server_name)
-                            .await?
-                            .context("server not in directory")?;
-                        let endpoint = descriptor
-                            .public_urls
-                            .first()
-                            .cloned()
-                            .context("server has no public URLs")?;
-                        let proxy_client = Arc::new(ServerClient::from(rpc_pool.rpc(endpoint)));
-                        let auth_token = get_auth_token(ctx).await?;
-                        Some(ProxyInfo {
-                            own_server_name,
-                            proxy_client,
-                            auth_token,
-                        })
-                    }
-                } else {
+            let proxy_info = if let Some(own_server_name) = own_server_name {
+                if &own_server_name == name {
                     None
-                };
+                } else {
+                    let descriptor = dir
+                        .get_server_descriptor(&own_server_name)
+                        .await?
+                        .context("server not in directory")?;
+                    let endpoint = descriptor
+                        .public_urls
+                        .first()
+                        .cloned()
+                        .context("server has no public URLs")?;
+                    let proxy_client = Arc::new(ServerClient::from(rpc_pool.rpc(endpoint)));
+                    let auth_token = get_auth_token(ctx).await?;
+                    Some(ProxyInfo {
+                        own_server_name,
+                        proxy_client,
+                        auth_token,
+                    })
+                }
+            } else {
+                None
+            };
             let descriptor = dir
                 .get_server_descriptor(name)
                 .await?

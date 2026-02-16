@@ -22,10 +22,7 @@ impl HttpTransport {
         }
     }
 
-    pub(crate) async fn call_raw(
-        &self,
-        req: JrpcRequest,
-    ) -> Result<JrpcResponse, anyhow::Error> {
+    pub(crate) async fn call_raw(&self, req: JrpcRequest) -> Result<JrpcResponse, anyhow::Error> {
         let mut resp = self
             .client
             .post(self.endpoint.clone())

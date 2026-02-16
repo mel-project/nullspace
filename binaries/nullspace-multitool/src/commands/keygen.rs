@@ -1,9 +1,9 @@
 use clap::Parser;
-use serde::Serialize;
 use nullspace_crypt::{
     dh::{DhPublic, DhSecret},
     signing::{SigningPublic, SigningSecret},
 };
+use serde::Serialize;
 
 use crate::shared::print_json;
 

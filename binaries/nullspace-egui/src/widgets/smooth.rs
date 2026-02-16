@@ -13,7 +13,7 @@ use crate::promises::PromiseSlot;
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
     filename: PathBuf,
-    max_texel_box: [u32; 2],
+    max_texel_box: u32,
     preserve_aspect_ratio: bool,
 }
 
@@ -71,7 +71,7 @@ impl Widget for SmoothImage<'_> {
         let max_texel_box = max_texel_box(pixels_per_point, self.max_size);
         let cache_key = CacheKey {
             filename: self.filename.to_path_buf(),
-            max_texel_box,
+            max_texel_box: max_texel_box[0].min(max_texel_box[1]),
             preserve_aspect_ratio: self.preserve_aspect_ratio,
         };
 

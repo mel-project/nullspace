@@ -2,11 +2,11 @@ use anyctx::AnyCtx;
 use anyhow::Context;
 use nullspace_structs::server::{AuthToken, ServerName};
 
+use crate::auth_tokens::get_auth_token;
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::directory::DIR_CLIENT;
 use crate::identity::{Identity, store_server_name};
-use crate::auth_tokens::get_auth_token;
 
 pub(super) async fn device_auth(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
     get_auth_token(ctx).await

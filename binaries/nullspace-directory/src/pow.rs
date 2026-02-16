@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use equix::{EquiXBuilder, Solution, SolutionByteArray};
-use rand::RngCore;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::directory::{DirectoryErr, PowAlgo, PowSeed, PowSolution};
 use nullspace_structs::timestamp::Timestamp;
+use rand::RngCore;
 
 pub const POW_EFFORT: u64 = 1_000;
 pub const SEED_TTL_SECS: u64 = 120;

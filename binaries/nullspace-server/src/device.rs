@@ -5,7 +5,7 @@ use nullspace_crypt::dh::DhPublic;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::Signable;
 use nullspace_structs::server::{
-    AuthToken, DeviceAuthChallenge, SignedDeviceAuthRequest, SignedMediumPk, ServerRpcError,
+    AuthToken, DeviceAuthChallenge, ServerRpcError, SignedDeviceAuthRequest, SignedMediumPk,
 };
 use nullspace_structs::timestamp::Timestamp;
 use nullspace_structs::username::UserName;
@@ -312,9 +312,7 @@ fn bytes_to_pk(bytes: &[u8]) -> Result<DhPublic, ServerRpcError> {
     Ok(DhPublic::from_bytes(buf))
 }
 
-fn bytes_to_signature(
-    bytes: &[u8],
-) -> Result<nullspace_crypt::signing::Signature, ServerRpcError> {
+fn bytes_to_signature(bytes: &[u8]) -> Result<nullspace_crypt::signing::Signature, ServerRpcError> {
     let buf: [u8; 64] = bytes
         .try_into()
         .map_err(|_| fatal_retry_later("invalid signature length"))?;

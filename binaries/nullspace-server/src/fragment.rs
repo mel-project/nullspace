@@ -12,12 +12,11 @@ use crate::config::CONFIG;
 use crate::database::DATABASE;
 use crate::{device, fatal_retry_later};
 
-pub static FRAGMENTS: LazyLock<FragmentDb> =
-    LazyLock::new(|| {
-        let db = FragmentDb::new(CONFIG.fragments_path.clone());
-        start_janitor(db.root.clone());
-        db
-    });
+pub static FRAGMENTS: LazyLock<FragmentDb> = LazyLock::new(|| {
+    let db = FragmentDb::new(CONFIG.fragments_path.clone());
+    start_janitor(db.root.clone());
+    db
+});
 
 pub struct FragmentDb {
     root: PathBuf,
@@ -48,7 +47,9 @@ impl FragmentDb {
     async fn store_bcs_bytes(&self, hash: &Hash, bytes: &[u8]) -> Result<(), ServerRpcError> {
         let path = self.path_for_hash(hash);
         Self::ensure_parent_dir(&path).await?;
-        tokio::fs::write(&path, bytes).await.map_err(fatal_retry_later)?;
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(fatal_retry_later)?;
         Ok(())
     }
 
@@ -65,11 +66,7 @@ impl FragmentDb {
     }
 }
 
-pub async fn upload_frag(
-    auth: AuthToken,
-    frag: Fragment,
-    ttl: u32,
-) -> Result<(), ServerRpcError> {
+pub async fn upload_frag(auth: AuthToken, frag: Fragment, ttl: u32) -> Result<(), ServerRpcError> {
     if !device::auth_token_exists(auth).await? {
         return Err(ServerRpcError::AccessDenied);
     }

@@ -52,9 +52,9 @@ pub async fn queue_message(
     .await?;
     if mime == nullspace_structs::fragment::Attachment::mime()
         && let Ok(root) = serde_json::from_slice::<nullspace_structs::fragment::Attachment>(body)
-        {
-            let _ = store_attachment_root(&mut *tx, sender, &root).await;
-        }
+    {
+        let _ = store_attachment_root(&mut *tx, sender, &root).await;
+    }
     Ok(row.0)
 }
 

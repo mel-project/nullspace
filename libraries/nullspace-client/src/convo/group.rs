@@ -12,11 +12,11 @@ use nullspace_structs::server::{AuthToken, MailboxAcl, MailboxId, ServerName};
 use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
 use nullspace_structs::username::UserName;
 
+use crate::auth_tokens::get_auth_token;
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify, ensure_convo_id, ensure_mailbox_state};
 use crate::identity::Identity;
 use crate::server::get_server_client;
-use crate::auth_tokens::get_auth_token;
 
 use super::ConvoId;
 use super::roster::GroupRoster;
@@ -169,7 +169,9 @@ pub async fn invite(
         NanoTimestamp::now(),
         &invite,
     )?;
-    let convo_id = ConvoId::Direct { peer: username.clone() };
+    let convo_id = ConvoId::Direct {
+        peer: username.clone(),
+    };
     let mut conn = db.acquire().await?;
     queue_message(
         &mut conn,

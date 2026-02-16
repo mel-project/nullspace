@@ -2,8 +2,8 @@ use eframe::egui::{Button, Modal, Response, Spinner, TextEdit, Widget};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ConvoId, OutgoingMessage};
-use poll_promise::Promise;
 use nullspace_structs::username::UserName;
+use poll_promise::Promise;
 
 use crate::NullspaceApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
@@ -55,12 +55,7 @@ impl Widget for AddContact<'_> {
                         let convo_id = ConvoId::Direct { peer: username };
                         let message = OutgoingMessage::PlainText(init_msg);
                         let promise = Promise::spawn_async(async move {
-                            flatten_rpc(
-                                get_rpc()
-                                    .convo_send(convo_id, message)
-                                    .await,
-                            )
-                            .map(|_| ())
+                            flatten_rpc(get_rpc().convo_send(convo_id, message).await).map(|_| ())
                         });
                         add_contact.start(promise);
                     }

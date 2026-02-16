@@ -42,7 +42,8 @@ pub fn read_clipboard_image() -> Result<PasteImage, String> {
 
 pub fn persist_paste_image(image: &PasteImage) -> Result<PathBuf, String> {
     let path = temp_paste_path();
-    fs::write(&path, &image.png_bytes).map_err(|err| format!("failed to write pasted image: {err}"))?;
+    fs::write(&path, &image.png_bytes)
+        .map_err(|err| format!("failed to write pasted image: {err}"))?;
     Ok(path)
 }
 

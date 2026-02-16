@@ -1,5 +1,5 @@
 use eframe::egui::{Response, ViewportCommand, Widget};
-use egui::{Align, Button, Layout, vec2};
+use egui::{Align, Button, Layout, Sense, vec2};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ConvoId, ConvoSummary};
@@ -137,17 +137,14 @@ impl<'a> SteadyState<'a> {
         ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
             for convo in convos {
                 let selection = convo.convo_id.clone();
-                let label = match &convo.convo_id {
-                    ConvoId::Direct { peer } => self.0.state.profile_loader.label_for(peer),
-                    ConvoId::Group { group_id } => {
-                        format!("Group {}", group_id.short_id())
-                    }
-                };
+
                 if ui
                     .add(ConvoSelect {
                         selected: state.selected_chat == Some(selection.clone()),
-                        label,
+                        convo: convo.clone(),
+                        app: self.0,
                     })
+                    .interact(Sense::all())
                     .clicked()
                 {
                     state.selected_chat.replace(selection);

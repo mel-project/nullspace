@@ -74,6 +74,31 @@ impl Widget for Convo<'_> {
                 state.last_update_count_seen = update_count;
             }
 
+            let convo_for_read = convo_id.clone();
+            let up_to_read = state.latest_received_id;
+            let frame_count = ui.use_state(|| 0, (convo_id.clone(), up_to_read));
+            let window_focused = ui.ctx().input(|i| i.viewport().focused).unwrap_or(true);
+            let should_mark_read = *frame_count > 30 && window_focused;
+            frame_count.set_next(*frame_count + 1);
+            if *frame_count <= 30 {
+                ui.ctx().request_repaint();
+            }
+            ui.use_effect(
+                move || {
+                    let Some(up_to_id) = up_to_read else {
+                        return;
+                    };
+                    if should_mark_read {
+                        let _ = flatten_rpc(
+                            get_rpc()
+                                .convo_mark_read(convo_for_read, up_to_id)
+                                .block_on(),
+                        );
+                    }
+                },
+                (convo_id.clone(), up_to_read, should_mark_read),
+            );
+
             let full_rect = ui.available_rect_before_wrap();
             let header_height = 40.0;
             let composer_height = 100.0;

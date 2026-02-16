@@ -66,6 +66,7 @@ pub struct ConvoMessage {
     pub body: MessageContent,
     pub send_error: Option<String>,
     pub received_at: Option<NanoTimestamp>,
+    pub read_at: Option<NanoTimestamp>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +95,7 @@ pub enum OutgoingMessage {
 pub struct ConvoSummary {
     pub convo_id: ConvoId,
     pub last_message: Option<ConvoMessage>,
+    pub unread_count: u64,
 }
 
 pub async fn convo_loop(ctx: &AnyCtx<Config>) {

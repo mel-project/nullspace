@@ -3,8 +3,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use eframe::egui::{DragValue, Response, TextEdit, Widget, Window};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use poll_promise::Promise;
 use nullspace_structs::timestamp::Timestamp;
+use poll_promise::Promise;
 
 use crate::NullspaceApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
@@ -60,8 +60,8 @@ impl Widget for AddDevice<'_> {
                         let promise = Promise::spawn_async(async move {
                             flatten_rpc(get_rpc().new_device_bundle(can_issue, expiry).await)
                         });
-                    bundle_req.start(promise);
-                }
+                        bundle_req.start(promise);
+                    }
 
                     if let Some(result) = bundle_req.take() {
                         match result {

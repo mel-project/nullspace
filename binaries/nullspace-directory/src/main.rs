@@ -12,11 +12,11 @@ use anyhow::Context;
 use axum::{Router, routing::post};
 use clap::Parser;
 use futures_concurrency::future::Join;
+use nullspace_crypt::signing::SigningSecret;
 use rand::RngCore;
 use std::os::unix::fs::PermissionsExt;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use nullspace_crypt::signing::SigningSecret;
 use url::Url;
 
 use crate::{config::Args, mirror::MirrorState, state::DirectoryState};

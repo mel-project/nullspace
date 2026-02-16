@@ -17,14 +17,14 @@ pub struct Identity {
 
 impl Identity {
     pub async fn load(db: &SqlitePool) -> anyhow::Result<Self> {
-        let row =
-            sqlx::query_as::<_, (String, Option<String>, Vec<u8>, Vec<u8>, Vec<u8>)>(
-                "SELECT username, server_name, device_secret, medium_sk_current, medium_sk_prev \
+        let row = sqlx::query_as::<_, (String, Option<String>, Vec<u8>, Vec<u8>, Vec<u8>)>(
+            "SELECT username, server_name, device_secret, medium_sk_current, medium_sk_prev \
                  FROM client_identity WHERE id = 1",
-            )
-            .fetch_optional(db)
-            .await?;
-        let Some((username, server_name, device_secret, medium_sk_current, medium_sk_prev)) = row else {
+        )
+        .fetch_optional(db)
+        .await?;
+        let Some((username, server_name, device_secret, medium_sk_current, medium_sk_prev)) = row
+        else {
             anyhow::bail!("client identity not initialized");
         };
         let username = UserName::parse(username).context("invalid stored username")?;
@@ -43,7 +43,6 @@ impl Identity {
             medium_sk_prev,
         })
     }
-
 }
 
 pub async fn store_server_name(db: &SqlitePool, server_name: &ServerName) -> anyhow::Result<()> {

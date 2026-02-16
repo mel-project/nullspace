@@ -1,8 +1,8 @@
 use std::{path::Path, time::Duration};
 
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::directory::{DirectoryChunk, DirectoryHeader, PowSeed};
+use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 
 pub async fn init_sqlite(db_dir: &Path) -> anyhow::Result<SqlitePool> {
     let path = db_dir.join("directory.db");
@@ -43,10 +43,11 @@ pub async fn purge_pow_seeds(pool: &SqlitePool, now: u64) -> anyhow::Result<()> 
 }
 
 pub async fn load_last_header(pool: &SqlitePool) -> anyhow::Result<Option<(u64, DirectoryHeader)>> {
-    let row =
-        sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT height, header FROM headers ORDER BY height DESC LIMIT 1")
-            .fetch_optional(pool)
-            .await?;
+    let row = sqlx::query_as::<_, (i64, Vec<u8>)>(
+        "SELECT height, header FROM headers ORDER BY height DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
     match row {
         Some((height, header_bytes)) => {
             let header: DirectoryHeader = bcs::from_bytes(&header_bytes)?;

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -105,17 +105,17 @@ pub struct DirectoryChunk {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DirectoryKeyState {
     pub nonce_max: u64,
-    pub owners: Vec<SigningPublic>,
-    #[serde_as(as = "Option<IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>>")]
-    pub value: Option<Bytes>,
+    pub owners: BTreeSet<SigningPublic>,
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
+    pub value: Bytes,
 }
 
 impl Default for DirectoryKeyState {
     fn default() -> Self {
         Self {
             nonce_max: 0,
-            owners: Vec::new(),
-            value: None,
+            owners: BTreeSet::new(),
+            value: Bytes::new(),
         }
     }
 }
@@ -127,9 +127,9 @@ pub struct DirectoryUpdate {
     pub key: String,
     pub nonce: u64,
     pub signer_pk: SigningPublic,
-    pub owners: Vec<SigningPublic>,
-    #[serde_as(as = "Option<IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>>")]
-    pub value: Option<Bytes>,
+    pub owners: BTreeSet<SigningPublic>,
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
+    pub value: Bytes,
     pub signature: Signature,
 }
 

@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyctx::AnyCtx;
 use anyhow::Context;
 use bytes::Bytes;
-use nullspace_crypt::hash::Hash;
+use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::Signable;
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
@@ -13,7 +13,7 @@ use nullspace_structs::event::{Event, Recipient};
 use nullspace_structs::group::GroupMessage;
 use nullspace_structs::server::{AuthToken, MailboxId, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
-use nullspace_structs::username::{DeviceState, UserName};
+use nullspace_structs::username::UserName;
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -264,16 +264,17 @@ async fn send_group_message(
 
 fn collect_recipients(
     username: &UserName,
-    devices: &BTreeMap<Hash, DeviceState>,
+    devices: &BTreeSet<nullspace_crypt::signing::SigningPublic>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<nullspace_crypt::dh::DhPublic>> {
     let mut recipients = Vec::new();
-    for (device_hash, device) in devices {
-        let Some(medium_pk) = medium_pks.get(device_hash) else {
+    for device_pk in devices {
+        let device_hash = device_pk.bcs_hash();
+        let Some(medium_pk) = medium_pks.get(&device_hash) else {
             warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
-        if medium_pk.verify(device.device_pk).is_err() {
+        if medium_pk.verify(*device_pk).is_err() {
             warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }

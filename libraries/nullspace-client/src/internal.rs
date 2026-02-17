@@ -47,11 +47,7 @@ pub trait InternalProtocol {
         username: UserName,
     ) -> Result<Option<RegisterStartInfo>, InternalRpcError>;
     async fn register_finish(&self, request: RegisterFinish) -> Result<(), InternalRpcError>;
-    async fn provision_host_start(
-        &self,
-        can_issue: bool,
-        expiry: Timestamp,
-    ) -> Result<ProvisionHostStart, InternalRpcError>;
+    async fn provision_host_start(&self) -> Result<ProvisionHostStart, InternalRpcError>;
     async fn provision_host_status(
         &self,
         session_id: u64,
@@ -286,11 +282,7 @@ impl InternalProtocol for InternalImpl {
             tracing::debug!(username = %username, "register_start not found");
             return Ok(None);
         };
-        let Some(server_name) = descriptor.server_name.clone() else {
-            return Err(InternalRpcError::Other(
-                "username exists but no server binding found".into(),
-            ));
-        };
+        let server_name = descriptor.server_name.clone();
         tracing::debug!(username = %username, server = %server_name, "register_start found");
         Ok(Some(RegisterStartInfo {
             username,
@@ -314,14 +306,8 @@ impl InternalProtocol for InternalImpl {
         }
     }
 
-    async fn provision_host_start(
-        &self,
-        can_issue: bool,
-        expiry: Timestamp,
-    ) -> Result<ProvisionHostStart, InternalRpcError> {
-        self.host_provisioning
-            .start(self.ctx.clone(), can_issue, expiry)
-            .await
+    async fn provision_host_start(&self) -> Result<ProvisionHostStart, InternalRpcError> {
+        self.host_provisioning.start(self.ctx.clone()).await
     }
 
     async fn provision_host_status(
@@ -607,19 +593,7 @@ async fn register_bootstrap(
     }
     let server = server_from_name(&ctx, &server_name).await?;
     let device_secret = DeviceSecret::random();
-    let nonce_add = provisioning::next_nonce(0);
-    let nonce_bind = provisioning::next_nonce(nonce_add);
-
-    dir.add_device(
-        &username,
-        device_secret.public().signing_public(),
-        true,
-        Timestamp(u64::MAX),
-        nonce_add,
-        &device_secret,
-    )
-    .await
-    .map_err(internal_err)?;
+    let nonce_bind = provisioning::next_nonce(0);
     dir.bind_server(&username, &server_name, nonce_bind, &device_secret)
         .await
         .map_err(internal_err)?;

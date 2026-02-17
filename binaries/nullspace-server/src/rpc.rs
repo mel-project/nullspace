@@ -11,16 +11,16 @@ use moka::future::Cache as FutureCache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
 use nullspace_rpc_pool::PooledTransport;
 use nullspace_structs::server::{
-    AuthToken, DeviceAuthChallenge, MailboxAcl, MailboxEntry, MailboxId, MailboxRecvArgs,
-    ProxyError, ServerName, ServerProtocol, ServerRpcError, ServerService, SignedDeviceAuthRequest,
-    SignedMediumPk,
+    AuthToken, ChanDirection, DeviceAuthChallenge, MailboxAcl, MailboxEntry, MailboxId,
+    MailboxRecvArgs, ProxyError, ServerName, ServerProtocol, ServerRpcError, ServerService,
+    SignedDeviceAuthRequest, SignedMediumPk,
 };
 use nullspace_structs::{Blob, profile::UserProfile, timestamp::NanoTimestamp, username::UserName};
 
 use crate::config::CONFIG;
 use crate::profile;
 use crate::rpc_pool::RPC_POOL;
-use crate::{device, dir_client::DIR_CLIENT, fragment, mailbox, multicast};
+use crate::{channel, device, dir_client::DIR_CLIENT, fragment, mailbox};
 
 #[derive(Clone, Default)]
 pub struct ServerRpc;
@@ -44,16 +44,25 @@ pub async fn rpc_handler(body: Bytes) -> impl IntoResponse {
 
 #[async_trait::async_trait]
 impl ServerProtocol for ServerRpc {
-    async fn v1_multicast_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError> {
-        multicast::multicast_allocate(auth).await
+    async fn v1_chan_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError> {
+        channel::chan_allocate(auth).await
     }
 
-    async fn v1_multicast_post(&self, channel: u32, value: Blob) -> Result<(), ServerRpcError> {
-        multicast::multicast_post(channel, value).await
+    async fn v1_chan_send(
+        &self,
+        channel_id: u32,
+        direction: ChanDirection,
+        value: Blob,
+    ) -> Result<(), ServerRpcError> {
+        channel::chan_send(channel_id, direction, value).await
     }
 
-    async fn v1_multicast_poll(&self, channel: u32) -> Result<Option<Blob>, ServerRpcError> {
-        multicast::multicast_poll(channel).await
+    async fn v1_chan_recv(
+        &self,
+        channel_id: u32,
+        direction: ChanDirection,
+    ) -> Result<Option<Blob>, ServerRpcError> {
+        channel::chan_recv(channel_id, direction).await
     }
 
     async fn v1_device_auth_start(

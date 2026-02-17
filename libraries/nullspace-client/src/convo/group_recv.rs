@@ -2,16 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyctx::AnyCtx;
-use anyhow::Context;
 use futures_concurrency::future::Race;
-use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::signing::SigningPublic;
 use nullspace_structs::Blob;
 use nullspace_structs::event::{Event, EventPayload, Recipient};
 use nullspace_structs::group::{GroupId, GroupManageMsg, GroupMessage};
 use nullspace_structs::server::MailboxId;
 use nullspace_structs::timestamp::NanoTimestamp;
-use nullspace_structs::timestamp::Timestamp;
 use tracing::warn;
 
 use crate::database::{
@@ -171,11 +168,7 @@ async fn process_group_message_entry(
         Err(_) => group_message.decrypt_message(&group.group_key_prev)?,
     };
     let sender = signed.sender().clone();
-    let sender_descriptor = ctx
-        .get(crate::directory::DIR_CLIENT)
-        .get_user_descriptor(&sender)
-        .await?
-        .context("sender username not in directory")?;
+    let sender_descriptor = crate::user_info::get_user_descriptor(ctx, &sender).await?;
     ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let message = signed
         .verify_blob()
@@ -233,11 +226,7 @@ async fn process_group_management_entry(
     let group_message: GroupMessage = bcs::from_bytes(&message.inner)?;
     let signed = group_message.decrypt_message(&group.descriptor.management_key)?;
     let sender = signed.sender().clone();
-    let sender_descriptor = ctx
-        .get(crate::directory::DIR_CLIENT)
-        .get_user_descriptor(&sender)
-        .await?
-        .context("sender username not in directory")?;
+    let sender_descriptor = crate::user_info::get_user_descriptor(ctx, &sender).await?;
     ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let message = signed
         .verify_blob()
@@ -284,12 +273,8 @@ fn ensure_sender_device_allowed(
     sender_descriptor: &nullspace_structs::username::UserDescriptor,
     sender_device_pk: SigningPublic,
 ) -> anyhow::Result<()> {
-    let sender_hash = sender_device_pk.bcs_hash();
-    let Some(device) = sender_descriptor.devices.get(&sender_hash) else {
+    if !sender_descriptor.devices.contains(&sender_device_pk) {
         anyhow::bail!("sender device not found in directory state");
-    };
-    if !device.active || device.is_expired(Timestamp::now().0) {
-        anyhow::bail!("sender device is inactive or expired");
     }
     Ok(())
 }

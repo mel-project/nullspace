@@ -10,7 +10,7 @@ The GUI calls the internal JSON-RPC methods on a local `Client` instance:
 
 - `register_start(username) -> Option<RegisterStartInfo>`
 - `register_finish(RegisterFinish) -> Result<()>`
-- `provision_host_start(can_issue, expiry) -> ProvisionHostStart`
+- `provision_host_start() -> ProvisionHostStart`
 - `provision_host_status(session_id) -> ProvisionHostStatus`
 - `provision_host_stop(session_id) -> Result<()>`
 - `convo_list() -> [ConvoSummary]`
@@ -77,13 +77,13 @@ There are only two states: logged out and logged in. On startup, the client chec
 
 ### Add a new device
 
-1. The existing device calls `provision_host_start(can_issue, expiry)` and shows
+1. The existing device calls `provision_host_start()` and shows
    the pairing code from `ProvisionHostStart`.
 2. While waiting, the GUI polls `provision_host_status(session_id)` for refreshed
    codes and completion.
 3. The new device calls
    `register_finish(RegisterFinish::AddDeviceByCode { username, code })`.
-4. Client submits the prepared add-device action, registers the new device on the
+4. Client submits the signed add-device directory update, registers the new device on the
    server, stores identity, and emits
    `Event::State { logged_in: true }`.
 
@@ -96,13 +96,13 @@ sequenceDiagram
   participant Dir as directory
   participant GW as server
 
-  GUI1->>Client1: provision_host_start(can_issue, expiry)
+  GUI1->>Client1: provision_host_start()
   Client1-->>GUI1: session_id + pairing code
   GUI1->>Client1: provision_host_status(session_id) (poll)
   GUI1-->>GUI2: pairing code
   GUI2->>Client2: register_finish(AddDeviceByCode { username, code })
   Client2->>Dir: lookup user descriptor
-  Client2->>Dir: submit prepared add-device action
+  Client2->>Dir: submit signed add-device update
   Client2->>GW: device_auth + add_medium_pk
   Client2->>Client2: persist identity
   Client2-->>GUI2: ok

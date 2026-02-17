@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use nullspace_crypt::hash::Hash;
-use nullspace_crypt::signing::Signable;
+use nullspace_crypt::hash::{BcsHashExt, Hash};
+use nullspace_crypt::signing::{Signable, SigningPublic};
 use nullspace_structs::server::{ServerClient, ServerName, SignedMediumPk};
-use nullspace_structs::username::{DeviceState, UserDescriptor, UserName};
+use nullspace_structs::username::{UserDescriptor, UserName};
 use tracing::warn;
 
 use crate::config::Config;
@@ -18,7 +18,7 @@ pub struct UserInfo {
     pub username: UserName,
     pub server: Arc<ServerClient>,
     pub server_name: ServerName,
-    pub devices: BTreeMap<Hash, DeviceState>,
+    pub devices: BTreeSet<SigningPublic>,
     pub medium_pks: BTreeMap<Hash, SignedMediumPk>,
 }
 
@@ -51,19 +51,10 @@ pub async fn get_user_info(
     let db = ctx.get(DATABASE);
     let start = Instant::now();
     let descriptor = get_user_descriptor(ctx, username).await?;
-    let server_name = descriptor
-        .server_name
-        .clone()
-        .context("username has no bound server")?;
+    let server_name = descriptor.server_name.clone();
     let server = get_server_client(ctx, &server_name).await?;
 
-    let now = now_seconds();
-    let devices: BTreeMap<Hash, DeviceState> = descriptor
-        .devices
-        .iter()
-        .filter(|(_hash, state)| state.active && !state.is_expired(now as u64))
-        .map(|(hash, state)| (*hash, state.clone()))
-        .collect();
+    let devices = descriptor.devices.clone();
     if devices.is_empty() {
         return Err(anyhow::anyhow!("no active devices for {username}"));
     }
@@ -82,12 +73,17 @@ pub async fn get_user_info(
         tracing::debug!(username=%username, elapsed=debug(start.elapsed()), "refreshed peer info");
     }
 
+    let device_by_hash: BTreeMap<Hash, SigningPublic> = devices
+        .iter()
+        .copied()
+        .map(|device_pk| (device_pk.bcs_hash(), device_pk))
+        .collect();
     let mut valid_medium_pks = BTreeMap::new();
     for (device_hash, medium_pk) in cached_medium_pks {
-        let Some(device) = devices.get(&device_hash) else {
+        let Some(device_pk) = device_by_hash.get(&device_hash) else {
             continue;
         };
-        if medium_pk.verify(device.device_pk).is_err() {
+        if medium_pk.verify(*device_pk).is_err() {
             warn!(username=%username, device_hash=%device_hash, "invalid medium-term key signature");
             continue;
         }
@@ -200,7 +196,7 @@ async fn load_cached_user_info_fetched_at(
 async fn load_cached_devices(
     db: &sqlx::SqlitePool,
     username: &UserName,
-) -> anyhow::Result<BTreeMap<Hash, DeviceState>> {
+) -> anyhow::Result<BTreeSet<SigningPublic>> {
     let row = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT devices FROM user_devices_cache WHERE username = ?",
     )
@@ -208,7 +204,7 @@ async fn load_cached_devices(
     .fetch_optional(db)
     .await?;
     let Some(devices_bytes) = row else {
-        return Ok(BTreeMap::new());
+        return Ok(BTreeSet::new());
     };
     let devices = bcs::from_bytes(&devices_bytes)?;
     Ok(devices)
@@ -234,7 +230,7 @@ async fn load_cached_medium_pks(
 async fn store_cached_user_info(
     db: &sqlx::SqlitePool,
     username: &UserName,
-    devices: &BTreeMap<Hash, DeviceState>,
+    devices: &BTreeSet<SigningPublic>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;

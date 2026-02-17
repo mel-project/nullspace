@@ -30,10 +30,10 @@ use crate::identity::Identity;
 use crate::internal::{Event, InternalRpcError};
 use crate::server::get_server_client;
 
-const CHUNK_SIZE_BYTES: usize = 128 * 1024;
+const MAX_CHUNK_SIZE: usize = 512 * 1024;
 const MAX_FANOUT: usize = 512;
 
-const TRANSFER_CONCURRENCY: usize = 64;
+const TRANSFER_CONCURRENCY: usize = 16;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -95,7 +95,7 @@ async fn upload_inner(
 
     let content_key = AeadKey::random();
     let uploaded_size = Arc::new(AtomicU64::new(0));
-    let chunk_size = CHUNK_SIZE_BYTES as u64;
+    let chunk_size = MAX_CHUNK_SIZE.min((total_size / 20) as usize).max(16384) as u64;
     let chunk_count = total_size.div_ceil(chunk_size);
     let offsets = (0..chunk_count)
         .map(|index| (index as usize, index * chunk_size))
@@ -237,8 +237,7 @@ pub async fn attachment_download_oneshot(
         .get_user_descriptor(&sender)
         .await?
         .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
-        .server_name
-        .ok_or_else(|| anyhow::anyhow!("sender has no bound server"))?;
+        .server_name;
     let client = get_server_client(ctx, &server_name).await?;
     download_attachment_to_path(ctx, client, &attachment, None, &save_to).await
 }
@@ -271,8 +270,7 @@ async fn download_inner(
         .get_user_descriptor(&sender)
         .await?
         .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
-        .server_name
-        .ok_or_else(|| anyhow::anyhow!("sender has no bound server"))?;
+        .server_name;
     let client = get_server_client(ctx, &server_name).await?;
 
     tokio::fs::create_dir_all(&save_dir).await?;

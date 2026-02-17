@@ -142,7 +142,7 @@ device_verify(device_signed_bytes):
     [sender, sender_device_pk, body, signature] = bcs_decode(device_signed_bytes)
     ed25519_verify(sender_device_pk, signature, bcs_encode([sender, sender_device_pk, body]))
     state = directory_get_user_state(sender)
-    assert sender_device_pk is active and non-expired in state
+    assert sender_device_pk is in state.devices
     return (sender, body)
 ```
 

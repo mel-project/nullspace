@@ -55,6 +55,9 @@ impl ConvoRow<'_> {
     }
 
     fn friendly_ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        if self.message.received_at.is_none() {
+            ui.set_opacity(0.5);
+        }
         let sender_label = self
             .app
             .state

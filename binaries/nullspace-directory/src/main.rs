@@ -22,7 +22,7 @@ use url::Url;
 use crate::{config::Args, mirror::MirrorState, state::DirectoryState};
 
 const DIRECTORY_ID: &str = "nullspace-directory";
-const CHUNK_SECONDS: u64 = 30;
+const CHUNK_SECONDS: u64 = 5;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

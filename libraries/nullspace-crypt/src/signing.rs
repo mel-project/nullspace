@@ -1,4 +1,5 @@
 use core::convert::TryFrom;
+use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
@@ -98,6 +99,18 @@ impl SigningPublic {
 impl fmt::Display for SigningPublic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", encoding::encode_32_base64(self.to_bytes()))
+    }
+}
+
+impl PartialOrd for SigningPublic {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SigningPublic {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.to_bytes().cmp(&other.to_bytes())
     }
 }
 

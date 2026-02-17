@@ -68,10 +68,7 @@ async fn own_server_name(
         .get_user_descriptor(&identity.username)
         .await?
         .context("identity username not in directory")?;
-    let server_name = descriptor
-        .server_name
-        .clone()
-        .context("identity username has no server binding")?;
+    let server_name = descriptor.server_name.clone();
     store_server_name(db, &server_name).await?;
     Ok(server_name)
 }

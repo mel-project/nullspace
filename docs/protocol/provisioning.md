@@ -1,6 +1,6 @@
 # Device provisioning
 
-New devices are provisioned with a short out-of-band pairing code and a SPAKE exchange over server multicast.
+New devices are provisioned with a short out-of-band pairing code and a SPAKE exchange over a server bidirectional channel.
 
 ```mermaid
 sequenceDiagram
@@ -16,15 +16,20 @@ sequenceDiagram
   B-->>U: Provisioning completes
 ```
 
-## Multicast transport
+## Bidirectional channel transport
 
-Provisioning uses server multicast RPCs from [server](server.md):
+Provisioning uses server channel RPCs from [server](server.md):
 
-- `v1_multicast_allocate(auth_token) -> channel_id`
-- `v1_multicast_post(channel_id, blob) -> ()`
-- `v1_multicast_poll(channel_id) -> blob | null`
+- `v1_chan_allocate(auth_token) -> channel_id`
+- `v1_chan_send(channel_id, direction, blob) -> ()`
+- `v1_chan_recv(channel_id, direction) -> blob | null`
 
-Multicast contents are unauthenticated. The SPAKE exchange and AEAD payload protect integrity and confidentiality.
+Channel contents are unauthenticated. The SPAKE exchange and AEAD payload protect integrity and confidentiality.
+
+Direction convention for provisioning:
+
+- `forward` means A -> B
+- `backward` means B -> A
 
 ## Pairing code
 
@@ -47,14 +52,14 @@ Both devices initialize SPAKE with:
 - password: decimal string form of `code`
 - identity: username string (for example `@alice`)
 
-Message flow on the multicast channel:
+Message flow on the bidirectional channel:
 
-1. A posts `v1.provision_helo`.
-2. B polls until it receives `v1.provision_helo`, then posts `v1.provision_ehlo`.
-3. A polls until it receives `v1.provision_ehlo`.
+1. A sends `v1.provision_helo` on `forward`.
+2. B polls `forward` until it receives `v1.provision_helo`, then sends `v1.provision_ehlo` on `backward`.
+3. A polls `backward` until it receives `v1.provision_ehlo`.
 4. Both sides finish SPAKE and derive the same 32-byte shared key.
 
-If no completion happens quickly, A rotates to a fresh `(channel_id, token)` and displays a new code. A practical default is 15 seconds per attempt.
+If no completion happens, A rotates to a fresh `(channel_id, token)` and displays a new code. A practical default is 15 seconds per attempt.
 
 ## Blob payloads
 
@@ -84,22 +89,22 @@ Plaintext JSON:
 ```json
 {
   "device_secret": "...",
-  "add_device_action": "..."
+  "add_device_update": "..."
 }
 ```
 
-`add_device_action` is a prepared transition of the shape:
+`add_device_update` is a signed raw directory update of the shape:
 
-`[username_key, nonce, signer_pk, action, next_user_descriptor, signature]`
+`[username_key, nonce, signer_pk, owners, value, signature]`
 
 ## Receiver completion (device B)
 
 After decrypting `v1.provision_finish`, B must:
 
 1. verify the decrypted username matches the login username;
-2. verify the action is add-device for the decrypted device secret;
-3. submit the prepared action to the directory;
-4. verify the new device is active and not expired in the resulting descriptor;
+2. verify the signed update targets that username and adds the decrypted device key;
+3. submit the signed update to the directory;
+4. verify the new device is present in the resulting descriptor;
 5. authenticate to the bound server and publish medium-term keys.
 
 This completes provisioning.

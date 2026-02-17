@@ -21,8 +21,8 @@ pub async fn get_profile(
     };
 
     let mut verified = false;
-    for device in user.devices.values() {
-        if profile.verify(device.device_pk).is_ok() {
+    for device_pk in &user.devices {
+        if profile.verify(*device_pk).is_ok() {
             verified = true;
             break;
         }

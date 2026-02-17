@@ -43,7 +43,7 @@ pub async fn create_group(
         .get_user_descriptor(&identity.username)
         .await?
         .context("identity username not in directory")?;
-    if user_descriptor.server_name.as_ref() != Some(&server_name) {
+    if user_descriptor.server_name != server_name {
         anyhow::bail!("group server must match username server");
     }
 

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use nullspace_crypt::signing::{SigningPublic, SigningSecret};
 use nullspace_structs::{
     server::{ServerDescriptor, ServerName},
-    timestamp::{NanoTimestamp, Timestamp},
+    timestamp::NanoTimestamp,
     username::UserName,
 };
 use serde::Serialize;
@@ -25,10 +25,6 @@ enum Command {
         server_name: ServerName,
         #[arg(long)]
         secret_key: SigningSecret,
-        #[arg(long, default_value_t = true)]
-        can_issue: bool,
-        #[arg(long, default_value_t = u64::MAX)]
-        expiry: u64,
         #[arg(long)]
         nonce_base: Option<u64>,
     },
@@ -38,10 +34,6 @@ enum Command {
         device_pk: SigningPublic,
         #[arg(long)]
         secret_key: SigningSecret,
-        #[arg(long, default_value_t = true)]
-        can_issue: bool,
-        #[arg(long, default_value_t = u64::MAX)]
-        expiry: u64,
         #[arg(long)]
         nonce: Option<u64>,
     },
@@ -97,43 +89,22 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             username,
             server_name,
             secret_key,
-            can_issue,
-            expiry,
             nonce_base,
         } => {
             let base = nonce_base.unwrap_or_else(|| NanoTimestamp::now().0);
             client
-                .add_device(
-                    &username,
-                    secret_key.public_key(),
-                    can_issue,
-                    Timestamp(expiry),
-                    base,
-                    &secret_key,
-                )
-                .await?;
-            client
-                .bind_server(&username, &server_name, base.saturating_add(1), &secret_key)
+                .bind_server(&username, &server_name, base, &secret_key)
                 .await?;
         }
         Command::UsernameAddDevice {
             username,
             device_pk,
             secret_key,
-            can_issue,
-            expiry,
             nonce,
         } => {
             let nonce = nonce.unwrap_or_else(|| NanoTimestamp::now().0);
             client
-                .add_device(
-                    &username,
-                    device_pk,
-                    can_issue,
-                    Timestamp(expiry),
-                    nonce,
-                    &secret_key,
-                )
+                .add_device(&username, device_pk, nonce, &secret_key)
                 .await?;
         }
         Command::UsernameRemoveDevice {

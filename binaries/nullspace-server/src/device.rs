@@ -44,7 +44,7 @@ pub async fn device_auth_start(
         return Err(ServerRpcError::AccessDenied);
     };
 
-    if descriptor.server_name.as_ref() != Some(&CONFIG.server_name) {
+    if descriptor.server_name != CONFIG.server_name {
         tracing::debug!(
             username = %username,
             expected = %CONFIG.server_name,
@@ -55,12 +55,8 @@ pub async fn device_auth_start(
     }
 
     let device_hash = device_pk.bcs_hash();
-    let Some(device_state) = descriptor.devices.get(&device_hash) else {
+    if !descriptor.devices.contains(&device_pk) {
         tracing::debug!(username = %username, device_hash = %device_hash, "device auth start denied: unknown device");
-        return Err(ServerRpcError::AccessDenied);
-    };
-    if !device_state.active || device_state.is_expired(now) {
-        tracing::debug!(username = %username, device_hash = %device_hash, "device auth start denied: inactive or expired device");
         return Err(ServerRpcError::AccessDenied);
     }
 
@@ -119,14 +115,11 @@ pub async fn device_auth_finish(
         return Err(ServerRpcError::AccessDenied);
     };
 
-    if descriptor.server_name.as_ref() != Some(&CONFIG.server_name) {
+    if descriptor.server_name != CONFIG.server_name {
         return Err(ServerRpcError::AccessDenied);
     }
 
-    let Some(device_state) = descriptor.devices.get(&request_device_hash) else {
-        return Err(ServerRpcError::AccessDenied);
-    };
-    if !device_state.active || device_state.is_expired(now) {
+    if !descriptor.devices.contains(&request.request.device_pk) {
         return Err(ServerRpcError::AccessDenied);
     }
 

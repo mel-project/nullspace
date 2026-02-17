@@ -25,14 +25,23 @@ use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
 #[nanorpc_derive]
 #[async_trait]
 pub trait ServerProtocol {
-    /// Allocates a one-time, unreliable multicast channel, used for device provisioning and other similar use cases. Returns the ID of the channel, which should be a fairly small number, allocated sequentially (the smallest free number).
-    async fn v1_multicast_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError>;
+    /// Allocates a one-time message-passing channel, used for device provisioning and other similar use cases. Returns the ID of the channel, which should be a fairly small number, allocated sequentially (the smallest free number).
+    async fn v1_chan_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError>;
 
-    /// Posts to a multicast channel. A small integer is passed in as the "party" involved in the multicast. If there's already a message in the channel, it's overwritten.
-    async fn v1_multicast_post(&self, channel: u32, value: Blob) -> Result<(), ServerRpcError>;
+    /// Sends to one direction of a channel.
+    async fn v1_chan_send(
+        &self,
+        channel: u32,
+        direction: ChanDirection,
+        value: Blob,
+    ) -> Result<(), ServerRpcError>;
 
-    /// Poll a multicast channel. Always returns the latest message.
-    async fn v1_multicast_poll(&self, channel: u32) -> Result<Option<Blob>, ServerRpcError>;
+    /// Receives a message from a channel. Does not block.
+    async fn v1_chan_recv(
+        &self,
+        channel: u32,
+        direction: ChanDirection,
+    ) -> Result<Option<Blob>, ServerRpcError>;
 
     /// Start challenge/response authentication for a device.
     async fn v1_device_auth_start(
@@ -126,6 +135,12 @@ pub trait ServerProtocol {
 
     /// Upload a fragment into the content-addressed store.
     async fn v1_download_frag(&self, hash: Hash) -> Result<Option<Fragment>, ServerRpcError>;
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum ChanDirection {
+    Forward,
+    Backward,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

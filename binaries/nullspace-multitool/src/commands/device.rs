@@ -164,14 +164,10 @@ async fn resolve_server_endpoint(global: &GlobalArgs, username: &UserName) -> an
         .get_user_descriptor(username)
         .await?
         .with_context(|| format!("username not found: {}", username.as_str()))?;
-    let server_name = descriptor
-        .server_name
-        .as_ref()
-        .with_context(|| format!("username has no server binding: {}", username.as_str()))?;
     let server = client
-        .get_server_descriptor(server_name)
+        .get_server_descriptor(&descriptor.server_name)
         .await?
-        .with_context(|| format!("server not found: {}", server_name.as_str()))?;
+        .with_context(|| format!("server not found: {}", descriptor.server_name.as_str()))?;
     let url = server
         .public_urls
         .first()

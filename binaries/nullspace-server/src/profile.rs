@@ -32,17 +32,13 @@ pub async fn profile_set(username: UserName, profile: UserProfile) -> Result<(),
     let Some(descriptor) = descriptor else {
         return Err(ServerRpcError::AccessDenied);
     };
-    if descriptor.server_name.as_ref() != Some(&CONFIG.server_name) {
+    if descriptor.server_name != CONFIG.server_name {
         return Err(ServerRpcError::AccessDenied);
     }
 
-    let now = unix_time();
     let mut verified = false;
-    for device in descriptor.devices.values() {
-        if !device.active || device.is_expired(now) {
-            continue;
-        }
-        if profile.verify(device.device_pk).is_ok() {
+    for device_pk in &descriptor.devices {
+        if profile.verify(*device_pk).is_ok() {
             verified = true;
             break;
         }
@@ -80,12 +76,4 @@ pub async fn profile_set(username: UserName, profile: UserProfile) -> Result<(),
     .map_err(fatal_retry_later)?;
     tx.commit().await.map_err(fatal_retry_later)?;
     Ok(())
-}
-
-fn unix_time() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

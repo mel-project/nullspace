@@ -7,7 +7,7 @@ Servers provide:
 - mailboxes (direct messages and groups)
 - device authentication (challenge/response) and medium-term key publication
 - a content-addressed fragment store for attachments
-- a short-lived multicast channel primitive (used by [device provisioning](provisioning.md))
+- a short-lived bidirectional channel primitive (used by [device provisioning](provisioning.md))
 - optional request proxying
 
 Server RPC is JSON-RPC 2.0. Method names are versioned with a `v1_` prefix and use positional parameters.
@@ -128,9 +128,9 @@ In JSON-RPC, the structured error value appears in the response error `data`.
 
 ## RPC methods
 
-### `v1_multicast_allocate(auth_token) -> channel_id`
+### `v1_chan_allocate(auth_token) -> channel_id`
 
-Allocates a short-lived multicast channel used for pairing-style flows (see [device provisioning](provisioning.md)).
+Allocates a short-lived bidirectional channel used for pairing-style flows (see [device provisioning](provisioning.md)).
 
 Authorization:
 
@@ -145,21 +145,22 @@ Notes:
 - Channels are ephemeral and may expire after a short period of inactivity.
 - Channel IDs may be reused after expiration.
 
-### `v1_multicast_post(channel_id, value) -> ()`
+### `v1_chan_send(channel_id, direction, value) -> ()`
 
-Writes a `blob` value into a multicast channel. If a value already exists, it is overwritten.
+Writes a `blob` value into one direction of a channel. If a value already exists in that direction, it is overwritten.
 
 Authorization:
 
 - The channel MUST exist (allocated and not yet expired).
+- `direction` MUST be either `forward` or `backward`.
 
 Notes:
 
 - This is intentionally unauthenticated; treat the channel contents as attacker-controlled unless protected by an end-to-end pairing protocol.
 
-### `v1_multicast_poll(channel_id) -> value | null`
+### `v1_chan_recv(channel_id, direction) -> value | null`
 
-Returns the latest `blob` value written to the multicast channel.
+Returns the latest `blob` value written to the requested channel direction.
 
 Returns `null` if:
 
@@ -178,7 +179,7 @@ Inputs:
 Validation:
 
 - The server MUST check that `username` exists in the directory and is bound to this server.
-- The server MUST check that `device_pk` is an active, non-expired device for `username` (see [devices](devices.md)).
+- The server MUST check that `device_pk` appears in the current device set for `username` (see [devices](devices.md)).
 
 Returns a `challenge` object:
 
@@ -261,7 +262,7 @@ Notes:
 - Servers MAY return a partial view (for example, only devices that have recently authenticated and published keys).
 - Clients MUST validate returned keys by:
   - verifying the signature with the device signing key from the directory, and
-  - using only active, non-expired devices from the directory (see [devices](devices.md)).
+  - using only devices present in the current directory descriptor (see [devices](devices.md)).
 
 ### `v1_profile(username) -> user_profile | null`
 
@@ -280,7 +281,7 @@ user_profile = { display_name, avatar, created, signature }
 - `created`: Unix timestamp (seconds)
 - `signature`: Ed25519 signature (base64url)
 
-Clients SHOULD verify the signature with a currently active device key for `username` (see [devices](devices.md)).
+Clients SHOULD verify the signature with a device key currently listed for `username` (see [devices](devices.md)).
 
 ### `v1_profile_set(username, user_profile) -> ()`
 
@@ -289,7 +290,7 @@ Stores a user profile for `username`.
 Authorization and validation:
 
 - The server MUST check that `username` exists in the directory and is bound to this server.
-- The server MUST verify `user_profile.signature` under at least one active, non-expired device key for `username`.
+- The server MUST verify `user_profile.signature` under at least one currently listed device key for `username`.
 - The server MUST reject updates where `user_profile.created` is not strictly greater than the stored profile’s `created`.
 
 ### `v1_mailbox_send(auth_token, mailbox_id, message, ttl_seconds) -> received_at`

@@ -1,11 +1,9 @@
-use std::time::Duration;
-
-use eframe::egui::{DragValue, Response, TextEdit, Widget, Window};
+use eframe::egui::{Response, TextEdit, Widget, Window};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ProvisionHostPhase, ProvisionHostStart, ProvisionHostStatus};
-use nullspace_structs::timestamp::Timestamp;
 use poll_promise::Promise;
+use pollster::block_on;
 
 use crate::NullspaceApp;
 use crate::promises::{PromiseSlot, flatten_rpc};
@@ -18,9 +16,6 @@ pub struct AddDevice<'a> {
 
 impl Widget for AddDevice<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let mut can_issue: Var<bool> = ui.use_state(|| true, ()).into_var();
-        let mut never_expires: Var<bool> = ui.use_state(|| true, ()).into_var();
-        let mut expiry_days: Var<u32> = ui.use_state(|| 365, ()).into_var();
         let mut session_id: Var<Option<u64>> = ui.use_state(|| None, ()).into_var();
         let mut display_code: Var<String> = ui.use_state(String::new, ()).into_var();
         let mut phase: Var<ProvisionHostPhase> =
@@ -28,14 +23,6 @@ impl Widget for AddDevice<'_> {
         let mut phase_error: Var<Option<String>> = ui.use_state(|| None::<String>, ()).into_var();
 
         let start_req = ui.use_state(PromiseSlot::<Result<ProvisionHostStart, String>>::new, ());
-        let status_req = ui.use_state(PromiseSlot::<Result<ProvisionHostStatus, String>>::new, ());
-        let stop_req = ui.use_state(PromiseSlot::<Result<(), String>>::new, ());
-
-        if let Some(result) = stop_req.take()
-            && let Err(err) = result
-        {
-            self.app.state.error_dialog = Some(err);
-        }
         if let Some(result) = start_req.take() {
             match result {
                 Ok(start) => {
@@ -49,29 +36,50 @@ impl Widget for AddDevice<'_> {
                 }
             }
         }
-        if let Some(result) = status_req.take() {
-            match result {
-                Ok(status) => {
-                    *display_code = status.display_code;
-                    *phase = status.phase;
-                    *phase_error = status.error;
-                }
-                Err(err) => {
-                    self.app.state.error_dialog = Some(err);
-                }
-            }
-        }
 
         if *self.open {
-            if let Some(current) = *session_id
-                && status_req.is_idle()
-            {
-                let promise = Promise::spawn_async(async move {
-                    flatten_rpc(get_rpc().provision_host_status(current).await)
-                });
-                status_req.start(promise);
-                ui.ctx()
-                    .request_repaint_after(Duration::from_millis(250));
+            if let Some(current) = *session_id {
+                match flatten_rpc(block_on(get_rpc().provision_host_status(current))) {
+                    Ok(ProvisionHostStatus {
+                        phase: current_phase,
+                        display_code: current_code,
+                        error: current_error,
+                    }) => {
+                        *display_code = current_code;
+                        *phase = current_phase;
+                        *phase_error = current_error;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            session_id = current,
+                            error = %err,
+                            "provision_host_status failed; restarting session",
+                        );
+                        if let Err(stop_err) = flatten_rpc(block_on(get_rpc().provision_host_stop(current)))
+                        {
+                            tracing::warn!(
+                                session_id = current,
+                                error = %stop_err,
+                                "provision_host_stop failed during status-error restart",
+                            );
+                        }
+                        reset_pairing_state(
+                            &mut session_id,
+                            &mut display_code,
+                            &mut phase,
+                            &mut phase_error,
+                        );
+                        if start_req.is_idle() {
+                            let promise = Promise::spawn_async(async move {
+                                flatten_rpc(get_rpc().provision_host_start().await)
+                            });
+                            start_req.start(promise);
+                        }
+                    }
+                }
+            }
+            if session_id.is_some() || start_req.is_running() {
+                ui.ctx().request_repaint();
             }
 
             let mut window_open = *self.open;
@@ -82,18 +90,8 @@ impl Widget for AddDevice<'_> {
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
                     ui.label("Start pairing and enter the code on the new device.");
-                    ui.label("If pairing does not complete, this code auto-refreshes every 15 seconds.");
 
                     let can_start = !start_req.is_running();
-                    ui.checkbox(&mut can_issue, "Allow this device to issue new devices");
-                    ui.checkbox(&mut never_expires, "Never expires");
-                    ui.add_enabled_ui(!*never_expires, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Expires in days");
-                            ui.add(DragValue::new(&mut *expiry_days).speed(1));
-                        });
-                    });
-
                     let button_label = if session_id.is_some() {
                         "Restart pairing"
                     } else {
@@ -103,30 +101,26 @@ impl Widget for AddDevice<'_> {
                         .add_enabled(can_start, eframe::egui::Button::new(button_label))
                         .clicked()
                     {
-                        if let Some(existing) = *session_id
-                            && stop_req.is_idle()
-                        {
-                            let promise = Promise::spawn_async(async move {
-                                flatten_rpc(get_rpc().provision_host_stop(existing).await)
-                            });
-                            stop_req.start(promise);
+                        if let Some(existing) = *session_id {
+                            if let Err(err) =
+                                flatten_rpc(block_on(get_rpc().provision_host_stop(existing)))
+                            {
+                                tracing::warn!(
+                                    session_id = existing,
+                                    error = %err,
+                                    "provision_host_stop failed on restart",
+                                );
+                            }
                         }
-                        *session_id = None;
-                        *display_code = String::new();
-                        *phase = ProvisionHostPhase::Pending;
-                        *phase_error = None;
+                        reset_pairing_state(
+                            &mut session_id,
+                            &mut display_code,
+                            &mut phase,
+                            &mut phase_error,
+                        );
 
-                        let expiry = if *never_expires {
-                            Timestamp(u64::MAX)
-                        } else {
-                            let secs = u64::from(*expiry_days)
-                                .saturating_mul(86_400)
-                                .saturating_add(Timestamp::now().0);
-                            Timestamp(secs)
-                        };
-                        let can_issue = *can_issue;
                         let promise = Promise::spawn_async(async move {
-                            flatten_rpc(get_rpc().provision_host_start(can_issue, expiry).await)
+                            flatten_rpc(get_rpc().provision_host_start().await)
                         });
                         start_req.start(promise);
                     }
@@ -164,18 +158,33 @@ impl Widget for AddDevice<'_> {
                     }
                 });
             *self.open = window_open;
-        } else if let Some(existing) = *session_id
-            && stop_req.is_idle()
-        {
-            let promise = Promise::spawn_async(async move {
-                flatten_rpc(get_rpc().provision_host_stop(existing).await)
-            });
-            stop_req.start(promise);
-            *session_id = None;
-            *display_code = String::new();
-            *phase = ProvisionHostPhase::Pending;
-            *phase_error = None;
+        } else if let Some(existing) = *session_id {
+            if let Err(err) = flatten_rpc(block_on(get_rpc().provision_host_stop(existing))) {
+                tracing::warn!(
+                    session_id = existing,
+                    error = %err,
+                    "provision_host_stop failed on close",
+                );
+            }
+            reset_pairing_state(
+                &mut session_id,
+                &mut display_code,
+                &mut phase,
+                &mut phase_error,
+            );
         }
         ui.response()
     }
+}
+
+fn reset_pairing_state(
+    session_id: &mut Var<Option<u64>>,
+    display_code: &mut Var<String>,
+    phase: &mut Var<ProvisionHostPhase>,
+    phase_error: &mut Var<Option<String>>,
+) {
+    **session_id = None;
+    **display_code = String::new();
+    **phase = ProvisionHostPhase::Pending;
+    **phase_error = None;
 }

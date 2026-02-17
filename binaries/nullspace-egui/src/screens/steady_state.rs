@@ -86,6 +86,7 @@ impl Widget for SteadyState<'_> {
         eframe::egui::SidePanel::left("steady_left")
             .resizable(true)
             .min_width(200.0)
+            .default_width(200.0)
             .frame(frame)
             .show_inside(ui, |ui| self.render_left(ui, &convos, &mut state));
         eframe::egui::CentralPanel::default()

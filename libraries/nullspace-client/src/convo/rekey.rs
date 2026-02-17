@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyctx::AnyCtx;
-use anyhow::Context;
 use bytes::Bytes;
 use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::dh::DhPublic;
@@ -11,8 +10,7 @@ use nullspace_crypt::signing::{Signable, SigningPublic};
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::server::{MailboxId, SignedMediumPk};
-use nullspace_structs::timestamp::Timestamp;
-use nullspace_structs::username::{DeviceState, UserName};
+use nullspace_structs::username::UserName;
 use rand::Rng;
 use tracing::warn;
 
@@ -138,16 +136,17 @@ async fn collect_group_recipients(
 
 fn collect_recipients(
     username: &UserName,
-    devices: &BTreeMap<Hash, DeviceState>,
+    devices: &BTreeSet<SigningPublic>,
     medium_pks: &BTreeMap<Hash, SignedMediumPk>,
 ) -> anyhow::Result<Vec<DhPublic>> {
     let mut recipients = Vec::new();
-    for (device_hash, device) in devices {
-        let Some(medium_pk) = medium_pks.get(device_hash) else {
+    for device_pk in devices {
+        let device_hash = device_pk.bcs_hash();
+        let Some(medium_pk) = medium_pks.get(&device_hash) else {
             warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
             continue;
         };
-        if medium_pk.verify(device.device_pk).is_err() {
+        if medium_pk.verify(*device_pk).is_err() {
             warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
             continue;
         }
@@ -185,11 +184,7 @@ pub(super) async fn process_group_rekey_entry(
         warn!(sender = %sender_username, "ignoring group rekey from non-admin");
         return Ok(());
     }
-    let sender_descriptor = ctx
-        .get(crate::directory::DIR_CLIENT)
-        .get_user_descriptor(&sender_username)
-        .await?
-        .context("sender username not in directory")?;
+    let sender_descriptor = crate::user_info::get_user_descriptor(ctx, &sender_username).await?;
     ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let payload = signed
         .verify_bytes()
@@ -219,12 +214,8 @@ fn ensure_sender_device_allowed(
     sender_descriptor: &nullspace_structs::username::UserDescriptor,
     sender_device_pk: SigningPublic,
 ) -> anyhow::Result<()> {
-    let sender_hash = sender_device_pk.bcs_hash();
-    let Some(device) = sender_descriptor.devices.get(&sender_hash) else {
+    if !sender_descriptor.devices.contains(&sender_device_pk) {
         anyhow::bail!("sender device not found in directory state");
-    };
-    if !device.active || device.is_expired(Timestamp::now().0) {
-        anyhow::bail!("sender device is inactive or expired");
     }
     Ok(())
 }

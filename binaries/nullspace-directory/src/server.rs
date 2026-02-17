@@ -328,14 +328,8 @@ fn apply_update(
         )));
     }
 
-    let owners = canonicalize_owners(&update.owners);
-    if owners != update.owners {
-        return Err(DirectoryErr::UpdateRejected(
-            "owners list must be sorted unique".into(),
-        ));
-    }
     if state.owners.is_empty() {
-        if !owners.contains(&update.signer_pk) {
+        if !update.owners.contains(&update.signer_pk) {
             return Err(DirectoryErr::UpdateRejected(
                 "first update must include signer in owners list".into(),
             ));
@@ -347,18 +341,9 @@ fn apply_update(
     }
 
     state.nonce_max = update.nonce;
-    state.owners = owners;
+    state.owners = update.owners.clone();
     state.value = update.value.clone();
     Ok(())
-}
-
-fn canonicalize_owners(
-    owners: &[nullspace_crypt::signing::SigningPublic],
-) -> Vec<nullspace_crypt::signing::SigningPublic> {
-    let mut out = owners.to_vec();
-    out.sort_by(|a, b| a.to_bytes().cmp(&b.to_bytes()));
-    out.dedup();
-    out
 }
 
 fn map_db_err(err: anyhow::Error) -> DirectoryErr {

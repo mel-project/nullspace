@@ -13,8 +13,8 @@ key_state = [nonce_max, owners, value]
 ```
 
 - `nonce_max`: unsigned integer
-- `owners`: list of signing public keys
-- `value`: `null` or bytes
+- `owners`: set of signing public keys
+- `value`: bytes (empty bytes allowed)
 
 `key_state` is BCS-encoded and stored as the SMT leaf value bytes.
 
@@ -22,12 +22,12 @@ key_state = [nonce_max, owners, value]
 
 Keys are arbitrary UTF-8 strings. The SMT path is derived from the bytes of the UTF-8 string.
 
-### Key absence vs. empty value
+### Key absence vs. empty payload
 
 There are two distinct situations:
 
 - **key absent**: the SMT stores an empty byte string for the leaf
-- **key present with no value**: the SMT stores `BCS(key_state)` where `value = null`
+- **key present with empty payload**: the SMT stores `BCS(key_state)` where `value = []`
 
 ## Cryptographic primitives
 
@@ -138,10 +138,6 @@ The signature covers:
 sign_bytes = BCS([key, nonce, signer_pk, owners, value])
 signature = ed25519_sign(signer_sk, sign_bytes)
 ```
-
-To avoid ambiguity and malleability, `owners` MUST be a canonical list:
-- sorted by raw public key bytes (lexicographic)
-- duplicates removed
 
 ## Proof-of-work (rate limiting)
 
@@ -255,7 +251,6 @@ Submits an update for the key/value registry.
 Validation rules:
 - `pow_solution` must be valid and unexpired
 - update signature must verify under `signer_pk`
-- `owners` must be canonical (sorted unique)
 - `nonce` must be strictly greater than the current nonce floor for `key`
 - authorization:
   - if the key has no committed owners, then the update MUST include `signer_pk` in `owners`
@@ -271,4 +266,3 @@ The directory may return:
 
 - `retry later`: temporary failure (clients should retry with backoff)
 - `update rejected(reason)`: permanent rejection for the given update (clients should not retry the same update)
-

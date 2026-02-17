@@ -32,7 +32,7 @@ See [directory](directory.md) for the raw directory specification and RPC API.
 
 Each key in the directory is an arbitrary string, and each key stores:
 - `nonce_max`
-- `owners` (list of signing public keys allowed to edit this key)
+- `owners` (set of signing public keys allowed to edit this key)
 - `value` (opaque bytes)
 
 Each raw update is:
@@ -44,7 +44,7 @@ Each raw update is:
 Rules at the raw directory layer:
 - signature must verify under `signer_pk`
 - nonce must be strictly increasing
-- signer must already be in the current `owners` list (except first write, where signer must be included in new `owners`)
+- signer must already be in the current `owners` set (except first write, where signer must be included in new `owners`)
 
 The directory keeps pending per-key updates in a mempool between chunk commits, so multiple updates can be accepted without waiting for separate chunk intervals.
 
@@ -67,7 +67,7 @@ The sparse Merkle tree commits to **current key state** (`[nonce_max, owners, va
 
 - **Username**: user identifier like `@user_01` (stored under a key starting with `@`).
 - **Server name**: server identifier like `~serv_01` (stored under a key starting with `~`).
-- **User descriptor value**: `[nonce_max, server_name_or_none, devices_map]`.
+- **User descriptor value**: `[server_name, devices]`.
 - **Server descriptor value**: `[public_urls, server_pk]`.
 
 Clients resolve usernames/servers from directory values and validate device keys from those values when verifying signed payloads.

@@ -7,7 +7,7 @@ use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::{Event, EventPayload, Recipient};
 use nullspace_structs::server::{MailboxId, ServerName};
-use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
+use nullspace_structs::timestamp::NanoTimestamp;
 use tracing::warn;
 
 use crate::database::{
@@ -118,11 +118,7 @@ async fn process_mailbox_entry(
     };
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender_username = signed.sender().clone();
-    let sender_descriptor = ctx
-        .get(crate::directory::DIR_CLIENT)
-        .get_user_descriptor(&sender_username)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("sender username not in directory"))?;
+    let sender_descriptor = crate::user_info::get_user_descriptor(ctx, &sender_username).await?;
     ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
     let message = signed
         .verify_blob()
@@ -184,12 +180,8 @@ fn ensure_sender_device_allowed(
     sender_descriptor: &nullspace_structs::username::UserDescriptor,
     sender_device_pk: SigningPublic,
 ) -> anyhow::Result<()> {
-    let sender_hash = sender_device_pk.bcs_hash();
-    let Some(device) = sender_descriptor.devices.get(&sender_hash) else {
+    if !sender_descriptor.devices.contains(&sender_device_pk) {
         anyhow::bail!("sender device not found in directory state");
-    };
-    if !device.active || device.is_expired(Timestamp::now().0) {
-        anyhow::bail!("sender device is inactive or expired");
     }
     Ok(())
 }

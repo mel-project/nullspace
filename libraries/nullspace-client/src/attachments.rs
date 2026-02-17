@@ -4,7 +4,7 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 
 use anyctx::AnyCtx;
 use bytes::Bytes;
@@ -15,6 +15,7 @@ use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_structs::fragment::{Attachment, Fragment, FragmentLeaf, FragmentNode};
 use nullspace_structs::server::ServerClient;
 use nullspace_structs::username::UserName;
+use parking_lot::Mutex;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -249,14 +250,14 @@ async fn download_inner(
 ) -> anyhow::Result<()> {
     static IN_PROGRESS: LazyLock<Mutex<HashSet<Hash>>> = LazyLock::new(Default::default);
     {
-        let mut prog = IN_PROGRESS.lock().unwrap();
+        let mut prog = IN_PROGRESS.lock();
         if prog.contains(&attachment_id) {
             return Ok(());
         }
         prog.insert(attachment_id);
     }
     scopeguard::defer!({
-        IN_PROGRESS.lock().unwrap().remove(&attachment_id);
+        IN_PROGRESS.lock().remove(&attachment_id);
     });
     let db = ctx.get(DATABASE);
     if !identity_exists(db).await? {

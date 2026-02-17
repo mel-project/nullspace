@@ -1,10 +1,11 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use moka::future::Cache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcTransport};
 use nullspace_nanorpc::Transport;
+use parking_lot::Mutex;
 use url::Url;
 
 #[derive(Clone)]
@@ -120,10 +121,7 @@ impl PerUrlPool {
     }
 
     fn get_or_init_transport(&self, index: usize) -> Arc<Transport> {
-        let mut transports = self
-            .transports
-            .lock()
-            .expect("rpc pool transport lock poisoned");
+        let mut transports = self.transports.lock();
         if transports.len() <= index {
             transports.resize_with(index + 1, || None);
         }
@@ -136,10 +134,7 @@ impl PerUrlPool {
     }
 
     fn drop_transport(&self, target: &Arc<Transport>) {
-        let mut transports = self
-            .transports
-            .lock()
-            .expect("rpc pool transport lock poisoned");
+        let mut transports = self.transports.lock();
         for slot in transports.iter_mut() {
             if let Some(existing) = slot.as_ref()
                 && Arc::ptr_eq(existing, target)

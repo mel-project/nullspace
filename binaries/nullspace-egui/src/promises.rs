@@ -1,8 +1,6 @@
-use std::{
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
+use parking_lot::Mutex;
 use poll_promise::Promise;
 
 pub struct PromiseSlot<T: Clone + Send + 'static> {
@@ -23,9 +21,7 @@ impl<T: Clone + Send + 'static> PromiseSlot<T> {
     }
 
     pub fn start(&self, promise: Promise<T>) -> bool {
-        let Ok(mut guard) = self.inner.lock() else {
-            return false;
-        };
+        let mut guard = self.inner.lock();
         match &*guard {
             PromiseState::Running(_) => false,
             _ => {
@@ -36,9 +32,7 @@ impl<T: Clone + Send + 'static> PromiseSlot<T> {
     }
 
     pub fn poll(&self) -> Option<T> {
-        let Ok(mut guard) = self.inner.lock() else {
-            return None;
-        };
+        let mut guard = self.inner.lock();
         match &mut *guard {
             PromiseState::Idle => None,
             PromiseState::Ready(value) => Some(value.clone()),
@@ -63,9 +57,7 @@ impl<T: Clone + Send + 'static> PromiseSlot<T> {
     }
 
     pub fn take(&self) -> Option<T> {
-        let Ok(mut guard) = self.inner.lock() else {
-            return None;
-        };
+        let mut guard = self.inner.lock();
         match &mut *guard {
             PromiseState::Idle => None,
             PromiseState::Ready(_) => {
@@ -84,16 +76,12 @@ impl<T: Clone + Send + 'static> PromiseSlot<T> {
     }
 
     pub fn is_running(&self) -> bool {
-        let Ok(guard) = self.inner.lock() else {
-            return false;
-        };
+        let guard = self.inner.lock();
         matches!(&*guard, PromiseState::Running(_))
     }
 
     pub fn is_idle(&self) -> bool {
-        let Ok(guard) = self.inner.lock() else {
-            return false;
-        };
+        let guard = self.inner.lock();
         matches!(&*guard, PromiseState::Idle)
     }
 }

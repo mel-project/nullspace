@@ -136,19 +136,19 @@ signature = ed25519_sign(signer_sk, BCS([username_key, nonce, signer_pk, owners,
 
 and submit `update` using `v1_insert_update` from [directory](directory.md).
 
-## Add-device provisioning bundle
+## Add-device provisioning
 
-Device provisioning can be implemented as a single bundle transfer from an existing authorized device to a new device.
+Add-device provisioning uses the pairing flow in [provisioning](provisioning.md).
 
-The bundle producer constructs a **prepared add-device action** that the bundle receiver can submit to the directory.
+The existing device prepares a signed add-device transition and encrypts it to the new device over a SPAKE-derived key. The new device validates and submits that prepared transition to the directory.
 
-A prepared action is:
+A prepared transition is:
 
 ```
 prepared_action = [username_key, nonce, signer_pk, action, next_user_descriptor, signature]
 ```
 
-where `signature` is the raw directory update signature implied by `next_user_descriptor`:
+where:
 
 ```
 owners = sorted_unique([device_pk in next_user_descriptor where active == true])
@@ -156,42 +156,7 @@ value  = BCS(next_user_descriptor)
 signature = ed25519_sign(signer_sk, BCS([username_key, nonce, signer_pk, owners, value]))
 ```
 
-The directory does not accept `prepared_action` directly. The receiver converts it into a raw directory update and submits it using `v1_insert_update` (see [directory](directory.md)).
-
-### Bundle producer (existing device)
-
-```
-make_bundle(existing_device, username_key, can_issue, expiry):
-    descriptor = directory_get_user_descriptor(username_key)
-    assert existing_device is active, non-expired, can_issue in descriptor
-
-    new_device_secret = random_device_secret()
-    nonce = choose_nonce_greater_than(descriptor.nonce_max)
-
-    action = ["add_device", public(new_device_secret), can_issue, expiry]
-    next_descriptor = apply_user_action(descriptor, public(existing_device), nonce, action)
-
-    prepared = [username_key, nonce, public(existing_device), action, next_descriptor, signature]
-    return encode([new_device_secret, prepared])
-```
-
-### Bundle receiver (new device)
-
-```
-consume_bundle(bundle):
-    [new_device_secret, prepared] = decode(bundle)
-
-    assert prepared.action is ["add_device", public(new_device_secret), _, _]
-    directory_submit_prepared(prepared)
-    wait_until_committed(prepared.username_key, prepared.nonce)
-
-    descriptor = directory_get_user_descriptor(prepared.username_key)
-    assert public(new_device_secret) is active in descriptor
-    server_name = descriptor.server_name
-
-    auth = server_auth_challenge(prepared.username_key, new_device_secret)
-    publish_medium_key(auth, sign_medium_key(new_device_secret))
-```
+The receiver converts `prepared_action` into a raw directory update and submits it with `v1_insert_update` from [directory](directory.md).
 
 ## Server authentication
 

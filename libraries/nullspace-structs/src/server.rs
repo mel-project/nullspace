@@ -25,11 +25,14 @@ use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
 #[nanorpc_derive]
 #[async_trait]
 pub trait ServerProtocol {
-    // /// Allocates a one-time provisioning channel, given a random channel ID. Blocks until somebody posts to this channel, or the timeout is hit.
-    // async fn v1_provision_allocate(&self) -> Result<u64, ServerRpcError>;
+    /// Allocates a one-time, unreliable multicast channel, used for device provisioning and other similar use cases. Returns the ID of the channel, which should be a fairly small number, allocated sequentially (the smallest free number).
+    async fn v1_multicast_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError>;
 
-    // /// Posts to a provisioning channel. Must provide a valid auth token for rate limiting purposes.
-    // async fn v1_provision_send(&self, channel: u64, value: Blob) -> Result<(), ServerRpcError>;
+    /// Posts to a multicast channel. A small integer is passed in as the "party" involved in the multicast. If there's already a message in the channel, it's overwritten.
+    async fn v1_multicast_post(&self, channel: u32, value: Blob) -> Result<(), ServerRpcError>;
+
+    /// Poll a multicast channel. Always returns the latest message.
+    async fn v1_multicast_poll(&self, channel: u32) -> Result<Option<Blob>, ServerRpcError>;
 
     /// Start challenge/response authentication for a device.
     async fn v1_device_auth_start(

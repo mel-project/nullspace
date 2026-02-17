@@ -5,6 +5,7 @@ pub mod dh;
 mod encoding;
 pub mod hash;
 pub mod signing;
+pub mod spake;
 pub mod stream;
 pub use encoding::ParseKeyError;
 

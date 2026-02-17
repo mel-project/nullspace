@@ -11,4 +11,5 @@ async-trait = "0.1.89"
 moka = { version = "0.12.12", features = ["future"] }
 nanorpc = "0.1.13"
 nullspace-nanorpc = { version = "0.0.1", path = "../nullspace-nanorpc" }
+parking_lot = "0.12.5"
 url = { version = "2.5.8", features = ["serde"] }

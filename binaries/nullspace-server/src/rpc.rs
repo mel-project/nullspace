@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
 };
 use bytes::Bytes;
-use moka::future::Cache;
+use moka::future::Cache as FutureCache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
 use nullspace_rpc_pool::PooledTransport;
 use nullspace_structs::server::{
@@ -20,7 +20,7 @@ use nullspace_structs::{Blob, profile::UserProfile, timestamp::NanoTimestamp, us
 use crate::config::CONFIG;
 use crate::profile;
 use crate::rpc_pool::RPC_POOL;
-use crate::{device, dir_client::DIR_CLIENT, fragment, mailbox};
+use crate::{device, dir_client::DIR_CLIENT, fragment, mailbox, multicast};
 
 #[derive(Clone, Default)]
 pub struct ServerRpc;
@@ -44,6 +44,18 @@ pub async fn rpc_handler(body: Bytes) -> impl IntoResponse {
 
 #[async_trait::async_trait]
 impl ServerProtocol for ServerRpc {
+    async fn v1_multicast_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError> {
+        multicast::multicast_allocate(auth).await
+    }
+
+    async fn v1_multicast_post(&self, channel: u32, value: Blob) -> Result<(), ServerRpcError> {
+        multicast::multicast_post(channel, value).await
+    }
+
+    async fn v1_multicast_poll(&self, channel: u32) -> Result<Option<Blob>, ServerRpcError> {
+        multicast::multicast_poll(channel).await
+    }
+
     async fn v1_device_auth_start(
         &self,
         username: UserName,
@@ -146,11 +158,12 @@ impl ServerProtocol for ServerRpc {
         if !CONFIG.proxy_enabled {
             return Err(ProxyError::NotSupported);
         }
-        static PROXY_CACHE: LazyLock<Cache<ServerName, PooledTransport>> = LazyLock::new(|| {
-            Cache::builder()
-                .time_to_idle(Duration::from_secs(12 * 60 * 60))
-                .build()
-        });
+        static PROXY_CACHE: LazyLock<FutureCache<ServerName, PooledTransport>> =
+            LazyLock::new(|| {
+                FutureCache::builder()
+                    .time_to_idle(Duration::from_secs(12 * 60 * 60))
+                    .build()
+            });
 
         match device::auth_token_exists(auth).await {
             Ok(true) => {}

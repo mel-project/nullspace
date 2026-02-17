@@ -12,6 +12,7 @@ mod long_poll;
 mod main_loop;
 mod medium_keys;
 mod profile;
+mod provisioning;
 mod retry;
 mod rpc_pool;
 mod server;

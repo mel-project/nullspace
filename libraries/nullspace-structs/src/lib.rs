@@ -47,6 +47,9 @@ impl Blob {
     v1_kind!(direct_message);
     v1_kind!(group_message);
     v1_kind!(group_rekey);
+    v1_kind!(provision_helo);
+    v1_kind!(provision_ehlo);
+    v1_kind!(provision_finish);
 }
 
 fn debug_bytes_len<T: AsRef<[u8]>>(bytes: &T, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

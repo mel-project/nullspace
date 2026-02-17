@@ -1,5 +1,3 @@
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use eframe::egui::{Button, Response, Spinner, Widget};
 use egui::{ComboBox, Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
@@ -28,7 +26,7 @@ impl Widget for Login<'_> {
         let mut server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut server_choice = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();
-        let mut bundle_str = ui.use_state(String::new, ()).into_var();
+        let mut pairing_code = ui.use_state(String::new, ()).into_var();
 
         let register_start = ui.use_state(PromiseSlot::new, ());
         let register_finish = ui.use_state(PromiseSlot::new, ());
@@ -158,15 +156,9 @@ impl Widget for Login<'_> {
                 });
                 }
                 LoginStep::FinishAddDevice => {
-                    let info = register_start.poll().unwrap().unwrap();
-                    let Some(_info) = info else {
-                        self.0.state.error_dialog = Some("missing register info".to_string());
-                        step.set_next(LoginStep::EnterUsername);
-                        return;
-                    };
                     ui.label(format!("The user {username_str} exists!"));
-                    ui.label("You need to export a device bundle from an existing device:");
-                    ui.text_edit_multiline(&mut *bundle_str);
+                    ui.label("Enter the pairing code from your existing device:");
+                    ui.text_edit_singleline(&mut *pairing_code);
                     ui.label(
                         RichText::new("On your other device, go to [File] > [Add device]").small(),
                     );
@@ -175,15 +167,17 @@ impl Widget for Login<'_> {
                         .add_enabled(add_enabled, eframe::egui::Button::new("Log in"))
                         .clicked()
                     {
-                        let raw = match URL_SAFE_NO_PAD.decode(bundle_str.trim()) {
-                            Ok(raw) => raw,
+                        let username: UserName = match username_str.parse() {
+                            Ok(username) => username,
                             Err(err) => {
-                                self.0.state.error_dialog = Some(format!("invalid bundle: {err}"));
+                                self.0.state.error_dialog = Some(format!("invalid username: {err}"));
                                 return;
                             }
                         };
-                        let bundle = nullspace_client::internal::NewDeviceBundle(raw.into());
-                        let request = nullspace_client::internal::RegisterFinish::AddDevice { bundle };
+                        let request = nullspace_client::internal::RegisterFinish::AddDeviceByCode {
+                            username,
+                            code: (*pairing_code).trim().to_string(),
+                        };
                         let promise = Promise::spawn_async(async move {
                             flatten_rpc(get_rpc().register_finish(request).await)
                         });

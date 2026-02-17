@@ -22,6 +22,7 @@ moka = { version = "0.12.12", features = ["future"] }
 nanorpc = "0.1.13"
 pollster = "0.4.0"
 rand = "0.8.5"
+parking_lot = "0.12.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_with = { version = "3.16.1", features = ["base64"] }

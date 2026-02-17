@@ -4,6 +4,7 @@ mod device;
 mod dir_client;
 mod fragment;
 mod mailbox;
+mod multicast;
 mod profile;
 mod rpc;
 mod rpc_pool;

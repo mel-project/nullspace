@@ -26,6 +26,8 @@ This is doubly so if the RPC call is in a `use_memo` or any other construct that
 
 Keep `docs/SUMMARY.md` in sync with the docs. When adding, removing, or renaming doc pages, update the summary accordingly.
 
+When editing code, edit the documentation **MINIMALLY** to fix any documentation that contradicts the code.
+
 ## Documentation rules
 
 - Keep docs implementation-neutral; do not mention Rust type names.

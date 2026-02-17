@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{Response, Widget};
-use egui::vec2;
+
 use egui_hooks::UseHookExt;
 use image::GenericImageView;
 use moka::sync::Cache;

@@ -55,7 +55,8 @@ impl Widget for AddDevice<'_> {
                             error = %err,
                             "provision_host_status failed; restarting session",
                         );
-                        if let Err(stop_err) = flatten_rpc(block_on(get_rpc().provision_host_stop(current)))
+                        if let Err(stop_err) =
+                            flatten_rpc(block_on(get_rpc().provision_host_stop(current)))
                         {
                             tracing::warn!(
                                 session_id = current,

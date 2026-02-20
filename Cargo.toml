@@ -22,6 +22,8 @@ lto = "thin"
 
 [profile.dev]
 panic = "abort"
+opt-level = 1
+lto = "off"
 
 [profile.dev.package.num-bigint-dig]
 opt-level = 3

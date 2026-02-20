@@ -53,7 +53,7 @@ impl<T: Clone + Send + 'static> PromiseSlot<T> {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        return None;
+        None
     }
 
     pub fn take(&self) -> Option<T> {

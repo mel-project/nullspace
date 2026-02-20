@@ -323,8 +323,8 @@ fn render_composer(
             if ui.button("\u{ea7f} Attach").clicked() {
                 app.file_dialog.pick_file();
             }
-            if ui.button("\u{ed7a} Clipboard image").clicked() {
-                if pasted_image.is_none() {
+            if ui.button("\u{ed7a} Clipboard image").clicked()
+                && pasted_image.is_none() {
                     match read_clipboard_image() {
                         Ok(image) => {
                             *pasted_image = Some(image);
@@ -334,7 +334,6 @@ fn render_composer(
                         }
                     }
                 }
-            }
         });
         app.file_dialog.update(ui.ctx());
         if let Some(path) = app.file_dialog.take_picked() {

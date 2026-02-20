@@ -538,13 +538,12 @@ async fn wait_for_spake_message(
 ) -> Result<SpakeMessage, InternalRpcError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(blob) = server_channel_recv(server, channel, direction).await? {
-            if blob.kind == expected_kind
+        if let Some(blob) = server_channel_recv(server, channel, direction).await?
+            && blob.kind == expected_kind
                 && let Ok(msg) = serde_json::from_slice::<ProvisionSpakeMessage>(&blob.inner)
             {
                 return Ok(msg.spake_msg);
             }
-        }
         tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
     }
     Err(InternalRpcError::Other(
@@ -560,13 +559,12 @@ async fn wait_for_finish_envelope(
 ) -> Result<ProvisionFinishEnvelope, InternalRpcError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(blob) = server_channel_recv(server, channel, direction).await? {
-            if blob.kind == Blob::V1_PROVISION_FINISH
+        if let Some(blob) = server_channel_recv(server, channel, direction).await?
+            && blob.kind == Blob::V1_PROVISION_FINISH
                 && let Ok(msg) = serde_json::from_slice::<ProvisionFinishEnvelope>(&blob.inner)
             {
                 return Ok(msg);
             }
-        }
         tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
     }
     Err(InternalRpcError::Other(

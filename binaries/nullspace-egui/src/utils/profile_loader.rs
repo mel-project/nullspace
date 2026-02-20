@@ -66,8 +66,8 @@ impl ProfileLoader {
                 .last_good
                 .as_ref()
                 .and_then(|profile| profile.display_name.clone());
-            match promise.try_take() {
-                Ok(result) => match result {
+            if let Some(result) = promise.ready().cloned() {
+                match result {
                     Ok(profile) => {
                         entry.missing = false;
                         entry.last_good = Some(profile);
@@ -88,10 +88,9 @@ impl ProfileLoader {
                         entry.last_error = Some(err);
                         entry.retry_after = Some(Instant::now() + PROFILE_RETRY_BACKOFF);
                     }
-                },
-                Err(promise) => {
-                    entry.inflight = Some(promise);
                 }
+            } else {
+                entry.inflight = Some(promise);
             }
         }
 

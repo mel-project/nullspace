@@ -4,15 +4,15 @@ use std::sync::atomic::AtomicBool;
 use egui::Context;
 use nullspace_client::internal::Event;
 use rodio::{Decoder, OutputStreamBuilder, Sink};
+use smol::channel::Sender as AsyncSender;
 use std::sync::mpsc::{Receiver, Sender as StdSender};
-use tokio::sync::mpsc::Sender as TokioSender;
 
 use crate::notify::show_notification;
 use crate::rpc::get_rpc;
 
 pub async fn event_loop(
     ctx: Context,
-    event_tx: TokioSender<Event>,
+    event_tx: AsyncSender<Event>,
     focused: Arc<AtomicBool>,
     audio_tx: StdSender<Vec<u8>>,
 ) {

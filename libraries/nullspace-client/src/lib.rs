@@ -33,7 +33,16 @@ pub struct Client {
 impl Client {
     pub fn new(config: Config) -> Self {
         let (send_rpc, recv_rpc) = std::sync::mpsc::channel();
-        tokio::task::spawn(main_loop::main_loop(config, recv_rpc));
+        std::thread::Builder::new()
+            .name("nullspace-tokio".to_string())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("nullspace-client tokio runtime");
+                runtime.block_on(main_loop::main_loop(config, recv_rpc));
+            })
+            .expect("spawn nullspace-client runtime thread");
         Self { send_rpc }
     }
 

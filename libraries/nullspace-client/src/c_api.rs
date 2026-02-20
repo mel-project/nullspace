@@ -3,12 +3,10 @@ use std::sync::LazyLock;
 
 use dashmap::DashMap;
 use nanorpc::{JrpcRequest, JrpcResponse};
-use tokio::runtime::Runtime;
 
 use crate::{Client, Config};
 
 struct SlotState {
-    runtime: Runtime,
     client: Client,
 }
 
@@ -31,13 +29,8 @@ pub extern "C" fn nullspace_start(slot: i32, toml_cfg: *const c_char) -> i32 {
         Ok(value) => value,
         Err(_) => return -1,
     };
-    let runtime = match Runtime::new() {
-        Ok(rt) => rt,
-        Err(_) => return -1,
-    };
-    let _guard = runtime.enter();
     let client = Client::new(config);
-    SLOTS.insert(slot, SlotState { runtime, client });
+    SLOTS.insert(slot, SlotState { client });
     0
 }
 
@@ -75,7 +68,6 @@ pub extern "C" fn nullspace_rpc(
         Ok(receiver) => receiver,
         Err(_) => return -1,
     };
-    let _guard = entry.runtime.enter();
     let response: JrpcResponse = match pollster::block_on(resp_rx) {
         Ok(value) => value,
         Err(_) => return -1,

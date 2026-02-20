@@ -103,7 +103,6 @@ impl Widget for SteadyState<'_> {
             open: &mut state.show_add_group,
         });
         ui.add(AddDevice {
-            app: self.0,
             open: &mut state.show_add_device,
         });
         ui.add(Preferences {

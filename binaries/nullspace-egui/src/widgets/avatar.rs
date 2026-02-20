@@ -46,13 +46,14 @@ impl Widget for Avatar {
                 let sender = self.sender.clone();
                 let attachment = attachment.clone();
                 let save_to = path.clone();
-                tokio::spawn(async move {
+                smol::spawn(async move {
                     let _ = flatten_rpc(
                         get_rpc()
                             .attachment_download_oneshot(sender, attachment, save_to)
                             .await,
                     );
-                });
+                })
+                .detach();
             }
 
             if path.exists() {

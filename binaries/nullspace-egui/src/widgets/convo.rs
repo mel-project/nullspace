@@ -290,13 +290,14 @@ fn render_composer(
             let upload_id = *in_progress;
             let root = done.clone();
             let convo_id = convo_id.clone();
-            tokio::spawn(async move {
+            smol::spawn(async move {
                 let _ = flatten_rpc(
                     get_rpc()
                         .convo_send(convo_id, OutgoingMessage::Attachment(root))
                         .await,
                 );
-            });
+            })
+            .detach();
             *attachment = None;
             state.pending_scroll_to_bottom = true;
             app.state.upload_done.remove(&upload_id);
@@ -410,11 +411,12 @@ fn render_composer(
 
 fn send_message(convo_id: &ConvoId, message: String) {
     let convo_id = convo_id.clone();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let _ = flatten_rpc(
             get_rpc()
                 .convo_send(convo_id, OutgoingMessage::PlainText(message))
                 .await,
         );
-    });
+    })
+    .detach();
 }

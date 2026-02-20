@@ -11,10 +11,7 @@ use nullspace_client::{Client, Config, internal::Event};
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::SigningPublic;
 use nullspace_structs::fragment::Attachment;
-use tokio::{
-    runtime::Runtime,
-    sync::mpsc::{self, Receiver},
-};
+use smol::channel::Receiver;
 use url::Url;
 
 use crate::events::{event_loop, spawn_audio_thread};
@@ -97,11 +94,11 @@ impl NullspaceApp {
         prefs: PrefData,
     ) -> Self {
         crate::rpc::init_rpc(client.rpc());
-        let (event_tx, recv_event) = mpsc::channel(64);
+        let (event_tx, recv_event) = smol::channel::bounded(64);
         let focused = Arc::new(AtomicBool::new(true));
         let audio_tx = spawn_audio_thread();
         let ctx = cc.egui_ctx.clone();
-        tokio::spawn(event_loop(ctx, event_tx, focused.clone(), audio_tx));
+        smol::spawn(event_loop(ctx, event_tx, focused.clone(), audio_tx)).detach();
         egui_extras::install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         // catppuccin_egui::set_theme(&cc.egui_ctx, catppuccin_egui::LATTE);
@@ -361,8 +358,6 @@ fn main() -> eframe::Result<()> {
         "window backend environment"
     );
 
-    let runtime = Runtime::new().expect("tokio runtime");
-    let _guard = runtime.enter();
     let prefs_path = cli.prefs_path.unwrap_or_else(default_prefs_path);
     let prefs = load_prefs(&prefs_path).unwrap_or_default();
     let config = Config {

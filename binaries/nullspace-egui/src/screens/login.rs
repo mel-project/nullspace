@@ -64,7 +64,7 @@ impl Widget for Login<'_> {
                         let server_str = server_str_state.clone();
                         let rpc_running = rpc_running.clone();
                         let rpc_error = rpc_error.clone();
-                        tokio::task::spawn(async move {
+                        smol::spawn(async move {
                             match flatten_rpc(get_rpc().register_start(username).await) {
                                 Ok(Some(info)) => {
                                     server_str.set_next(info.server_name.as_str().to_string());
@@ -78,7 +78,8 @@ impl Widget for Login<'_> {
                                 }
                             }
                             rpc_running.set_next(false);
-                        });
+                        })
+                        .detach();
                     }
                 }
                 LoginStep::FinishBootstrap => {
@@ -151,7 +152,7 @@ impl Widget for Login<'_> {
                         let rpc_running = rpc_running.clone();
                         let rpc_error = rpc_error.clone();
                         let rpc_notice = rpc_notice.clone();
-                        tokio::task::spawn(async move {
+                        smol::spawn(async move {
                             match flatten_rpc(get_rpc().register_finish(request).await) {
                                 Ok(()) => {
                                     rpc_notice.set_next(Some("registration submitted".to_string()));
@@ -161,7 +162,8 @@ impl Widget for Login<'_> {
                                 }
                             }
                             rpc_running.set_next(false);
-                        });
+                        })
+                        .detach();
                     }
                     if *rpc_running {
                         ui.add(Spinner::new());
@@ -197,7 +199,7 @@ impl Widget for Login<'_> {
                         let rpc_running = rpc_running.clone();
                         let rpc_error = rpc_error.clone();
                         let rpc_notice = rpc_notice.clone();
-                        tokio::task::spawn(async move {
+                        smol::spawn(async move {
                             match flatten_rpc(get_rpc().register_finish(request).await) {
                                 Ok(()) => {
                                     rpc_notice.set_next(Some("device added".to_string()));
@@ -207,7 +209,8 @@ impl Widget for Login<'_> {
                                 }
                             }
                             rpc_running.set_next(false);
-                        });
+                        })
+                        .detach();
                     }
                     if *rpc_running {
                         ui.add(Spinner::new());

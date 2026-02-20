@@ -1,5 +1,3 @@
-use std::time::{Duration, Instant};
-
 use parking_lot::Mutex;
 use poll_promise::Promise;
 
@@ -42,18 +40,6 @@ impl<T: Clone + Send + 'static> PromiseSlot<T> {
                 Some(value)
             }
         }
-    }
-
-    pub fn poll_timeout(&self, timeout: Duration) -> Option<T> {
-        let start = Instant::now();
-        while start.elapsed() < timeout && self.is_running() {
-            let x = self.poll();
-            if x.is_some() {
-                return x;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        None
     }
 
     pub fn take(&self) -> Option<T> {

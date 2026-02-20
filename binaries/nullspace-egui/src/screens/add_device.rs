@@ -1,14 +1,12 @@
 use std::{ops::Deref, time::Duration};
 
-use crate::{NullspaceApp, rpc::get_rpc};
+use crate::rpc::get_rpc;
 use eframe::egui::{Response, Widget, Window};
 use egui::{Color32, RichText};
 use egui_hooks::{UseHookExt, hook::state::State};
-use futures_util::TryFutureExt;
 use nullspace_client::internal::ProvisionHostPhase;
 
 pub struct AddDevice<'a> {
-    pub app: &'a mut NullspaceApp,
     pub open: &'a mut bool,
 }
 
@@ -29,8 +27,8 @@ impl Widget for AddDevice<'_> {
                         let pairing_code = pairing_code.clone();
                         let pairing_done = pairing_done.clone();
                         let fatal_error = fatal_error.clone();
-                        tokio::task::spawn(
-                            async move {
+                        smol::spawn(async move {
+                            let result: anyhow::Result<()> = async move {
                                 let rpc = get_rpc();
                                 let started = rpc.provision_host_start().await??;
                                 pairing_code.set_next(started.display_code.into());
@@ -44,15 +42,17 @@ impl Widget for AddDevice<'_> {
                                             anyhow::bail!("failed to provision host at the end")
                                         }
                                     }
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    smol::Timer::after(Duration::from_secs(1)).await;
                                 }
                                 pairing_done.set_next(true);
                                 anyhow::Ok(())
                             }
-                            .inspect_err(move |err| {
+                            .await;
+                            if let Err(err) = result {
                                 fatal_error.set_next(Some(err.to_string()));
-                            }),
-                        );
+                            }
+                        })
+                        .detach();
                     },
                     *refreshes,
                 );

@@ -1,12 +1,11 @@
 use eframe::egui::{Button, Response, Spinner, Widget};
-use egui::{ComboBox, Modal, RichText, TextEdit};
-use egui_hooks::UseHookExt;
+use egui::{Color32, ComboBox, Modal, RichText, TextEdit};
+use egui_hooks::{UseHookExt, hook::state::State};
 use nullspace_client::internal::RegisterFinish;
 use nullspace_structs::username::UserName;
-use poll_promise::Promise;
 
 use crate::NullspaceApp;
-use crate::promises::{PromiseSlot, flatten_rpc};
+use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
 
@@ -21,16 +20,25 @@ enum LoginStep {
 
 impl Widget for Login<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let step = ui.use_state(|| LoginStep::EnterUsername, ());
+        let step: State<LoginStep> = ui.use_state(|| LoginStep::EnterUsername, ());
         let mut username_str = ui.use_state(|| "".to_string(), ()).into_var();
-        let mut server_str = ui.use_state(|| "".to_string(), ()).into_var();
+        let server_str_state = ui.use_state(|| "".to_string(), ());
+        let mut server_str = server_str_state.clone().into_var();
         let mut server_choice = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut pairing_code = ui.use_state(String::new, ()).into_var();
 
-        let register_start = ui.use_state(PromiseSlot::new, ());
-        let register_finish = ui.use_state(PromiseSlot::new, ());
+        let rpc_running: State<bool> = ui.use_state(|| false, ());
+        let rpc_error: State<Option<String>> = ui.use_state(|| None, ());
+        let rpc_notice: State<Option<String>> = ui.use_state(|| None, ());
+
         Modal::new(ui.next_auto_id()).show(ui.ctx(), |ui| {
+            if let Some(err) = &*rpc_error {
+                ui.colored_label(Color32::RED, err);
+            }
+            if let Some(notice) = &*rpc_notice {
+                ui.colored_label(Color32::LIGHT_GREEN, notice);
+            }
             ui.heading("Login or register");
             ui.separator();
             match *step {
@@ -39,7 +47,7 @@ impl Widget for Login<'_> {
                         TextEdit::singleline(&mut *username_str).hint_text("Enter a @username"),
                     );
 
-                    if register_start.is_running() {
+                    if *rpc_running {
                         ui.add(Spinner::new());
                     } else if ui.add(Button::new("Next")).clicked() {
                         let username = match username_str.parse::<nullspace_structs::username::UserName>() {
@@ -49,24 +57,28 @@ impl Widget for Login<'_> {
                                 return;
                             }
                         };
-                        let promise = Promise::spawn_async(async move {
-                            flatten_rpc(get_rpc().register_start(username).await)
+                        rpc_error.set_next(None);
+                        rpc_notice.set_next(None);
+                        rpc_running.set_next(true);
+                        let step = step.clone();
+                        let server_str = server_str_state.clone();
+                        let rpc_running = rpc_running.clone();
+                        let rpc_error = rpc_error.clone();
+                        tokio::task::spawn(async move {
+                            match flatten_rpc(get_rpc().register_start(username).await) {
+                                Ok(Some(info)) => {
+                                    server_str.set_next(info.server_name.as_str().to_string());
+                                    step.set_next(LoginStep::FinishAddDevice);
+                                }
+                                Ok(None) => {
+                                    step.set_next(LoginStep::FinishBootstrap);
+                                }
+                                Err(err) => {
+                                    rpc_error.set_next(Some(format!("register_start: {err}")));
+                                }
+                            }
+                            rpc_running.set_next(false);
                         });
-                        register_start.start(promise);
-                    }
-                    if let Some(result) = register_start.take() {
-                        match result {
-                            Ok(Some(info)) => {
-                                *server_str = info.server_name.as_str().to_string();
-                                step.set_next(LoginStep::FinishAddDevice);
-                            }
-                            Ok(None) => {
-                                step.set_next(LoginStep::FinishBootstrap);
-                            }
-                            Err(err) => {
-                                self.0.state.error_dialog = Some(format!("register_start: {err}"));
-                            }
-                        }
                     }
                 }
                 LoginStep::FinishBootstrap => {
@@ -113,8 +125,7 @@ impl Widget for Login<'_> {
                         );
                     }
 
-                    let register_enabled =
-                        !register_start.is_running() && !register_finish.is_running();
+                    let register_enabled = !*rpc_running;
 
                     ui.horizontal_centered(|ui| {
                     if ui
@@ -134,24 +145,26 @@ impl Widget for Login<'_> {
                             username,
                             server_name,
                         };
-                        let promise = Promise::spawn_async(async move {
-                            flatten_rpc(get_rpc().register_finish(request).await)
+                        rpc_error.set_next(None);
+                        rpc_notice.set_next(None);
+                        rpc_running.set_next(true);
+                        let rpc_running = rpc_running.clone();
+                        let rpc_error = rpc_error.clone();
+                        let rpc_notice = rpc_notice.clone();
+                        tokio::task::spawn(async move {
+                            match flatten_rpc(get_rpc().register_finish(request).await) {
+                                Ok(()) => {
+                                    rpc_notice.set_next(Some("registration submitted".to_string()));
+                                }
+                                Err(err) => {
+                                    rpc_error.set_next(Some(format!("register_finish: {err}")));
+                                }
+                            }
+                            rpc_running.set_next(false);
                         });
-                        register_finish.start(promise);
                     }
-                    if register_finish.is_running() {
+                    if *rpc_running {
                         ui.add(Spinner::new());
-                    }
-                    if let Some(result) = register_finish.take() {
-                        match result {
-                            Ok(()) => {
-                                self.0.state.error_dialog =
-                                    Some("registration submitted".to_string());
-                            }
-                            Err(err) => {
-                                self.0.state.error_dialog = Some(format!("register_finish: {err}"));
-                            }
-                        }
                     }
                 });
                 }
@@ -162,7 +175,7 @@ impl Widget for Login<'_> {
                     ui.label(
                         RichText::new("On your other device, go to [File] > [Add device]").small(),
                     );
-                    let add_enabled = !register_start.is_running() && !register_finish.is_running();
+                    let add_enabled = !*rpc_running;
                     if ui
                         .add_enabled(add_enabled, eframe::egui::Button::new("Log in"))
                         .clicked()
@@ -174,27 +187,30 @@ impl Widget for Login<'_> {
                                 return;
                             }
                         };
-                        let request = nullspace_client::internal::RegisterFinish::AddDeviceByCode {
+                        let request = RegisterFinish::AddDeviceByCode {
                             username,
                             code: (*pairing_code).trim().to_string(),
                         };
-                        let promise = Promise::spawn_async(async move {
-                            flatten_rpc(get_rpc().register_finish(request).await)
+                        rpc_error.set_next(None);
+                        rpc_notice.set_next(None);
+                        rpc_running.set_next(true);
+                        let rpc_running = rpc_running.clone();
+                        let rpc_error = rpc_error.clone();
+                        let rpc_notice = rpc_notice.clone();
+                        tokio::task::spawn(async move {
+                            match flatten_rpc(get_rpc().register_finish(request).await) {
+                                Ok(()) => {
+                                    rpc_notice.set_next(Some("device added".to_string()));
+                                }
+                                Err(err) => {
+                                    rpc_error.set_next(Some(format!("register_finish: {err}")));
+                                }
+                            }
+                            rpc_running.set_next(false);
                         });
-                        register_finish.start(promise);
                     }
-                    if register_finish.is_running() {
+                    if *rpc_running {
                         ui.add(Spinner::new());
-                    }
-                    if let Some(result) = register_finish.take() {
-                        match result {
-                            Ok(()) => {
-                                self.0.state.error_dialog = Some("device added".to_string());
-                            }
-                            Err(err) => {
-                                self.0.state.error_dialog = Some(format!("add device: {err}"));
-                            }
-                        }
                     }
                 }
             }

@@ -612,7 +612,6 @@ async fn register_bootstrap(
     Ok(())
 }
 
-
 pub(crate) async fn server_from_name(
     ctx: &AnyCtx<Config>,
     server_name: &ServerName,
@@ -671,7 +670,6 @@ pub(crate) async fn persist_identity(
     .map_err(internal_err)?;
     Ok(())
 }
-
 
 pub(crate) async fn authenticate_device(
     server: &ServerClient,

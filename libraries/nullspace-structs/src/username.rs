@@ -3,9 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use nullspace_crypt::{
-    signing::SigningPublic,
-};
+use nullspace_crypt::signing::SigningPublic;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::{SmolStr, format_smolstr};

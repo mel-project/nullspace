@@ -270,8 +270,8 @@ async fn run_host_attempt(
         Blob::V1_PROVISION_HELO,
         &helo_msg,
     )
-        .await
-        .is_err()
+    .await
+    .is_err()
     {
         return Ok(false);
     }
@@ -290,8 +290,8 @@ async fn run_host_attempt(
                 Blob::V1_PROVISION_HELO,
                 &helo_msg,
             )
-                .await
-                .is_err()
+            .await
+            .is_err()
             {
                 return Ok(false);
             }
@@ -540,10 +540,10 @@ async fn wait_for_spake_message(
     while start.elapsed() < timeout {
         if let Some(blob) = server_channel_recv(server, channel, direction).await?
             && blob.kind == expected_kind
-                && let Ok(msg) = serde_json::from_slice::<ProvisionSpakeMessage>(&blob.inner)
-            {
-                return Ok(msg.spake_msg);
-            }
+            && let Ok(msg) = serde_json::from_slice::<ProvisionSpakeMessage>(&blob.inner)
+        {
+            return Ok(msg.spake_msg);
+        }
         tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
     }
     Err(InternalRpcError::Other(
@@ -561,10 +561,10 @@ async fn wait_for_finish_envelope(
     while start.elapsed() < timeout {
         if let Some(blob) = server_channel_recv(server, channel, direction).await?
             && blob.kind == Blob::V1_PROVISION_FINISH
-                && let Ok(msg) = serde_json::from_slice::<ProvisionFinishEnvelope>(&blob.inner)
-            {
-                return Ok(msg);
-            }
+            && let Ok(msg) = serde_json::from_slice::<ProvisionFinishEnvelope>(&blob.inner)
+        {
+            return Ok(msg);
+        }
         tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
     }
     Err(InternalRpcError::Other(

@@ -323,17 +323,16 @@ fn render_composer(
             if ui.button("\u{ea7f} Attach").clicked() {
                 app.file_dialog.pick_file();
             }
-            if ui.button("\u{ed7a} Clipboard image").clicked()
-                && pasted_image.is_none() {
-                    match read_clipboard_image() {
-                        Ok(image) => {
-                            *pasted_image = Some(image);
-                        }
-                        Err(err) => {
-                            app.state.error_dialog = Some(err);
-                        }
+            if ui.button("\u{ed7a} Clipboard image").clicked() && pasted_image.is_none() {
+                match read_clipboard_image() {
+                    Ok(image) => {
+                        *pasted_image = Some(image);
+                    }
+                    Err(err) => {
+                        app.state.error_dialog = Some(err);
                     }
                 }
+            }
         });
         app.file_dialog.update(ui.ctx());
         if let Some(path) = app.file_dialog.take_picked() {

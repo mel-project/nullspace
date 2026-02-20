@@ -4724,6 +4724,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "pollster",
  "rand 0.8.5",
+ "readme-rustdocifier",
  "scopeguard",
  "serde",
  "serde_json",

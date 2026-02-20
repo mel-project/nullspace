@@ -1,166 +1,117 @@
 # nullspace-client
 
-`nullspace-client` is a TDLib-like local service for Nullspace. It owns identity, storage,
-encryption, and networking so that UIs never need to speak crypto or server APIs
-directly. The UI only uses a small JSON-RPC surface and renders events.
+A runtime-agnostic local service that encapsulates the entire nullspace
+encrypted messaging protocol behind a clean JSON-RPC interface.
 
-## What the GUI talks to
+## Architecture
 
-The GUI calls the internal JSON-RPC methods on a local `Client` instance:
+`nullspace-client` follows a **local-service** design inspired by Telegram's TDLib: a
+single [`Client`] instance spawns a self-contained background thread that
+manages all networking, cryptography, key management, and persistence
+internally.  Frontends interact exclusively through a typed
+[`InternalClient`] RPC handle -- they never touch raw protocol messages,
+encryption keys, or server connections.
 
-- `register_start(username) -> Option<RegisterStartInfo>`
-- `register_finish(RegisterFinish) -> Result<()>`
-- `provision_host_start() -> ProvisionHostStart`
-- `provision_host_status(session_id) -> ProvisionHostStatus`
-- `provision_host_stop(session_id) -> Result<()>`
-- `convo_list() -> [ConvoSummary]`
-- `convo_history(convo_id, before, after, limit) -> [ConvoMessage]`
-- `convo_send(convo_id, message) -> message_id`
-- `convo_create_group(server) -> ConvoId`
-- `group_invite(group, username) -> Result<()>`
-- `group_members(group) -> [GroupMember]`
-- `group_accept_invite(dm_id) -> GroupId`
-- `own_server() -> ServerName`
-- `next_event() -> Event` (infallible, long-polling)
-
-`next_event()` is the only push-style API. It blocks until the next event arrives.
-Events are emitted only by the internal event loop in response to DB changes.
-
-## High-level architecture
-
-The client is a single process with structured concurrency:
-
-- An RPC loop serving GUI requests.
-- An event loop that watches the DB and emits `Event::State` + `Event::ConvoUpdated` + `Event::GroupUpdated`.
-- A worker loop that starts send/recv + key rotation after login.
-
-All three loops are raced together, and they all share the same `AnyCtx`.
-
-```mermaid
-sequenceDiagram
-  participant GUI
-  participant Client as nullspace-client
-  participant DB as sqlite
-  participant Dir as directory
-  participant GW as server
-
-  GUI->>Client: register_start(@alice)
-  Client->>Dir: lookup username
-  Dir-->>Client: descriptor or none
-  Client-->>GUI: Option<RegisterStartInfo>
-
-  GUI->>Client: register_finish(...)
-  Client->>Dir: add owner + set user descriptor
-  Client->>GW: device_auth + add_medium_pk
-  Client->>DB: persist identity
-  Client-->>GUI: ok
-
-  GUI->>Client: next_event()
-  Client-->>GUI: Event::State { logged_in: true }
+```text
+ ┌─────────────┐         JSON-RPC            ┌──────────────────────────┐
+ │   Frontend  │◄────── (in-process) ─────►│     nullspace-client     │
+ │  (egui, Qt, │  InternalClient / C FFI     │                          │
+ │   GTK, …)  │                             │  ┌────────┐ ┌─────────┐  │
+ └─────────────┘                             │  │ SQLite │ │  Tokio  │  │
+                                             │  │   DB   │ │ Runtime │  │
+                                             │  └────────┘ └─────────┘  │
+                                             │  ┌────────────────────┐  │
+                                             │  │   E2EE · Key Mgmt  │  │
+                                             │  │   Long Poll · DMs  │  │
+                                             │  │   Groups · Attach. │  │
+                                             │  └────────────────────┘  │
+                                             └──────────────────────────┘
 ```
 
-## Login + registration flow
+## What the client abstracts away
 
-There are only two states: logged out and logged in. On startup, the client checks
-`client_identity`:
+- **End-to-end encryption** -- messages are encrypted per-recipient with
+  medium-term Diffie-Hellman keys
+- **Key lifecycle** -- medium-term keys rotate automatically every hour,
+  with the previous key retained for in-flight messages.  Device
+  authentication tokens are cached and refreshed transparently.
+- **Reliable delivery** -- outgoing messages are persisted to a local
+  SQLite queue and retried with exponential backoff until acknowledged.
+  Send failures are recorded, never silently dropped.
+- **Efficient polling** -- mailbox long-polling uses AIMD congestion
+  control and batches multiple mailboxes
+  into a single server round-trip.
+- **Multi-device provisioning** -- new devices are paired through a
+  SPAKE2-based flow over ephemeral server channels.
+- **Attachments** -- files are chunked, encrypted with a random content
+  key, uploaded as a Merkle tree of fragments, and reassembled on
+  download -- all with streaming progress events.
 
-- If present, it starts the worker loop and emits `Event::State { logged_in: true }`.
-- If absent, it emits `Event::State { logged_in: false }`.
+## Quick start
 
-### Register a new username
+```rust
+use nullspace_client::{Client, Config};
 
-1. GUI picks a username and server name.
-2. GUI calls `register_finish(RegisterFinish::BootstrapNewUser { .. })`.
-3. Client creates device identity, registers the username in the directory, and
-   registers the device on the server.
-4. Client persists identity and emits `Event::State { logged_in: true }`.
+// 1. Create the client -- spawns the background service.
+let client = Client::new(config);
 
-### Add a new device
+// 2. Obtain an RPC handle (cheap to clone).
+let rpc = client.rpc();
 
-1. The existing device calls `provision_host_start()` and shows
-   the pairing code from `ProvisionHostStart`.
-2. While waiting, the GUI polls `provision_host_status(session_id)` for refreshed
-   codes and completion.
-3. The new device calls
-   `register_finish(RegisterFinish::AddDeviceByCode { username, code })`.
-4. Client submits the signed add-device directory update, registers the new device on the
-   server, stores identity, and emits
-   `Event::State { logged_in: true }`.
+// 3. Use the typed API.
+let convos = rpc.convo_list().await?;
+let id    = rpc.convo_send(convo_id, message).await?;
 
-```mermaid
-sequenceDiagram
-  participant GUI1 as GUI (existing device)
-  participant GUI2 as GUI (new device)
-  participant Client1 as client (existing)
-  participant Client2 as client (new)
-  participant Dir as directory
-  participant GW as server
-
-  GUI1->>Client1: provision_host_start()
-  Client1-->>GUI1: session_id + pairing code
-  GUI1->>Client1: provision_host_status(session_id) (poll)
-  GUI1-->>GUI2: pairing code
-  GUI2->>Client2: register_finish(AddDeviceByCode { username, code })
-  Client2->>Dir: lookup user descriptor
-  Client2->>Dir: submit signed add-device update
-  Client2->>GW: device_auth + add_medium_pk
-  Client2->>Client2: persist identity
-  Client2-->>GUI2: ok
+// 4. React to push events in a background loop.
+loop {
+    match rpc.next_event().await {
+        Event::ConvoUpdated { convo_id } => { /* refresh UI */ }
+        Event::State { logged_in }       => { /* update auth state */ }
+        _ => {}
+    }
+}
 ```
 
-## Convo flow
+## C FFI
 
-Direct messages and group messages share a unified convo API:
+The crate also compiles as a `cdylib` and exposes a C-compatible interface
+(`nullspace_start`, `nullspace_stop`, `nullspace_rpc`) for embedding in
+non-Rust frontends.
 
-- `convo_send(convo_id, message)` inserts into `convo_messages` with `received_at = NULL`.
-- The send loops look for pending rows (`received_at = NULL`, `send_error IS NULL`) and send encrypted payloads.
-- On send failures, the client records `send_error` and sets a synthetic `received_at` to stop retries.
-- The recv loops long-poll mailboxes, decrypt, verify, and insert new rows.
-- The event loop emits `Event::ConvoUpdated { convo_id }` for new rows.
+The API uses a **slot** system -- each slot holds an independent client
+instance.  `nullspace_rpc` takes a shared buffer: write the JSON-RPC
+request into it, call the function, and read the response back from
+the same buffer.
 
-```mermaid
-sequenceDiagram
-  participant GUI
-  participant Client
-  participant DB
-  participant GW as server
+```c
+#include <stdio.h>
+#include <string.h>
 
-  GUI->>Client: convo_send(ConvoId::Direct(@bob), OutgoingMessage::PlainText("hi"))
-  Client->>DB: insert pending convo message
-  Client-->>GUI: message_id
-  Client->>GW: mailbox_send(header-encrypted message)
-  Client->>DB: update received_at
-  Client-->>GUI: next_event() -> ConvoUpdated { convo_id }
+// Provided by libnullspace_client.so / nullspace_client.dll
+int nullspace_start(int slot, const char *toml_cfg);
+int nullspace_stop(int slot);
+int nullspace_rpc(int slot, char *jrpc_inout, size_t jrpc_inout_maxlen);
+
+int main(void) {
+    const char *cfg =
+        "db_path = '/tmp/nullspace.db'\n"
+        "dir_endpoint = 'https://directory.example.com'\n"
+        "dir_anchor_pk = '<base64-key>'\n";
+
+    // Start the client on slot 0.
+    if (nullspace_start(0, cfg) != 0) return 1;
+
+    // Call an RPC method -- write request, read response in-place.
+    char buf[4096];
+    snprintf(buf, sizeof(buf),
+        "{\"jsonrpc\":\"2.0\",\"id\":1,"
+         "\"method\":\"convo_list\",\"params\":[]}");
+
+    int len = nullspace_rpc(0, buf, sizeof(buf));
+    if (len > 0)
+        printf("response: %.*s\n", len, buf);
+
+    nullspace_stop(0);
+    return 0;
+}
 ```
-
-## Key rotation (internal)
-
-Medium-term keys rotate automatically every hour. The previous key is retained so
-late messages can be decrypted. These keys are never exposed to the UI.
-
-## Data model (sqlite)
-
-- `client_identity`: one row holding identity + key material (including cached server name).
-- `convos`: conversation registry (direct + group), allows empty convos.
-- `convo_messages`: plaintext history for both direct and group conversations, with optional `send_error`.
-- `groups`: group descriptors + keys + tokens.
-- `group_members`: roster entries (for crypto and membership enforcement).
-- `mailbox_state`: mailbox cursor for long-polling.
-
-## Event semantics
-
-Events are derived from the DB:
-
-- `Event::State { logged_in }` whenever identity appears/disappears.
-- `Event::ConvoUpdated { convo_id }` whenever new convo rows appear.
-- `Event::GroupUpdated { group }` whenever roster state changes.
-
-No other component emits events directly; all producers simply update the DB and
-call `DbNotify::touch()`.
-
-## Notes for UI authors
-
-- Treat the client as a local service. All heavy lifting is internal.
-- `next_event()` is the main driver; call it in a long-polling loop.
-- For message display, call `convo_history(convo_id, before, after, limit)` with
-  `before = None` to load latest messages, then page backward by `before = id`.

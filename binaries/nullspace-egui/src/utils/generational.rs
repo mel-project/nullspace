@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 static GUARDS: AtomicUsize = AtomicUsize::new(0);
 static GLOBAL_OWNER: LazyLock<Mutex<Owner<SyncStorage>>> = LazyLock::new(Default::default);
 
+#[derive(Copy, Clone)]
 pub struct GBox<T>(GenerationalBox<T, SyncStorage>);
 
 impl<T: Send + Sync + 'static> GBox<T> {

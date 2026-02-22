@@ -16,6 +16,7 @@ use url::Url;
 
 use crate::events::{event_loop, spawn_audio_thread};
 use crate::fonts::load_fonts;
+use crate::utils::generational::advance_generation;
 use crate::utils::prefs::PrefData;
 use crate::utils::profile_loader::ProfileLoader;
 
@@ -121,7 +122,7 @@ impl NullspaceApp {
                 &mut style.visuals.widgets.open,
                 &mut style.visuals.widgets.inactive,
             ] {
-                wid.corner_radius = egui::CornerRadius::ZERO.at_least(16);
+                wid.corner_radius = egui::CornerRadius::ZERO.at_least(6);
             }
 
             style.interaction.selectable_labels = false;
@@ -181,6 +182,7 @@ impl NullspaceApp {
 
 impl eframe::App for NullspaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        advance_generation();
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
@@ -317,11 +319,7 @@ impl eframe::App for NullspaceApp {
                         ui.add(screens::login::Login(self));
                     });
                 }
-                None => {
-                    ui.push_id("loading", |ui| {
-                        ui.add(Spinner::new());
-                    });
-                }
+                None => {}
             }
         });
         if self.state.prefs != self.state.last_saved_prefs {

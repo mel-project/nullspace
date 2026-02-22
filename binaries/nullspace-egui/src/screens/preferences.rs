@@ -1,4 +1,4 @@
-use eframe::egui::{ComboBox, Grid, Response, Widget, Window};
+use eframe::egui::{Button, ComboBox, Grid, Response, Widget, Window};
 
 use crate::{
     NullspaceApp,
@@ -12,6 +12,10 @@ pub struct Preferences<'a> {
 
 impl Widget for Preferences<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        const MIN_ZOOM_PERCENT: u16 = 70;
+        const MAX_ZOOM_PERCENT: u16 = 200;
+        const ZOOM_STEP_PERCENT: u16 = 10;
+
         if *self.open {
             let mut window_open = *self.open;
             let center = ui.ctx().content_rect().center();
@@ -25,17 +29,25 @@ impl Widget for Preferences<'_> {
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
                             ui.label("Zoom");
-                            ComboBox::from_id_salt("zoom_percent")
-                                .selected_text(format!("{}%", self.app.state.prefs.zoom_percent))
-                                .show_ui(ui, |ui| {
-                                    for percent in (70u16..=200).step_by(10) {
-                                        ui.selectable_value(
-                                            &mut self.app.state.prefs.zoom_percent,
-                                            percent,
-                                            format!("{percent}%"),
-                                        );
-                                    }
-                                });
+                            ui.horizontal(|ui| {
+                                let can_decrease =
+                                    self.app.state.prefs.zoom_percent > MIN_ZOOM_PERCENT;
+                                if ui.add_enabled(can_decrease, Button::new("-")).clicked() {
+                                    self.app.state.prefs.zoom_percent =
+                                        self.app.state.prefs.zoom_percent
+                                            .saturating_sub(ZOOM_STEP_PERCENT)
+                                            .max(MIN_ZOOM_PERCENT);
+                                }
+                                ui.label(format!("{}%", self.app.state.prefs.zoom_percent));
+                                let can_increase =
+                                    self.app.state.prefs.zoom_percent < MAX_ZOOM_PERCENT;
+                                if ui.add_enabled(can_increase, Button::new("+")).clicked() {
+                                    self.app.state.prefs.zoom_percent =
+                                        self.app.state.prefs.zoom_percent
+                                            .saturating_add(ZOOM_STEP_PERCENT)
+                                            .min(MAX_ZOOM_PERCENT);
+                                }
+                            });
                             ui.end_row();
 
                             ui.label("Auto-download images");

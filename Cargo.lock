@@ -3031,6 +3031,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "generational-box"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc4ed190b9de8e734d47a70be59b1e7588b9e8e0d0036e332f4c014e8aed1bc5"
+dependencies = [
+ "parking_lot 0.12.5",
+ "tracing",
+]
+
+[[package]]
 name = "generator"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4895,6 +4905,7 @@ dependencies = [
  "fastrand 2.3.0",
  "font-kit",
  "futures-util",
+ "generational-box",
  "image",
  "infer",
  "ksni",
@@ -4908,6 +4919,7 @@ dependencies = [
  "poll-promise",
  "pollster",
  "rodio",
+ "scopeguard",
  "serde",
  "serde_json",
  "smol",

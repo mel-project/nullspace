@@ -1,14 +1,15 @@
-use chrono::NaiveDate;
 use eframe::egui::{Key, Response, RichText, Widget};
-use egui::style::ScrollAnimation;
-use egui::{Align, Button, Color32, Image, Label, Modal, ProgressBar, ScrollArea, Sense, TextEdit};
+use egui::{Button, Color32, Image, Label, Modal, ProgressBar, ScrollArea, TextEdit};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use nullspace_client::internal::{ConvoId, OutgoingMessage};
-use nullspace_structs::timestamp::NanoTimestamp;
-use pollster::FutureExt;
+use egui_infinite_scroll::InfiniteScroll;
+use nullspace_client::internal::{ConvoId, ConvoMessage, OutgoingMessage};
+use nullspace_structs::username::UserName;
+use parking_lot::Mutex;
+use pollster::block_on;
 use smol_str::SmolStr;
 
+use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::group_roster::GroupRoster;
@@ -17,14 +18,19 @@ use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::convo_row::ConvoRow;
-use crate::{NullspaceApp, widgets::convo::cluster::cluster_convo};
-use convo_state::ConvoState;
+use cluster::message_render_meta;
 use image_clip::{PasteImage, persist_paste_image, read_clipboard_image};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 mod cluster;
-mod convo_state;
 mod image_clip;
+
+const INITIAL_HISTORY_LIMIT: u16 = 10;
+const PAGE_HISTORY_LIMIT: u16 = 10;
+const MESSAGE_PREFETCH: usize = 1;
+
+type Scroller = InfiniteScroll<ConvoMessage, i64>;
 
 pub struct Convo<'a>(pub &'a mut NullspaceApp, pub ConvoId);
 
@@ -36,68 +42,111 @@ fn infer_mime(path: &Path) -> SmolStr {
         .unwrap_or_else(|| SmolStr::new("application/octet-stream"))
 }
 
+fn new_scroller(convo_id: ConvoId) -> Scroller {
+    InfiniteScroll::<ConvoMessage, i64>::new().start_loader(move |cursor, callback| {
+        let limit = if cursor.is_some() {
+            PAGE_HISTORY_LIMIT
+        } else {
+            INITIAL_HISTORY_LIMIT
+        };
+        let result = flatten_rpc(block_on(get_rpc().convo_history(
+            convo_id.clone(),
+            cursor,
+            None,
+            limit,
+        )))
+        .map(|messages| {
+            let next_cursor = messages.first().and_then(|msg| msg.id.checked_sub(1));
+            (messages, next_cursor)
+        });
+        callback(result);
+    })
+}
+
+fn refresh_newer(convo_id: &ConvoId, scroller: &mut Scroller) {
+    let mut after = scroller
+        .items
+        .iter()
+        .rev()
+        .find(|message| message.received_at.is_none())
+        .map(|message| message.id)
+        .or_else(|| {
+            scroller
+                .items
+                .last()
+                .and_then(|message| message.id.checked_add(1))
+        });
+
+    if after.is_none() {
+        return;
+    }
+
+    let mut fetched_messages = Vec::new();
+    loop {
+        let result = flatten_rpc(block_on(get_rpc().convo_history(
+            convo_id.clone(),
+            None,
+            after,
+            PAGE_HISTORY_LIMIT,
+        )));
+        let Ok(messages) = result else {
+            return;
+        };
+        if messages.is_empty() {
+            break;
+        }
+        after = messages
+            .last()
+            .and_then(|message| message.id.checked_add(1));
+        fetched_messages.extend(messages);
+        if after.is_none() {
+            break;
+        }
+    }
+
+    if fetched_messages.is_empty() {
+        return;
+    }
+
+    let mut by_id = std::collections::BTreeMap::new();
+    for message in std::mem::take(&mut scroller.items) {
+        by_id.insert(message.id, message);
+    }
+
+    let mut replaced_existing = false;
+    for message in fetched_messages {
+        if by_id.insert(message.id, message).is_some() {
+            replaced_existing = true;
+        }
+    }
+
+    scroller.items = by_id.into_values().collect();
+    if replaced_existing {
+        scroller.reset_virtual_list();
+    }
+}
+
 impl Widget for Convo<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let app = self.0;
         let convo_id = self.1;
         let response = ui.push_id(&convo_id, |ui| {
-            let update_count = app.state.msg_updates;
-            let key = convo_id.clone();
-            let mut state: Var<ConvoState> = ui
-                .use_state(
-                    || ConvoState {
-                        pending_scroll_to_bottom: true,
-                        ..ConvoState::default()
-                    },
-                    (),
-                )
-                .into_var();
-            let mut user_info_target: Option<nullspace_structs::username::UserName> = None;
-            let mut show_roster = match convo_id {
-                ConvoId::Group { .. } => {
-                    Some(ui.use_state(|| false, (key.clone(), "roster")).into_var())
-                }
-                ConvoId::Direct { .. } => None,
-            };
-            let mut fetch = |before, after, limit| {
-                let result = get_rpc()
-                    .convo_history(convo_id.clone(), before, after, limit)
-                    .block_on();
-                flatten_rpc(result)
-            };
+            let mut show_roster: Var<bool> = ui.use_state(|| false, ()).into_var();
+            let mut user_info_target: Option<UserName> = None;
+            let mut last_update_seen: Var<u64> =
+                ui.use_state(|| app.state.msg_updates, ()).into_var();
 
-            if !state.initialized {
-                state.load_initial(&mut fetch);
-                state.last_update_count_seen = update_count;
-            } else if update_count > state.last_update_count_seen {
-                state.refresh_newer(&mut fetch);
-                state.last_update_count_seen = update_count;
-            }
-
-            let convo_for_read = convo_id.clone();
-            let up_to_read = state.latest_received_id;
-            let frame_count = ui.use_state(|| 0, (convo_id.clone(), up_to_read));
-            let window_focused = ui.ctx().input(|i| i.viewport().focused).unwrap_or(true);
-            let should_mark_read = *frame_count > 30 && window_focused;
-            frame_count.set_next(*frame_count + 1);
-            if *frame_count <= 30 {
-                ui.ctx().request_repaint();
-            }
-            ui.use_effect(
-                move || {
-                    let Some(up_to_id) = up_to_read else {
-                        return;
-                    };
-                    if should_mark_read {
-                        let _ = flatten_rpc(
-                            get_rpc()
-                                .convo_mark_read(convo_for_read, up_to_id)
-                                .block_on(),
-                        );
-                    }
-                },
-                (convo_id.clone(), up_to_read, should_mark_read),
+            let convo_id_for_loader = convo_id.clone();
+            let scroller = ui.use_state(
+                move || Arc::new(Mutex::new(new_scroller(convo_id_for_loader))),
+                (),
             );
+            let mut scroller = scroller.lock();
+
+            if *last_update_seen != app.state.msg_updates {
+                refresh_newer(&convo_id, &mut scroller);
+                *last_update_seen = app.state.msg_updates;
+            }
 
             let full_rect = ui.available_rect_before_wrap();
             let header_height = 40.0;
@@ -120,18 +169,16 @@ impl Widget for Convo<'_> {
                 render_header(app, ui, &convo_id, &mut show_roster, &mut user_info_target);
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(messages_rect), |ui| {
-                render_messages(ui, app, &convo_id, &mut state);
+                render_messages(ui, app, &mut scroller);
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
-                render_composer(ui, app, &convo_id, &mut state);
+                render_composer(ui, app, &convo_id);
             });
 
-            if let ConvoId::Group { group_id } = &convo_id
-                && let Some(show_roster) = show_roster.as_mut()
-            {
+            if let ConvoId::Group { group_id } = &convo_id {
                 ui.add(GroupRoster {
                     app,
-                    open: show_roster,
+                    open: &mut show_roster,
                     group: *group_id,
                     user_info: &mut user_info_target,
                 });
@@ -148,8 +195,8 @@ fn render_header(
     app: &mut NullspaceApp,
     ui: &mut eframe::egui::Ui,
     convo_id: &ConvoId,
-    show_roster: &mut Option<Var<bool>>,
-    user_info_target: &mut Option<nullspace_structs::username::UserName>,
+    show_roster: &mut bool,
+    user_info_target: &mut Option<UserName>,
 ) {
     match convo_id {
         ConvoId::Direct { peer } => {
@@ -173,103 +220,97 @@ fn render_header(
                 ui.add(Label::new(
                     RichText::from(format!("Group {}", group_id.short_id())).heading(),
                 ));
-                if let Some(show_roster) = show_roster.as_mut()
-                    && ui.add(Button::new("Members")).clicked()
-                {
-                    **show_roster = true;
+                if ui.add(Button::new("Members")).clicked() {
+                    *show_roster = true;
                 }
             });
         }
     }
 }
 
-fn render_messages(
-    ui: &mut eframe::egui::Ui,
-    app: &mut NullspaceApp,
-    convo_id: &ConvoId,
-    state: &mut Var<ConvoState>,
-) {
-    let clustered = ui.use_memo(
-        || {
-            let msg = state.messages.values().cloned().collect::<Vec<_>>();
-            cluster_convo(&msg)
-        },
-        (
-            state.messages.len(),
-            state.messages.last_key_value().map(|s| s.1.received_at),
-        ),
-    );
-
+fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: &mut Scroller) {
     let style: ConvoRowStyle = app.state.prefs.convo_row_style;
+    let message_meta = message_render_meta(&scroller.items);
+    let top_loading = scroller.top_loading_state().loading();
+    let initial_loading = scroller.initial_loading();
+    let top_error = match scroller.top_loading_state() {
+        egui_infinite_scroll::LoadingState::Error(err) => Some(err.clone()),
+        _ => None,
+    };
+    let no_more_items = matches!(
+        scroller.top_loading_state(),
+        egui_infinite_scroll::LoadingState::NoMoreItems
+    );
     ScrollArea::vertical()
         .id_salt("scroll")
         .stick_to_bottom(true)
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if ui.link("Load more...").clicked() {
-                let convo_id = convo_id.clone();
-                let mut fetch = move |before, after, limit| {
-                    let result = get_rpc()
-                        .convo_history(convo_id.clone(), before, after, limit)
-                        .block_on();
-                    flatten_rpc(result)
-                };
-                state.load_older(&mut fetch);
+            if no_more_items {
+                if !scroller.items.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Start of conversation")
+                            .size(11.0)
+                            .color(Color32::GRAY),
+                    );
+                }
             }
-            let mut last_date: Option<NaiveDate> = None;
-            for cluster in clustered {
-                let first = cluster.first().unwrap();
-                let last = cluster.last().unwrap();
-                if let Some(date) = first.received_at.and_then(NanoTimestamp::naive_date)
-                    && last_date != Some(date)
-                {
+            ui.set_width(ui.available_width());
+
+            scroller.ui(ui, MESSAGE_PREFETCH, |ui, index, item| {
+                let meta = message_meta.get(index).copied().unwrap_or_default();
+                if let Some(date) = meta.date_label {
                     let label = format!("[{}]", date.format("%A, %d %b %Y"));
                     ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
                     ui.add_space(4.0);
-                    last_date = Some(date);
                 }
-                for item in cluster.iter() {
-                    ui.push_id(item.id, |ui| {
-                        ui.add(ConvoRow {
-                            app,
-                            message: item,
-                            style,
-                            is_beginning: std::ptr::eq(item, first),
-                            is_end: std::ptr::eq(item, last),
-                        })
+                ui.push_id(item.id, |ui| {
+                    ui.add(ConvoRow {
+                        app,
+                        message: item,
+                        style,
+                        is_beginning: meta.is_beginning,
+                        is_end: meta.is_end,
                     });
-                }
-            }
+                });
+            });
 
-            let anchor_response = ui.allocate_response(egui::vec2(1.0, 1.0), Sense::hover());
-            if state.pending_scroll_to_bottom {
-                anchor_response
-                    .scroll_to_me_animation(Some(Align::BOTTOM), ScrollAnimation::none());
-                state.pending_scroll_to_bottom = false;
+            if top_loading {
+                ui.vertical_centered(|ui| {
+                    ui.spinner();
+                });
+            }
+            if initial_loading {
+                ui.vertical_centered(|ui| {
+                    ui.spinner();
+                });
+            }
+            if let Some(err) = top_error.as_ref() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(Color32::RED, format!("History load failed: {err}"));
+                    if ui.button("Retry").clicked() {
+                        scroller.retry_top();
+                    }
+                });
             }
         });
 }
 
-fn start_upload(_app: &mut NullspaceApp, attachment: &mut Var<Option<i64>>, path: PathBuf) {
+fn start_upload(attachment: &mut Var<Option<i64>>, path: PathBuf) {
     tracing::debug!(
         path = debug(&path),
         "picked an attachment, starting upload..."
     );
     let mime = infer_mime(&path);
-    let Ok(upload_id) = flatten_rpc(get_rpc().attachment_upload(path, mime).block_on()) else {
+    let Ok(upload_id) = flatten_rpc(block_on(get_rpc().attachment_upload(path, mime))) else {
         return;
     };
     attachment.replace(upload_id);
 }
 
-fn render_composer(
-    ui: &mut egui::Ui,
-    app: &mut NullspaceApp,
-    convo_id: &ConvoId,
-    state: &mut Var<ConvoState>,
-) {
+fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId) {
     ui.add_space(8.0);
-    let mut attachment: Var<Option<i64>> = ui.use_state(|| None, convo_id.clone()).into_var();
+    let mut attachment: Var<Option<i64>> = ui.use_state(|| None, ()).into_var();
 
     let mut draft: Var<String> = ui.use_state(String::new, ()).into_var();
     let mut pasted_image: Var<Option<PasteImage>> = ui.use_state(|| None, ()).into_var();
@@ -299,7 +340,6 @@ fn render_composer(
             })
             .detach();
             *attachment = None;
-            state.pending_scroll_to_bottom = true;
             app.state.upload_done.remove(&upload_id);
             app.state.upload_progress.remove(&upload_id);
             app.state.upload_error.remove(&upload_id);
@@ -337,7 +377,7 @@ fn render_composer(
         });
         app.file_dialog.update(ui.ctx());
         if let Some(path) = app.file_dialog.take_picked() {
-            start_upload(app, &mut attachment, path);
+            start_upload(&mut attachment, path);
         }
     }
 
@@ -363,15 +403,11 @@ fn render_composer(
         && text_response
             .ctx
             .input(|input| input.key_pressed(Key::Enter) && !input.modifiers.shift);
-    // if enter_pressed {
-    //     text_response.request_focus();
-    // }
     let send_now = enter_pressed;
     if send_now && !draft.trim().is_empty() {
         let message = draft.clone();
         send_message(convo_id, message);
         draft.clear();
-        state.pending_scroll_to_bottom = true;
     }
 
     if let Some(paste) = pasted_image.clone() {
@@ -395,7 +431,7 @@ fn render_composer(
                             return;
                         }
                     };
-                    start_upload(app, &mut attachment, path);
+                    start_upload(&mut attachment, path);
                     *pasted_image = None;
                 }
                 if ui.button("Cancel").clicked() {

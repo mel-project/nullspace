@@ -1,61 +1,67 @@
+use chrono::NaiveDate;
 use nullspace_client::internal::{ConvoMessage, MessageContent};
 use nullspace_structs::timestamp::NanoTimestamp;
 
 const CLUSTER_WINDOW_NANOS: u64 = 3 * 60 * 1_000_000_000;
 
-pub fn cluster_convo(messages: &[ConvoMessage]) -> Vec<Vec<ConvoMessage>> {
-    let mut clusters = Vec::new();
-    let mut start = 0;
-
-    while start < messages.len() {
-        let first = &messages[start];
-        let first_sender = &first.sender;
-        let first_type = message_type(first);
-
-        let Some(first_ts) = first.received_at else {
-            clusters.push(messages[start..start + 1].to_vec());
-            start += 1;
-            continue;
-        };
-
-        let mut end = start + 1;
-        while let Some(candidate) = messages.get(end) {
-            let candidate_ts = if let Some(candidate_ts) = candidate.received_at {
-                candidate_ts
-            } else {
-                NanoTimestamp::now()
-            };
-
-            if &candidate.sender != first_sender {
-                break;
-            }
-            if message_type(candidate) != first_type {
-                break;
-            }
-            if first_ts.0.abs_diff(candidate_ts.0) > CLUSTER_WINDOW_NANOS {
-                break;
-            }
-            end += 1;
-        }
-
-        clusters.push(messages[start..end].to_vec());
-        start = end;
-    }
-
-    clusters
+#[derive(Clone, Copy, Default)]
+pub struct MessageRenderMeta {
+    pub date_label: Option<NaiveDate>,
+    pub is_beginning: bool,
+    pub is_end: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MessageType {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MessageKind {
     Text,
     Attachment,
     GroupInvite,
 }
 
-fn message_type(message: &ConvoMessage) -> MessageType {
-    match &message.body {
-        MessageContent::PlainText(_) => MessageType::Text,
-        MessageContent::Attachment { .. } => MessageType::Attachment,
-        MessageContent::GroupInvite { .. } => MessageType::GroupInvite,
+fn message_kind(message: &ConvoMessage) -> MessageKind {
+    match message.body {
+        MessageContent::PlainText(_) => MessageKind::Text,
+        MessageContent::Attachment { .. } => MessageKind::Attachment,
+        MessageContent::GroupInvite { .. } => MessageKind::GroupInvite,
     }
+}
+
+fn same_cluster(left: &ConvoMessage, right: &ConvoMessage) -> bool {
+    if left.sender != right.sender {
+        return false;
+    }
+    if message_kind(left) != message_kind(right) {
+        return false;
+    }
+    if let (Some(left_ts), Some(right_ts)) = (left.received_at, right.received_at) {
+        left_ts.0.abs_diff(right_ts.0) <= CLUSTER_WINDOW_NANOS
+    } else {
+        true
+    }
+}
+
+pub fn message_render_meta(messages: &[ConvoMessage]) -> Vec<MessageRenderMeta> {
+    let mut out = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        let previous = index.checked_sub(1).and_then(|idx| messages.get(idx));
+        let next = messages.get(index + 1);
+        let previous_date =
+            previous.and_then(|msg| msg.received_at.and_then(NanoTimestamp::naive_date));
+        let date_label = message
+            .received_at
+            .and_then(NanoTimestamp::naive_date)
+            .filter(|date| Some(*date) != previous_date);
+        let is_beginning = previous
+            .map(|previous| !same_cluster(previous, message))
+            .unwrap_or(true);
+        let is_end = next
+            .map(|next| !same_cluster(message, next))
+            .unwrap_or(true);
+        out.push(MessageRenderMeta {
+            date_label,
+            is_beginning,
+            is_end,
+        });
+    }
+    out
 }

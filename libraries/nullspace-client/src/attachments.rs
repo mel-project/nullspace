@@ -31,7 +31,7 @@ use crate::internal::{Event, InternalRpcError};
 use crate::server::get_server_client;
 
 const MAX_CHUNK_SIZE: usize = 512 * 1024;
-const MAX_FANOUT: usize = 512;
+const MAX_FANOUT: usize = 16;
 
 const TRANSFER_CONCURRENCY: usize = 16;
 

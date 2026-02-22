@@ -3,16 +3,16 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{Button, Response, TextEdit, TextWrapMode, Widget, Window};
 use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
-use egui_hooks::hook::state::Var;
+use egui_hooks::hook::state::{State, Var};
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
 use nullspace_structs::fragment::Attachment;
-use poll_promise::Promise;
+use nullspace_structs::username::UserName;
 use pollster::FutureExt;
 use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, Style};
 
 use crate::NullspaceApp;
-use crate::promises::{PromiseSlot, flatten_rpc};
+use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::widgets::avatar::Avatar;
 
@@ -30,6 +30,16 @@ pub struct Profile<'a> {
 
 impl Widget for Profile<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        let was_open: State<bool> = ui.use_state(|| false, ());
+        let open_generation: State<u64> = ui.use_state(|| 0, ());
+        let current_open_generation = if *self.open && !*was_open {
+            let next = *open_generation + 1;
+            open_generation.set_next(next);
+            next
+        } else {
+            *open_generation
+        };
+
         if *self.open {
             let mut window_open = *self.open;
             let center = ui.ctx().content_rect().center();
@@ -38,47 +48,38 @@ impl Widget for Profile<'_> {
                 .default_pos(center)
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
-                    ui.add(ProfileInner { app: self.app });
+                    ui.add(ProfileInner {
+                        app: self.app,
+                        open_generation: current_open_generation,
+                    });
                 });
             *self.open = window_open;
         }
 
+        was_open.set_next(*self.open);
         ui.response()
     }
 }
 
 pub struct ProfileInner<'a> {
     pub app: &'a mut NullspaceApp,
+    pub open_generation: u64,
 }
 
 impl Widget for ProfileInner<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let username_promise = ui.use_state(
-            PromiseSlot::<Result<nullspace_structs::username::UserName, String>>::new,
-            (),
-        );
-
         let mut display_name_input: Var<String> = ui.use_state(String::new, ()).into_var();
-        let mut initialized: Var<bool> = ui.use_state(|| false, ()).into_var();
-        let mut avatar_choice: Var<AvatarChoice> =
-            ui.use_state(|| AvatarChoice::Keep, ()).into_var();
-        let mut avatar_upload_id: Var<Option<i64>> = ui.use_state(|| None, ()).into_var();
-        let save_promise = ui.use_state(PromiseSlot::<Result<(), String>>::new, ());
+        let avatar_choice: State<AvatarChoice> = ui.use_state(|| AvatarChoice::Keep, ());
+        let avatar_upload_id: State<Option<i64>> = ui.use_state(|| None, ());
+        let initialized_generation: State<Option<u64>> = ui.use_state(|| None, ());
+        let active_username: State<Option<UserName>> = ui.use_state(|| None, ());
+        let save_running: State<bool> = ui.use_state(|| false, ());
+        let save_result: State<Option<Result<(), String>>> = ui.use_state(|| None, ());
 
-        if username_promise.is_idle() {
-            let promise =
-                Promise::spawn_async(async move { flatten_rpc(get_rpc().own_username().await) });
-            username_promise.start(promise);
-        }
-
-        let username = match username_promise.poll() {
-            Some(Ok(username)) => username,
-            Some(Err(err)) => {
+        let username = match flatten_rpc(get_rpc().own_username().block_on()) {
+            Ok(username) => username,
+            Err(err) => {
                 ui.colored_label(Color32::RED, err);
-                return ui.response();
-            }
-            None => {
-                ui.spinner();
                 return ui.response();
             }
         };
@@ -90,10 +91,16 @@ impl Widget for ProfileInner<'_> {
             return ui.response();
         };
 
-        if !*initialized {
+        let reset_for_open = *initialized_generation != Some(self.open_generation);
+        let reset_for_username = (*active_username).as_ref() != Some(&username);
+        if reset_for_open || reset_for_username {
             *display_name_input = profile_view.display_name.clone().unwrap_or_default();
-            *avatar_choice = AvatarChoice::Keep;
-            *initialized = true;
+            avatar_choice.set_next(AvatarChoice::Keep);
+            avatar_upload_id.set_next(None);
+            active_username.set_next(Some(username.clone()));
+            initialized_generation.set_next(Some(self.open_generation));
+            save_running.set_next(false);
+            save_result.set_next(None);
         }
 
         tui(ui, ui.id().with("profile_editor"))
@@ -168,7 +175,7 @@ impl Widget for ProfileInner<'_> {
                             });
                             tui.ui(|ui| {
                                 if ui.button("Remove").clicked() {
-                                    *avatar_choice = AvatarChoice::Clear;
+                                    avatar_choice.set_next(AvatarChoice::Clear);
                                 }
                             });
                         });
@@ -189,8 +196,8 @@ impl Widget for ProfileInner<'_> {
                             ui.add(eframe::egui::ProgressBar::new(progress).text("Uploading..."));
                         } else if let Some(done) = self.app.state.upload_done.get(&upload_id) {
                             let root = done.clone();
-                            *avatar_choice = AvatarChoice::Set(root);
-                            *avatar_upload_id = None;
+                            avatar_choice.set_next(AvatarChoice::Set(root));
+                            avatar_upload_id.set_next(None);
                             self.app.state.upload_done.remove(&upload_id);
                             self.app.state.upload_progress.remove(&upload_id);
                             self.app.state.upload_error.remove(&upload_id);
@@ -201,7 +208,7 @@ impl Widget for ProfileInner<'_> {
                                     .size(11.0),
                             );
                             if ui.button("Clear error").clicked() {
-                                *avatar_upload_id = None;
+                                avatar_upload_id.set_next(None);
                                 self.app.state.upload_done.remove(&upload_id);
                                 self.app.state.upload_progress.remove(&upload_id);
                                 self.app.state.upload_error.remove(&upload_id);
@@ -234,36 +241,44 @@ impl Widget for ProfileInner<'_> {
                     let avatar_changed = !matches!(&*avatar_choice, AvatarChoice::Keep);
 
                     let upload_busy = avatar_upload_id.is_some();
-                    let save_busy = save_promise.is_running();
+                    let save_busy = *save_running;
                     let can_save =
                         (display_changed || avatar_changed) && !upload_busy && !save_busy;
 
                     if ui.add_enabled(can_save, Button::new("Save")).clicked() {
                         let display_name = new_display_name.clone();
                         let avatar = avatar_to_send.clone();
-                        let promise = Promise::spawn_async(async move {
-                            flatten_rpc(get_rpc().own_profile_set(display_name, avatar).await)
-                        });
-                        save_promise.start(promise);
-                    }
-
-                    if let Some(result) = save_promise.take() {
-                        match result {
-                            Ok(()) => {
-                                self.app.state.profile_loader.invalidate(&username);
-                                *avatar_choice = AvatarChoice::Keep;
-                            }
-                            Err(err) => {
-                                self.app.state.error_dialog = Some(err);
-                            }
-                        }
+                        save_running.set_next(true);
+                        save_result.set_next(None);
+                        let save_running = save_running.clone();
+                        let save_result = save_result.clone();
+                        smol::spawn(async move {
+                            let result =
+                                flatten_rpc(get_rpc().own_profile_set(display_name, avatar).await);
+                            save_result.set_next(Some(result));
+                            save_running.set_next(false);
+                        })
+                        .detach();
                     }
                 });
             });
 
+        if let Some(result) = (*save_result).clone() {
+            save_result.set_next(None);
+            match result {
+                Ok(()) => {
+                    self.app.state.profile_loader.invalidate(&username);
+                    avatar_choice.set_next(AvatarChoice::Keep);
+                }
+                Err(err) => {
+                    self.app.state.error_dialog = Some(err);
+                }
+            }
+        }
+
         self.app.profile_file_dialog.update(ui.ctx());
         if let Some(path) = self.app.profile_file_dialog.take_picked() {
-            start_avatar_upload(self.app, &mut avatar_upload_id, path);
+            start_avatar_upload(self.app, &avatar_upload_id, path);
         }
 
         ui.response()
@@ -285,7 +300,7 @@ fn profile_row(tui: &mut Tui, label: &str, content: impl FnOnce(&mut Tui)) {
     });
 }
 
-fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &mut Var<Option<i64>>, path: PathBuf) {
+fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &State<Option<i64>>, path: PathBuf) {
     let mime = infer_mime(&path);
     if !mime.starts_with("image/") {
         app.state.error_dialog = Some("avatar must be an image".to_string());
@@ -294,7 +309,7 @@ fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &mut Var<Option<i64>>,
     let Ok(id) = flatten_rpc(get_rpc().attachment_upload(path, mime).block_on()) else {
         return;
     };
-    upload_id.replace(id);
+    upload_id.set_next(Some(id));
 }
 
 fn infer_mime(path: &Path) -> smol_str::SmolStr {

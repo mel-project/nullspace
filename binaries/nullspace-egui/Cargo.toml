@@ -59,6 +59,7 @@ arboard = { version = "3.6.1", features = [
 fastrand = "2.3.0"
 either = "1.15.0"
 futures-util = "0.3.32"
+egui_infinite_scroll = "0.9.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.3", default-features = false, features = [

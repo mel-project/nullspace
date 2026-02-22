@@ -1400,6 +1400,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
 
 [[package]]
+name = "concat-idents"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f76990911f2267d837d9d0ad060aa63aaad170af40904b29461734c339030d4d"
+dependencies = [
+ "quote",
+ "syn 2.0.112",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2245,6 +2255,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_inbox"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da31d355094b21970302411fb9bd23d3d7642077d46387b7d4e59323392e69d2"
+dependencies = [
+ "egui",
+ "parking_lot 0.12.5",
+]
+
+[[package]]
+name = "egui_infinite_scroll"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32632e6e89bf2a0febe24603de8b3c7db7be3fc829580b7a0e7bdaaea7ca341f"
+dependencies = [
+ "egui",
+ "egui_inbox",
+ "egui_virtual_list",
+ "hello_egui_utils",
+]
+
+[[package]]
 name = "egui_taffy"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2255,6 +2287,16 @@ dependencies = [
  "parking_lot 0.12.5",
  "stackbox",
  "taffy",
+]
+
+[[package]]
+name = "egui_virtual_list"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b81f88c8461c55ffba77f9f5ae8b97ed8b55fbef93bb8dd64a619a6632228138"
+dependencies = [
+ "egui",
+ "web-time",
 ]
 
 [[package]]
@@ -3449,6 +3491,16 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hello_egui_utils"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5d09c2c7f3aa61624b1bec320be9029f30e06769f92e39ac99a6d6e01024ae8"
+dependencies = [
+ "concat-idents",
+ "egui",
+]
 
 [[package]]
 name = "hermit-abi"
@@ -4836,6 +4888,7 @@ dependencies = [
  "egui_extras",
  "egui_flex",
  "egui_hooks",
+ "egui_infinite_scroll",
  "egui_taffy",
  "either",
  "fast_image_resize",

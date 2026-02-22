@@ -111,7 +111,7 @@ impl NullspaceApp {
         cc.egui_ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(6.0, 6.0);
             style.spacing.window_margin = egui::Margin::same(12);
-            style.spacing.button_padding = egui::vec2(6.0, 4.0);
+            style.spacing.button_padding = egui::vec2(8.0, 4.0);
             style.spacing.indent = 16.0;
             // style.spacing.scroll = ScrollStyle::solid();
             for wid in [
@@ -121,7 +121,7 @@ impl NullspaceApp {
                 &mut style.visuals.widgets.open,
                 &mut style.visuals.widgets.inactive,
             ] {
-                wid.corner_radius = egui::CornerRadius::ZERO.at_least(4);
+                wid.corner_radius = egui::CornerRadius::ZERO.at_least(16);
             }
 
             style.interaction.selectable_labels = false;

@@ -1,7 +1,12 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    ops::{Deref, DerefMut},
+    sync::{Arc, Mutex},
+};
 
 use egui_hooks::UseHookExt;
-use generational_box::{AnyStorage, GenerationalBox, SyncStorage};
+use egui_hooks::hook::Hook;
+use generational_box::{AnyStorage, GenerationalBox, Owner, SyncStorage};
 
 pub struct GBox<T>(GenerationalBox<T, SyncStorage>);
 
@@ -38,13 +43,107 @@ impl<T> DerefMut for GBox<T> {
     }
 }
 
+const WIDGET_OWNER_TABLE_ID: &str = "nullspace_egui::utils::generational::widget_owner_table";
+
+#[derive(Clone, Default)]
+struct WidgetOwnerTable(Arc<Mutex<HashMap<egui::Id, WidgetOwnerEntry>>>);
+
+struct WidgetOwnerEntry {
+    owner: Owner<SyncStorage>,
+    last_seen_pass: u64,
+}
+
+fn prune_stale_widget_owners(
+    owners: &mut HashMap<egui::Id, WidgetOwnerEntry>,
+    current_pass: u64,
+) {
+    // Match egui_hooks two-frame cleanup behavior:
+    // keep owners seen this pass or previous pass, prune older.
+    owners.retain(|_, owner| owner.last_seen_pass.saturating_add(1) >= current_pass);
+}
+
+fn widget_owner_table(ui: &egui::Ui) -> WidgetOwnerTable {
+    ui.data_mut(|data| {
+        data.get_temp_mut_or_insert_with(
+            egui::Id::new(WIDGET_OWNER_TABLE_ID),
+            WidgetOwnerTable::default,
+        )
+        .clone()
+    })
+}
+
+fn touch_widget_owner(ui: &egui::Ui, create_if_missing: bool) -> Option<Owner<SyncStorage>> {
+    let current_pass = ui.ctx().cumulative_pass_nr();
+    let owner_table = widget_owner_table(ui);
+    let mut owners = owner_table.0.lock().unwrap();
+    prune_stale_widget_owners(&mut owners, current_pass);
+
+    match owners.entry(ui.id()) {
+        Entry::Occupied(mut entry) => {
+            entry.get_mut().last_seen_pass = current_pass;
+            Some(entry.get().owner.clone())
+        }
+        Entry::Vacant(entry) => {
+            if !create_if_missing {
+                return None;
+            }
+            let owner = SyncStorage::owner();
+            entry.insert(WidgetOwnerEntry {
+                owner: owner.clone(),
+                last_seen_pass: current_pass,
+            });
+            Some(owner)
+        }
+    }
+}
+
+struct GBoxHook<F> {
+    init: Option<F>,
+}
+
+impl<F> GBoxHook<F> {
+    fn new(init: F) -> Self {
+        Self { init: Some(init) }
+    }
+}
+
+impl<T, F, D> Hook<D> for GBoxHook<F>
+where
+    T: Send + Sync + 'static,
+    F: FnOnce() -> T,
+{
+    type Backend = GBox<T>;
+    type Output = GBox<T>;
+
+    fn init(
+        &mut self,
+        _index: usize,
+        _deps: &D,
+        _backend: Option<Self::Backend>,
+        ui: &mut egui::Ui,
+    ) -> Self::Backend {
+        let owner = touch_widget_owner(ui, true).expect("owner must exist");
+        let init = self.init.take().expect("GBoxHook init called twice");
+        GBox(owner.insert(init()))
+    }
+
+    fn hook(self, backend: &mut Self::Backend, ui: &mut egui::Ui) -> Self::Output {
+        let _ = touch_widget_owner(ui, false);
+        *backend
+    }
+}
+
 /// Extension trait that adds [`use_gbox`](UseGBoxExt::use_gbox) to [`egui::Ui`].
 pub trait UseGBoxExt {
     /// Create a [`GBox`] whose lifetime is tied to this widget's scope.
     ///
-    /// The backing storage is kept alive by a hidden [`Owner`] stored in egui's
-    /// per-widget memory. When the widget is removed from the tree (or `deps`
-    /// change), the owner is dropped and the slot is recycled.
+    /// The backing storage is kept alive by a hidden per-widget [`Owner`]. All
+    /// `use_gbox` calls inside the same widget share that owner, so old inserts
+    /// can accumulate until the widget is removed from the tree.
+    ///
+    /// `deps` only controls when this specific hook instance re-initializes. A
+    /// dependency change creates a new [`GBox`], and older values stay alive
+    /// until widget teardown.
     ///
     /// Because [`GBox`] is [`Copy`], the returned handle can be captured by
     /// move closures without cloning.
@@ -61,15 +160,7 @@ impl UseGBoxExt for egui::Ui {
         init: impl FnOnce() -> T,
         deps: impl PartialEq + Send + Sync + 'static,
     ) -> GBox<T> {
-        let pair = self.use_state(
-            move || {
-                let owner = SyncStorage::owner();
-                let gbox = GBox(owner.insert(init()));
-                (owner, gbox)
-            },
-            deps,
-        );
-        pair.1
+        self.use_hook(GBoxHook::new(init), deps)
     }
 }
 

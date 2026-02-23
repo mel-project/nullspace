@@ -5,7 +5,6 @@ use egui_hooks::hook::state::Var;
 use egui_infinite_scroll::InfiniteScroll;
 use nullspace_client::internal::{ConvoId, ConvoMessage, OutgoingMessage};
 use nullspace_structs::username::UserName;
-use parking_lot::Mutex;
 use pollster::block_on;
 use smol_str::SmolStr;
 
@@ -14,6 +13,7 @@ use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::group_roster::GroupRoster;
 use crate::screens::user_info::UserInfo;
+use crate::utils::generational::UseGBoxExt;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::widgets::avatar::Avatar;
@@ -21,7 +21,6 @@ use crate::widgets::convo_row::ConvoRow;
 use cluster::message_render_meta;
 use image_clip::{PasteImage, persist_paste_image, read_clipboard_image};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 mod cluster;
 mod image_clip;
@@ -137,11 +136,8 @@ impl Widget for Convo<'_> {
                 ui.use_state(|| app.state.msg_updates, ()).into_var();
 
             let convo_id_for_loader = convo_id.clone();
-            let scroller = ui.use_state(
-                move || Arc::new(Mutex::new(new_scroller(convo_id_for_loader))),
-                (),
-            );
-            let mut scroller = scroller.lock();
+            let scroller = ui.use_gbox(move || new_scroller(convo_id_for_loader), ());
+            let mut scroller = scroller.write();
 
             if *last_update_seen != app.state.msg_updates {
                 refresh_newer(&convo_id, &mut scroller);

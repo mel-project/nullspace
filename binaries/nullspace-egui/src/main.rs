@@ -16,7 +16,6 @@ use url::Url;
 
 use crate::events::{event_loop, spawn_audio_thread};
 use crate::fonts::load_fonts;
-use crate::utils::generational::advance_generation;
 use crate::utils::prefs::PrefData;
 use crate::utils::profile_loader::ProfileLoader;
 
@@ -182,7 +181,6 @@ impl NullspaceApp {
 
 impl eframe::App for NullspaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        advance_generation();
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);

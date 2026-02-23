@@ -1,54 +1,26 @@
-use std::{
-    ops::{Deref, DerefMut},
-    sync::{LazyLock, atomic::AtomicUsize},
-    thread::JoinHandle,
-};
+use std::ops::{Deref, DerefMut};
 
-use generational_box::{GenerationalBox, Owner, SyncStorage};
-use parking_lot::Mutex;
+use egui_hooks::UseHookExt;
+use generational_box::{AnyStorage, GenerationalBox, SyncStorage};
 
-static GUARDS: AtomicUsize = AtomicUsize::new(0);
-static GLOBAL_OWNER: LazyLock<Mutex<Owner<SyncStorage>>> = LazyLock::new(Default::default);
-
-#[derive(Copy, Clone)]
 pub struct GBox<T>(GenerationalBox<T, SyncStorage>);
 
-impl<T: Send + Sync + 'static> GBox<T> {
-    pub fn new(inner: T) -> Self {
-        Self(GLOBAL_OWNER.lock().insert(inner))
+impl<T> Copy for GBox<T> {}
+impl<T> Clone for GBox<T> {
+    fn clone(&self) -> Self {
+        *self
     }
 }
 
-/// Spawns a "guarded" thread that keeps the current generation of GBoxes alive
-pub fn g_spawn<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T> {
-    GUARDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let wrapped = move || {
-        scopeguard::defer!({
-            GUARDS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        });
-        f()
-    };
-    std::thread::spawn(wrapped)
-}
-
-/// Spawns a "guarded" async task that keeps the current generation of GBoxes alive
-pub fn g_spawn_async<T: Send + 'static>(
-    f: impl Future<Output = T> + Send + 'static,
-) -> smol::Task<T> {
-    GUARDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let wrapped = async move {
-        scopeguard::defer!({
-            GUARDS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        });
-        f.await
-    };
-    smol::spawn(wrapped)
-}
-
-/// Advances the generation if possible, dropping every box in the previous generation.
-pub fn advance_generation() {
-    if GUARDS.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-        *GLOBAL_OWNER.lock() = Default::default();
+impl<T: Send + Sync + 'static> GBox<T> {
+    /// Create a GBox with no owner. The backing storage will never be reclaimed
+    /// unless you call [`GenerationalBox::manually_drop`] on it.
+    #[track_caller]
+    pub fn leak(inner: T) -> Self {
+        Self(GenerationalBox::leak(
+            inner,
+            std::panic::Location::caller(),
+        ))
     }
 }
 
@@ -63,6 +35,41 @@ impl<T> Deref for GBox<T> {
 impl<T> DerefMut for GBox<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+/// Extension trait that adds [`use_gbox`](UseGBoxExt::use_gbox) to [`egui::Ui`].
+pub trait UseGBoxExt {
+    /// Create a [`GBox`] whose lifetime is tied to this widget's scope.
+    ///
+    /// The backing storage is kept alive by a hidden [`Owner`] stored in egui's
+    /// per-widget memory. When the widget is removed from the tree (or `deps`
+    /// change), the owner is dropped and the slot is recycled.
+    ///
+    /// Because [`GBox`] is [`Copy`], the returned handle can be captured by
+    /// move closures without cloning.
+    fn use_gbox<T: Send + Sync + 'static>(
+        &mut self,
+        init: impl FnOnce() -> T,
+        deps: impl PartialEq + Send + Sync + 'static,
+    ) -> GBox<T>;
+}
+
+impl UseGBoxExt for egui::Ui {
+    fn use_gbox<T: Send + Sync + 'static>(
+        &mut self,
+        init: impl FnOnce() -> T,
+        deps: impl PartialEq + Send + Sync + 'static,
+    ) -> GBox<T> {
+        let pair = self.use_state(
+            move || {
+                let owner = SyncStorage::owner();
+                let gbox = GBox(owner.insert(init()));
+                (owner, gbox)
+            },
+            deps,
+        );
+        pair.1
     }
 }
 

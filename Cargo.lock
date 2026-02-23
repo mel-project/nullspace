@@ -2594,6 +2594,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast-thumbhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5243a22cce29dff488db8ef03d8e0e54dd06cd3e6d98475160dff390fa414de2"
+
+[[package]]
 name = "fast_image_resize"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3242,6 +3248,12 @@ dependencies = [
  "libc",
  "system-deps",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "glow"
@@ -4259,6 +4271,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libwebp-sys"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54cd30df7c7165ce74a456e4ca9732c603e8dc5e60784558c1c6dc047f876733"
+dependencies = [
+ "cc",
+ "glob",
+]
+
+[[package]]
 name = "libxdo"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4796,8 +4818,11 @@ dependencies = [
  "bcs",
  "bytes",
  "dashmap 6.1.0",
+ "fast-thumbhash",
+ "fast_image_resize",
  "futures-concurrency",
  "futures-util",
+ "image",
  "memmap2",
  "moka",
  "nanorpc",
@@ -4820,6 +4845,7 @@ dependencies = [
  "toml 0.9.10+spec-1.1.0",
  "tracing",
  "url",
+ "webp",
 ]
 
 [[package]]
@@ -4923,6 +4949,7 @@ dependencies = [
  "egui_infinite_scroll",
  "egui_taffy",
  "either",
+ "fast-thumbhash",
  "fast_image_resize",
  "fastrand 2.3.0",
  "font-kit",
@@ -8667,6 +8694,16 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "url",
  "web-sys",
+]
+
+[[package]]
+name = "webp"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c071456adef4aca59bf6a583c46b90ff5eb0b4f758fc347cea81290288f37ce1"
+dependencies = [
+ "image",
+ "libwebp-sys",
 ]
 
 [[package]]

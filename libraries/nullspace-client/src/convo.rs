@@ -8,7 +8,7 @@
 use anyctx::AnyCtx;
 use futures_concurrency::future::Race;
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::fragment::Attachment;
+use nullspace_structs::fragment::{Attachment, ImageAttachment};
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
@@ -120,6 +120,27 @@ pub enum MessageContent {
         /// Original filename.
         filename: SmolStr,
     },
+    /// A compressed image attachment with an embedded ThumbHash preview.
+    ///
+    /// The `id` is the hash of the inner attachment root -- use it with
+    /// [`attachment_download`](crate::internal::InternalProtocol::attachment_download)
+    /// and
+    /// [`attachment_status`](crate::internal::InternalProtocol::attachment_status).
+    ImageAttachment {
+        id: Hash,
+        /// Total size of the decrypted file in bytes.
+        size: u64,
+        /// MIME type (currently `"image/webp"`).
+        mime: SmolStr,
+        /// Randomized filename (`nullspace-<blake3>.webp`).
+        filename: SmolStr,
+        /// Original image width in pixels.
+        width: u32,
+        /// Original image height in pixels.
+        height: u32,
+        /// Base91-encoded ThumbHash string.
+        thumbhash: String,
+    },
     /// An invitation to join a group, embedded in a DM.
     ///
     /// Accept it with
@@ -145,6 +166,8 @@ pub enum OutgoingMessage {
     /// A previously-uploaded attachment root (obtained from
     /// [`Event::UploadDone`](crate::internal::Event::UploadDone)).
     Attachment(Attachment),
+    /// A previously-uploaded compressed image attachment.
+    ImageAttachment(ImageAttachment),
 }
 
 /// Summary of a conversation for list views.

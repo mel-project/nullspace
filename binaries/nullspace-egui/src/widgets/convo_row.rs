@@ -2,8 +2,9 @@ use core::f32;
 use std::path::PathBuf;
 
 use eframe::egui::{Response, RichText, Widget};
-use egui::{Color32, ProgressBar, TextFormat, TextStyle, text::LayoutJob};
+use egui::{Color32, ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
+use fast_thumbhash::thumb_hash_from_b91;
 use nullspace_client::internal::{ConvoMessage, MessageContent};
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::timestamp::NanoTimestamp;
@@ -15,7 +16,11 @@ use crate::utils::color::username_color;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::utils::units::{format_filesize, unit_for_bytes};
+use crate::widgets::smooth::SmoothImage;
 use crate::{NullspaceApp, widgets::avatar::Avatar};
+
+const IMAGE_MAX_WIDTH: f32 = 400.0;
+const IMAGE_MAX_HEIGHT: f32 = 400.0;
 
 pub struct ConvoRow<'a> {
     pub app: &'a mut NullspaceApp,
@@ -137,10 +142,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
                 });
             }
             MessageContent::Attachment {
-                id,
-                size,
-                filename,
-                ..
+                id, size, filename, mime, ..
             } => {
                 ui.push_id(id, |ui| {
                     ui.add(AttachmentContent {
@@ -148,6 +150,26 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
                         id: *id,
                         size: *size,
                         filename,
+                        mime,
+                    });
+                });
+            }
+            MessageContent::ImageAttachment {
+                id,
+                size,
+                width,
+                height,
+                thumbhash,
+                ..
+            } => {
+                ui.push_id(id, |ui| {
+                    ui.add(ImageAttachmentContent {
+                        app,
+                        id: *id,
+                        size: *size,
+                        width: *width,
+                        height: *height,
+                        thumbhash,
                     });
                 });
             }
@@ -173,6 +195,7 @@ struct AttachmentContent<'a> {
     id: Hash,
     size: u64,
     filename: &'a str,
+    mime: &'a str,
 }
 
 impl Widget for AttachmentContent<'_> {
@@ -221,7 +244,11 @@ impl Widget for AttachmentContent<'_> {
                     && let Some(path) = &status.saved_to
                 {
                     if ui.small_button("Open").clicked() {
-                        let _ = open::that_detached(path.clone());
+                        if self.mime.starts_with("image/") {
+                            self.app.state.image_viewer = Some(path.clone());
+                        } else {
+                            let _ = open::that_detached(path.clone());
+                        }
                     }
                     if ui.small_button("Show in folder").clicked() {
                         let _ = open::that_detached(path.parent().unwrap());
@@ -234,6 +261,131 @@ impl Widget for AttachmentContent<'_> {
 
         ui.response()
     }
+}
+
+struct ImageAttachmentContent<'a> {
+    app: &'a mut NullspaceApp,
+    id: Hash,
+    size: u64,
+    width: u32,
+    height: u32,
+    thumbhash: &'a str,
+}
+
+impl Widget for ImageAttachmentContent<'_> {
+    fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        let status = ui.use_memo(
+            || flatten_rpc(get_rpc().attachment_status(self.id).block_on()),
+            self.app.state.attach_updates,
+        );
+        let dl_progress = self
+            .app
+            .state
+            .download_progress
+            .get(&self.id)
+            .map(|(downloaded, total)| (*downloaded, *total));
+        let dl_error = self.app.state.download_error.get(&self.id);
+        let auto_dl_started = ui.use_state(|| false, ());
+        let auto_limit = self.app.state.prefs.max_auto_image_download_bytes;
+        let should_auto_download = auto_limit.map(|max| self.size <= max).unwrap_or(false);
+
+        defmac::defmac!(start_dl => {
+            let save_dir = image_cache_dir();
+            let _ = flatten_rpc(get_rpc().attachment_download(self.id, save_dir).block_on());
+        });
+
+        let downloaded_path = status
+            .as_ref()
+            .ok()
+            .and_then(|status| status.saved_to.clone());
+
+        if downloaded_path.is_none()
+            && dl_progress.is_none()
+            && dl_error.is_none()
+            && should_auto_download
+            && !*auto_dl_started
+        {
+            auto_dl_started.set_next(true);
+            start_dl!();
+        }
+
+        let aspect = if self.width > 0 && self.height > 0 {
+            self.width as f32 / self.height as f32
+        } else {
+            return ui.label("CANNOT COMPUTE ASPECT RATIO");
+        };
+        let max_width = IMAGE_MAX_WIDTH.min(ui.available_width());
+
+        if let Some(path) = downloaded_path {
+            let response = ui.add(
+                SmoothImage::new(path.as_path())
+                    .thumbhash(Some(self.thumbhash))
+                    .fit_to_size(egui::vec2(max_width, IMAGE_MAX_HEIGHT))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .preserve_aspect_ratio(true)
+                    .aspect_ratio(aspect)
+                    .sense(Sense::click()),
+            );
+            if response.clicked() {
+                self.app.state.image_viewer = Some(path);
+            }
+            return response;
+        }
+
+        let (width, height) = fit_size_preserving_aspect(aspect, max_width, IMAGE_MAX_HEIGHT);
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
+        paint_thumbhash(ui, rect, self.id, self.thumbhash);
+
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() / 2.0 - 40.0);
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::same(8),
+                    Color32::from_white_alpha(200),
+                );
+                if let Some((downloaded, total)) = dl_progress {
+                    ui.label(format!("{:2}%", downloaded as f32 / total as f32 * 100.0));
+                    ui.spinner();
+                } else if let Some(error) = dl_error {
+                    ui.label(
+                        RichText::new(format!("Download failed: {error}"))
+                            .color(Color32::RED)
+                            .size(11.0),
+                    );
+                } else if !should_auto_download {
+                    let (unit_scale, unit_suffix) = unit_for_bytes(self.size);
+                    let size_text = format_filesize(self.size, unit_scale);
+                    ui.label(format!("{size_text} {unit_suffix}"));
+                    if ui.button("Download").clicked() {
+                        start_dl!();
+                    }
+                } else {
+                    ui.label(RichText::new("Auto-downloading image...").color(Color32::GRAY));
+                }
+            });
+        });
+
+        response
+    }
+}
+
+fn paint_thumbhash(ui: &mut egui::Ui, rect: egui::Rect, id: Hash, thumbhash: &str) {
+    let Ok((thumb_w, thumb_h, rgba)) = thumb_hash_from_b91(thumbhash) else {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(8), Color32::from_gray(180));
+        return;
+    };
+    let image = egui::ColorImage::from_rgba_unmultiplied([thumb_w, thumb_h], &rgba);
+    let texture = ui.ctx().load_texture(
+        format!("thumbhash-{id}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    egui::Image::from_texture(&texture)
+        .corner_radius(egui::CornerRadius::same(8))
+        .fit_to_exact_size(rect.size())
+        .paint_at(ui, rect);
 }
 
 fn format_timestamp(ts: Option<NanoTimestamp>) -> String {
@@ -253,4 +405,30 @@ fn default_download_dir() -> PathBuf {
     dirs::download_dir()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn image_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .map(|base| base.join("nullspace").join("images"))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join(".cache").join("images"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn fit_size_preserving_aspect(aspect: f32, max_width: f32, max_height: f32) -> (f32, f32) {
+    let safe_aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    let mut width = max_width;
+    let mut height = width / safe_aspect;
+    if height > max_height {
+        height = max_height;
+        width = height * safe_aspect;
+    }
+    (width.max(1.0), height.max(1.0))
 }

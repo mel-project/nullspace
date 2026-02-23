@@ -27,6 +27,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_with = { version = "3.16.1", features = ["base64"] }
 smol_str = { version = "0.3.4", features = ["serde"] }
+image = "0.25.9"
+fast_image_resize = { version = "6.0.0", features = ["rayon"] }
+fast-thumbhash = "0.2.0"
 sqlx = { version = "0.8.2", features = [
     "runtime-tokio",
     "sqlite",
@@ -44,6 +47,7 @@ nullspace-rpc-pool = { version = "0.0.1", path = "../nullspace-rpc-pool" }
 nullspace-structs = { version = "0.0.1", path = "../nullspace-structs" }
 scopeguard = "1.2.0"
 memmap2 = "0.9.9"
+webp = "0.3.1"
 
 [build-dependencies]
 readme-rustdocifier = "0.1.1"

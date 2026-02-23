@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{Response, Widget};
 
 use egui_hooks::UseHookExt;
+use fast_thumbhash::thumb_hash_from_b91;
 use image::GenericImageView;
 use moka::sync::Cache;
 use poll_promise::Promise;
@@ -20,15 +21,27 @@ struct CacheKey {
 
 static IMAGE_CACHE: LazyLock<Cache<CacheKey, eframe::egui::TextureHandle>> = LazyLock::new(|| {
     Cache::builder()
-        .time_to_idle(Duration::from_secs(3600))
+        .time_to_idle(Duration::from_secs(300))
+        .build()
+});
+
+/// Stores any texture for a given file path, regardless of target size.
+/// Used as a fast fallback: if the exact size isn't ready yet but we have
+/// a previously-rendered version, we can display it hardware-scaled while
+/// the Lanczos3 resize runs in the background.
+static ANY_CACHE: LazyLock<Cache<PathBuf, eframe::egui::TextureHandle>> = LazyLock::new(|| {
+    Cache::builder()
+        .time_to_idle(Duration::from_secs(300))
         .build()
 });
 
 pub struct SmoothImage<'a> {
     filename: &'a Path,
+    thumbhash: Option<&'a str>,
     max_size: eframe::egui::Vec2,
     corner_radius: eframe::egui::CornerRadius,
     preserve_aspect_ratio: bool,
+    aspect_ratio: Option<f32>,
     sense: eframe::egui::Sense,
 }
 
@@ -36,9 +49,11 @@ impl<'a> SmoothImage<'a> {
     pub fn new(filename: &'a Path) -> Self {
         Self {
             filename,
+            thumbhash: None,
             max_size: eframe::egui::Vec2::splat(100.0),
             corner_radius: eframe::egui::CornerRadius::ZERO,
             preserve_aspect_ratio: true,
+            aspect_ratio: None,
             sense: eframe::egui::Sense::empty(),
         }
     }
@@ -64,6 +79,17 @@ impl<'a> SmoothImage<'a> {
     pub fn sense(self, sense: eframe::egui::Sense) -> Self {
         Self { sense, ..self }
     }
+
+    pub fn thumbhash(self, thumbhash: Option<&'a str>) -> Self {
+        Self { thumbhash, ..self }
+    }
+
+    pub fn aspect_ratio(self, aspect_ratio: f32) -> Self {
+        Self {
+            aspect_ratio: Some(aspect_ratio),
+            ..self
+        }
+    }
 }
 
 impl Widget for SmoothImage<'_> {
@@ -72,10 +98,11 @@ impl Widget for SmoothImage<'_> {
         let max_texel_box = max_texel_box(pixels_per_point, self.max_size);
         let cache_key = CacheKey {
             filename: self.filename.to_path_buf(),
-            max_texel_box: max_texel_box[0].min(max_texel_box[1]),
+            max_texel_box: max_texel_box[0] * max_texel_box[1],
             preserve_aspect_ratio: self.preserve_aspect_ratio,
         };
 
+        // Fast path: exact-size texture is already cached.
         if let Some(texture) = IMAGE_CACHE.get(&cache_key) {
             let ui_size = texture_size_points(pixels_per_point, texture.size());
             let (rect, response) = ui.allocate_exact_size(ui_size, self.sense);
@@ -85,35 +112,23 @@ impl Widget for SmoothImage<'_> {
                 .paint_at(ui, rect);
             return response;
         }
+        ui.ctx().request_repaint();
+
+        // Look up any previously-rendered texture for this file (possibly a
+        // different target size).  We can show it hardware-scaled as a
+        // placeholder while the Lanczos3 resize runs in the background.
+        let stale_texture = ANY_CACHE.get(&self.filename.to_path_buf());
 
         let promise = ui.use_state(
             PromiseSlot::<Result<eframe::egui::TextureHandle, String>>::new,
             cache_key.clone(),
         );
 
-        if promise.is_idle() {
-            let ctx = ui.ctx().clone();
-            let id = ui.id();
-            let filename = self.filename.to_path_buf();
-            let cache_key = cache_key.clone();
-            let preserve_aspect_ratio = self.preserve_aspect_ratio;
-            let spawned = Promise::spawn_thread("smooth_image", move || {
-                let bytes = std::fs::read(filename).map_err(|e| e.to_string())?;
-                let decoded = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-                let texel_size =
-                    target_texel_size(max_texel_box, decoded.dimensions(), preserve_aspect_ratio);
-                let texture = make_texture(&ctx, decoded, texel_size, id)?;
-                IMAGE_CACHE.insert(cache_key, texture.clone());
-                ctx.request_repaint();
-                Ok(texture)
-            });
-            promise.start(spawned);
-        }
-
         let texture = match promise.poll() {
             Some(Ok(texture)) => Some(texture),
             Some(Err(err)) => {
-                let ui_size = fallback_ui_size(self.max_size, self.preserve_aspect_ratio);
+                let ui_size =
+                    fallback_ui_size(self.max_size, self.preserve_aspect_ratio, self.aspect_ratio);
                 let (rect, response) = ui.allocate_exact_size(ui_size, self.sense);
                 paint_error(ui, rect, &err);
                 return response;
@@ -121,10 +136,25 @@ impl Widget for SmoothImage<'_> {
             None => None,
         };
 
+        // Determine the display size.  Prefer the exact texture's size, then
+        // derive aspect ratio from a stale texture if available, then fall
+        // back to the caller-supplied hint / square.
         let ui_size = texture
             .as_ref()
             .map(|t| texture_size_points(pixels_per_point, t.size()))
-            .unwrap_or_else(|| fallback_ui_size(self.max_size, self.preserve_aspect_ratio));
+            .or_else(|| {
+                stale_texture.as_ref().and_then(|t| {
+                    if !self.preserve_aspect_ratio {
+                        return None; // use fallback (max_size)
+                    }
+                    let [w, h] = t.size();
+                    let stale_size = eframe::egui::Vec2::new(w as f32, h as f32);
+                    Some(scale_to_fit(stale_size, self.max_size))
+                })
+            })
+            .unwrap_or_else(|| {
+                fallback_ui_size(self.max_size, self.preserve_aspect_ratio, self.aspect_ratio)
+            });
         let (rect, response) = ui.allocate_exact_size(ui_size, self.sense);
 
         if let Some(texture) = texture {
@@ -133,7 +163,50 @@ impl Widget for SmoothImage<'_> {
                 .texture_options(eframe::egui::TextureOptions::NEAREST)
                 .paint_at(ui, rect);
         } else {
-            paint_loading(ui, rect, self.corner_radius);
+            // Show the best placeholder we have: a stale texture (hardware-
+            // scaled), or a thumbhash / solid colour.
+            let debounce;
+            if let Some(stale) = &stale_texture {
+                eframe::egui::Image::from_texture(stale)
+                    .corner_radius(self.corner_radius)
+                    .texture_options(eframe::egui::TextureOptions::NEAREST)
+                    .fit_to_exact_size(rect.size())
+                    .paint_at(ui, rect);
+                debounce = true;
+            } else {
+                paint_loading(ui, rect, self.corner_radius, self.thumbhash);
+                debounce = false;
+            }
+
+            if promise.is_idle() && ui.is_rect_visible(rect) {
+                let ctx = ui.ctx().clone();
+                let id = ui.id();
+                let filename = self.filename.to_path_buf();
+                let cache_key = cache_key.clone();
+                let preserve_aspect_ratio = self.preserve_aspect_ratio;
+                let spawned = Promise::spawn_async(async move {
+                    // debounce a bit
+                    if debounce {
+                        smol::Timer::after(Duration::from_millis(50)).await;
+                    }
+                    smol::unblock(move || {
+                        let bytes = std::fs::read(&filename).map_err(|e| e.to_string())?;
+                        let decoded = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+                        let texel_size = target_texel_size(
+                            max_texel_box,
+                            decoded.dimensions(),
+                            preserve_aspect_ratio,
+                        );
+                        let texture = make_texture(&ctx, decoded, texel_size, id)?;
+                        IMAGE_CACHE.insert(cache_key, texture.clone());
+                        ANY_CACHE.insert(filename, texture.clone());
+
+                        Ok(texture)
+                    })
+                    .await
+                });
+                promise.start(spawned);
+            }
         }
 
         response
@@ -155,9 +228,14 @@ fn max_texel_box(pixels_per_point: f32, max_size_points: eframe::egui::Vec2) -> 
 fn fallback_ui_size(
     max_size: eframe::egui::Vec2,
     preserve_aspect_ratio: bool,
+    aspect_ratio: Option<f32>,
 ) -> eframe::egui::Vec2 {
     if preserve_aspect_ratio {
-        scale_to_fit(eframe::egui::Vec2::splat(24.0), max_size)
+        let source = match aspect_ratio {
+            Some(ar) if ar.is_finite() && ar > 0.0 => eframe::egui::Vec2::new(ar, 1.0),
+            _ => eframe::egui::Vec2::splat(1.0),
+        };
+        scale_to_fit(source, max_size)
     } else {
         max_size
     }
@@ -255,7 +333,24 @@ fn paint_loading(
     ui: &mut eframe::egui::Ui,
     rect: eframe::egui::Rect,
     corner_radius: eframe::egui::CornerRadius,
+    thumbhash: Option<&str>,
 ) {
+    if let Some(encoded) = thumbhash
+        && let Ok((w, h, rgba)) = thumb_hash_from_b91(encoded)
+    {
+        let image = eframe::egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+        let texture = ui.ctx().load_texture(
+            format!("smooth_thumbhash_{encoded}"),
+            image,
+            eframe::egui::TextureOptions::LINEAR,
+        );
+        eframe::egui::Image::from_texture(&texture)
+            .corner_radius(corner_radius)
+            .texture_options(eframe::egui::TextureOptions::LINEAR)
+            .fit_to_exact_size(rect.size())
+            .paint_at(ui, rect);
+        return;
+    }
     ui.painter()
         .rect_filled(rect, corner_radius, eframe::egui::Color32::LIGHT_GRAY);
     // eframe::egui::Spinner::new().paint_at(ui, rect);

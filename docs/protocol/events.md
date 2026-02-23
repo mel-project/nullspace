@@ -22,3 +22,4 @@ The `mime` field indicates how to interpret `body`. For human chat messages, `bo
 | `application/vnd.nullspace.v1.group_invite` | Group invite payload | JSON | Username |
 | `application/vnd.nullspace.v1.group_manage` | Group management command | JSON | Group ID |
 | `application/vnd.nullspace.v1.attachment` | File attachment root | JSON | Username or group ID |
+| `application/vnd.nullspace.v1.imageattachment` | Compressed image attachment (`[thumbhash, inner_attachment]`) | JSON | Username or group ID |

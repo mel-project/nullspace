@@ -5,14 +5,19 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use anyctx::AnyCtx;
 use bytes::Bytes;
+use fast_image_resize as fr;
+use fast_thumbhash::rgba_to_thumb_hash_b91;
 
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use nullspace_crypt::aead::AeadKey;
-use nullspace_crypt::hash::{BcsHashExt, Hash};
-use nullspace_structs::fragment::{Attachment, Fragment, FragmentLeaf, FragmentNode};
+use nullspace_crypt::hash::{BcsHashExt, BytesHashExt, Hash};
+use nullspace_structs::fragment::{
+    Attachment, Fragment, FragmentLeaf, FragmentNode, ImageAttachment,
+};
 use nullspace_structs::server::ServerClient;
 use nullspace_structs::username::UserName;
 use parking_lot::Mutex;
@@ -27,13 +32,17 @@ use crate::database::{DATABASE, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::events::emit_event;
 use crate::identity::Identity;
-use crate::internal::{Event, InternalRpcError};
+use crate::internal::{Event, InternalRpcError, UploadedRoot};
 use crate::server::get_server_client;
 
 const MAX_CHUNK_SIZE: usize = 512 * 1024;
 const MAX_FANOUT: usize = 16;
 
 const TRANSFER_CONCURRENCY: usize = 16;
+const IMAGE_MAX_DIMENSION: u32 = 2000;
+const IMAGE_TARGET_SIZE_BYTES: usize = 500_000;
+const IMAGE_WEBP_QUALITY: f32 = 70.0;
+const THUMBHASH_MAX_DIMENSION: u32 = 100;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -51,14 +60,48 @@ pub async fn attachment_upload(
     let upload_id = rand::random();
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        if let Err(err) = upload_inner(&ctx, absolute_path, mime, upload_id).await {
-            emit_event(
+        match upload_inner(&ctx, absolute_path, mime, upload_id).await {
+            Ok(root) => emit_event(
+                &ctx,
+                Event::UploadDone {
+                    id: upload_id,
+                    root: UploadedRoot::Attachment(root),
+                },
+            ),
+            Err(err) => emit_event(
                 &ctx,
                 Event::UploadFailed {
                     id: upload_id,
                     error: err.to_string(),
                 },
-            );
+            ),
+        }
+    });
+    Ok(upload_id)
+}
+
+pub async fn image_attachment_upload(
+    ctx: &AnyCtx<Config>,
+    absolute_path: PathBuf,
+) -> anyhow::Result<i64> {
+    let upload_id = rand::random();
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        match upload_image_inner(&ctx, absolute_path, upload_id).await {
+            Ok(root) => emit_event(
+                &ctx,
+                Event::UploadDone {
+                    id: upload_id,
+                    root: UploadedRoot::ImageAttachment(root),
+                },
+            ),
+            Err(err) => emit_event(
+                &ctx,
+                Event::UploadFailed {
+                    id: upload_id,
+                    error: err.to_string(),
+                },
+            ),
         }
     });
     Ok(upload_id)
@@ -69,7 +112,7 @@ async fn upload_inner(
     absolute_path: PathBuf,
     mime: SmolStr,
     upload_id: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Attachment> {
     let db = ctx.get(DATABASE);
     if !identity_exists(db).await? {
         return Err(InternalRpcError::NotReady.into());
@@ -129,8 +172,9 @@ async fn upload_inner(
                 if let Err(err) = response {
                     return Err(anyhow::anyhow!(err.to_string()));
                 }
-                let uploaded_size =
-                    uploaded_size.fetch_add(chunk_len as u64, std::sync::atomic::Ordering::Relaxed);
+                let uploaded_size = uploaded_size
+                    .fetch_add(chunk_len as u64, std::sync::atomic::Ordering::Relaxed)
+                    .saturating_add(chunk_len as u64);
                 emit_event(
                     &ctx,
                     Event::UploadProgress {
@@ -173,21 +217,143 @@ async fn upload_inner(
         }
     }
 
-    let root = Attachment {
+    Ok(Attachment {
         filename: SmolStr::new(filename),
         mime,
         children: current_level,
         content_key,
-    };
+    })
+}
 
-    emit_event(
+async fn upload_image_inner(
+    ctx: &AnyCtx<Config>,
+    absolute_path: PathBuf,
+    upload_id: i64,
+) -> anyhow::Result<ImageAttachment> {
+    let source_bytes = tokio::fs::read(&absolute_path).await?;
+    let (webp_bytes, thumbhash, width, height) =
+        tokio::task::spawn_blocking(move || prepare_webp_and_thumbhash(&source_bytes))
+            .await
+            .map_err(|err| anyhow::anyhow!("image preprocessing task failed: {err}"))??;
+
+    let filename_hash = webp_bytes.bytes_hash();
+    let filename = format!("nullspace-{filename_hash}.webp");
+    let temp_path = std::env::temp_dir()
+        .join("nullspace-image-upload")
+        .join(&filename);
+    let parent = temp_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid temporary upload path"))?;
+    tokio::fs::create_dir_all(parent).await?;
+    tokio::fs::write(&temp_path, &webp_bytes).await?;
+
+    let upload_result = upload_inner(
         ctx,
-        Event::UploadDone {
-            id: upload_id,
-            root,
-        },
+        temp_path.clone(),
+        SmolStr::new("image/webp"),
+        upload_id,
+    )
+    .await;
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    let inner = upload_result?;
+
+    Ok(ImageAttachment {
+        width,
+        height,
+        thumbhash,
+        inner,
+    })
+}
+
+fn prepare_webp_and_thumbhash(source_bytes: &[u8]) -> anyhow::Result<(Vec<u8>, String, u32, u32)> {
+    let decoded = image::load_from_memory(source_bytes)?;
+    let src = decoded.to_rgba8();
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return Err(anyhow::anyhow!("image has invalid dimensions"));
+    }
+
+    let (mut width, mut height) = fit_within(src_w, src_h, IMAGE_MAX_DIMENSION);
+    let quality = IMAGE_WEBP_QUALITY;
+    tracing::debug!(
+        width,
+        height,
+        quality,
+        "image upload compression parameters"
     );
-    Ok(())
+
+    loop {
+        let resized = resize_rgba_with_fir(&src, width, height)?;
+        let webp_bytes = encode_webp(&resized)?;
+        if webp_bytes.len() <= IMAGE_TARGET_SIZE_BYTES || (width == 1 && height == 1) {
+            let thumbhash = make_thumbhash_b91(&resized)?;
+            return Ok((webp_bytes, thumbhash, src_w, src_h));
+        }
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+    }
+}
+
+fn fit_within(width: u32, height: u32, max_side: u32) -> (u32, u32) {
+    let longest = width.max(height);
+    if longest <= max_side {
+        return (width, height);
+    }
+    let scale = max_side as f64 / longest as f64;
+    let new_w = ((width as f64) * scale).round().max(1.0) as u32;
+    let new_h = ((height as f64) * scale).round().max(1.0) as u32;
+    (new_w, new_h)
+}
+
+fn resize_rgba_with_fir(
+    src: &image::RgbaImage,
+    dst_w: u32,
+    dst_h: u32,
+) -> anyhow::Result<image::RgbaImage> {
+    if src.width() == dst_w && src.height() == dst_h {
+        return Ok(src.clone());
+    }
+    let mut src_image = fr::images::Image::from_vec_u8(
+        src.width(),
+        src.height(),
+        src.as_raw().clone(),
+        fr::PixelType::U8x4,
+    )
+    .map_err(|err| anyhow::anyhow!("failed to prepare source image: {err}"))?;
+    let srgb_mapper = fr::create_srgb_mapper();
+    srgb_mapper
+        .forward_map_inplace(&mut src_image)
+        .map_err(|err| anyhow::anyhow!("failed to linearize source image: {err}"))?;
+
+    let mut dst_image = fr::images::Image::new(dst_w, dst_h, fr::PixelType::U8x4);
+    let options =
+        fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
+    let mut resizer = fr::Resizer::new();
+    resizer
+        .resize(&src_image, &mut dst_image, Some(&options))
+        .map_err(|err| anyhow::anyhow!("failed to resize image: {err}"))?;
+    srgb_mapper
+        .backward_map_inplace(&mut dst_image)
+        .map_err(|err| anyhow::anyhow!("failed to convert resized image from linear RGB: {err}"))?;
+
+    image::RgbaImage::from_raw(dst_w, dst_h, dst_image.buffer().to_vec())
+        .ok_or_else(|| anyhow::anyhow!("failed to rebuild resized image"))
+}
+
+fn encode_webp(image: &image::RgbaImage) -> anyhow::Result<Vec<u8>> {
+    let encoded = webp::Encoder::from_rgba(image.as_raw(), image.width(), image.height())
+        .encode(IMAGE_WEBP_QUALITY);
+    Ok(encoded.to_vec())
+}
+
+fn make_thumbhash_b91(image: &image::RgbaImage) -> anyhow::Result<String> {
+    let (thumb_w, thumb_h) = fit_within(image.width(), image.height(), THUMBHASH_MAX_DIMENSION);
+    let preview = resize_rgba_with_fir(image, thumb_w, thumb_h)?;
+    Ok(rgba_to_thumb_hash_b91(
+        thumb_w as usize,
+        thumb_h as usize,
+        preview.as_raw(),
+    ))
 }
 
 pub async fn attachment_download(

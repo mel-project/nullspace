@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use eframe::egui::{Response, Widget};
 use egui_hooks::UseHookExt;
 use nullspace_crypt::hash::BcsHashExt;
-use nullspace_structs::fragment::Attachment;
+use nullspace_structs::fragment::ImageAttachment;
 use nullspace_structs::username::UserName;
 
 use crate::promises::flatten_rpc;
@@ -13,7 +13,7 @@ use crate::widgets::smooth::SmoothImage;
 
 pub struct Avatar {
     pub sender: UserName,
-    pub attachment: Option<Attachment>,
+    pub attachment: Option<ImageAttachment>,
     pub size: f32,
 }
 
@@ -49,7 +49,7 @@ impl Widget for Avatar {
                 smol::spawn(async move {
                     let _ = flatten_rpc(
                         get_rpc()
-                            .attachment_download_oneshot(sender, attachment, save_to)
+                            .attachment_download_oneshot(sender, attachment.inner, save_to)
                             .await,
                     );
                 })
@@ -60,6 +60,7 @@ impl Widget for Avatar {
                 let size = eframe::egui::vec2(self.size, self.size);
                 ui.add(
                     SmoothImage::new(path.as_path())
+                        .thumbhash(Some(attachment.thumbhash.as_str()))
                         .fit_to_size(size)
                         .corner_radius(circle_corner_radius)
                         .preserve_aspect_ratio(false)
@@ -98,8 +99,8 @@ fn paint_avatar_placeholder(ui: &eframe::egui::Ui, rect: eframe::egui::Rect, use
     );
 }
 
-fn avatar_cache_path(attachment: &Attachment) -> Option<PathBuf> {
+fn avatar_cache_path(attachment: &ImageAttachment) -> Option<PathBuf> {
     let base = dirs::cache_dir()?;
-    let filename = attachment.bcs_hash().to_string();
+    let filename = attachment.inner.bcs_hash().to_string();
     Some(base.join("nullspace").join("avatars").join(filename))
 }

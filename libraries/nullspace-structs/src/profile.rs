@@ -4,13 +4,13 @@ use nullspace_crypt::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{fragment::Attachment, timestamp::Timestamp};
+use crate::{fragment::ImageAttachment, timestamp::Timestamp};
 
 /// A signed user profile, containing the profile picture and various other objects.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserProfile {
     pub display_name: Option<String>,
-    pub avatar: Option<Attachment>,
+    pub avatar: Option<ImageAttachment>,
     pub created: Timestamp,
 
     pub signature: Signature,

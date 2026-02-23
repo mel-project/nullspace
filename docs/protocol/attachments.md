@@ -17,6 +17,13 @@ The attachment root is an index that:
 
 Fragments are stored on the uploader’s server in a content-addressed store and are fetched by recipients from that server.
 
+Image messages use a related event MIME, `application/vnd.nullspace.v1.imageattachment`, whose JSON body is:
+
+- `width`: original image width in pixels
+- `height`: original image height in pixels
+- `thumbhash`: base91 ThumbHash string
+- `inner`: attachment root object
+
 ## Content addressing
 
 Fragments and roots are identified by a 32-byte hash:

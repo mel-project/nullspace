@@ -11,11 +11,11 @@ use smol_str::SmolStr;
 use crate::event::EventPayload;
 
 /// An image attachment, with image-specific metadata.
-#[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ImageAttachment {
-    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
-    pub thumbhash: Bytes,
+    pub width: u32,
+    pub height: u32,
+    pub thumbhash: String,
     pub inner: Attachment,
 }
 

@@ -8,7 +8,7 @@ use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature};
 use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::event::EventPayload;
-use nullspace_structs::fragment::Attachment;
+use nullspace_structs::fragment::{Attachment, ImageAttachment};
 use nullspace_structs::group::{GroupId, GroupInviteMsg};
 use nullspace_structs::profile::UserProfile;
 use nullspace_structs::server::{
@@ -207,6 +207,15 @@ pub trait InternalProtocol {
         mime: SmolStr,
     ) -> Result<i64, InternalRpcError>;
 
+    /// Starts an asynchronous image upload.
+    ///
+    /// The image is resized/compressed to a WEBP payload, a ThumbHash string
+    /// is generated, and then the result is uploaded as an attachment tree.
+    /// Progress is reported through [`Event::UploadProgress`], and completion
+    /// is reported through [`Event::UploadDone`] with an
+    /// [`UploadedRoot::ImageAttachment`] payload.
+    async fn image_attachment_upload(&self, absolute_path: PathBuf) -> Result<i64, InternalRpcError>;
+
     /// Starts an asynchronous attachment download.
     ///
     /// The fragment tree is fetched from the sender's server, decrypted,
@@ -250,7 +259,7 @@ pub trait InternalProtocol {
     async fn own_profile_set(
         &self,
         display_name: Option<String>,
-        avatar: Option<Attachment>,
+        avatar: Option<ImageAttachment>,
     ) -> Result<(), InternalRpcError>;
 
     /// Fetches detailed information about a user, including their profile,
@@ -309,8 +318,9 @@ pub enum Event {
     UploadDone {
         /// The upload ID.
         id: i64,
-        /// The attachment root that can be sent in a message.
-        root: Attachment,
+        /// The uploaded payload root that can be sent in a message or used as
+        /// a profile avatar.
+        root: UploadedRoot,
     },
 
     /// A file upload failed.
@@ -338,6 +348,14 @@ pub enum Event {
         attachment_id: Hash,
         error: String,
     },
+}
+
+/// Typed upload completion payload.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UploadedRoot {
+    Attachment(Attachment),
+    ImageAttachment(ImageAttachment),
 }
 
 /// Information about an existing user, returned by
@@ -440,8 +458,8 @@ pub struct UserDetails {
     pub username: UserName,
     /// Display name from the user's signed profile, if set.
     pub display_name: Option<String>,
-    /// Avatar attachment from the user's signed profile, if set.
-    pub avatar: Option<Attachment>,
+    /// Avatar image attachment from the user's signed profile, if set.
+    pub avatar: Option<ImageAttachment>,
     /// The server the user is registered on.
     pub server_name: Option<ServerName>,
     /// Groups that both the local user and this user belong to.
@@ -594,6 +612,10 @@ impl InternalProtocol for InternalImpl {
                 SmolStr::new(Attachment::mime()),
                 Bytes::from(serde_json::to_vec(&root).map_err(internal_err)?),
             ),
+            OutgoingMessage::ImageAttachment(root) => (
+                SmolStr::new(ImageAttachment::mime()),
+                Bytes::from(serde_json::to_vec(&root).map_err(internal_err)?),
+            ),
         };
         let mut conn = db.acquire().await.map_err(internal_err)?;
         let id = queue_message(&mut conn, &convo_id, &identity.username, &mime, &body)
@@ -705,6 +727,12 @@ impl InternalProtocol for InternalImpl {
             .map_err(map_anyhow_err)
     }
 
+    async fn image_attachment_upload(&self, absolute_path: PathBuf) -> Result<i64, InternalRpcError> {
+        attachments::image_attachment_upload(&self.ctx, absolute_path)
+            .await
+            .map_err(map_anyhow_err)
+    }
+
     async fn attachment_download(
         &self,
         attachment_id: nullspace_crypt::hash::Hash,
@@ -748,7 +776,7 @@ impl InternalProtocol for InternalImpl {
             && let Some(avatar) = profile.avatar.as_ref()
         {
             let mut conn = db.acquire().await.map_err(internal_err)?;
-            store_attachment_root(&mut conn, &username, avatar)
+            store_attachment_root(&mut conn, &username, &avatar.inner)
                 .await
                 .map_err(internal_err)?;
         }
@@ -787,7 +815,7 @@ impl InternalProtocol for InternalImpl {
     async fn own_profile_set(
         &self,
         display_name: Option<String>,
-        avatar: Option<Attachment>,
+        avatar: Option<ImageAttachment>,
     ) -> Result<(), InternalRpcError> {
         let db = self.ctx.get(DATABASE);
         if !identity_exists(db).await.map_err(internal_err)? {
@@ -1218,6 +1246,30 @@ async fn decode_message_content(
                 size: root.total_size(),
                 mime: root.mime,
                 filename: root.filename.clone(),
+            })
+        }
+        mime if mime == ImageAttachment::mime() => {
+            let image_root = match serde_json::from_slice::<ImageAttachment>(body) {
+                Ok(root) => root,
+                Err(err) => {
+                    tracing::warn!(
+                        message_id,
+                        error = %err,
+                        "failed to decode image attachment root"
+                    );
+                    return Err(anyhow::anyhow!("invalid image attachment root"));
+                }
+            };
+            let id =
+                store_attachment_root(&mut *db.acquire().await?, sender, &image_root.inner).await?;
+            Ok(MessageContent::ImageAttachment {
+                id,
+                size: image_root.inner.total_size(),
+                mime: image_root.inner.mime.clone(),
+                filename: image_root.inner.filename.clone(),
+                width: image_root.width,
+                height: image_root.height,
+                thumbhash: image_root.thumbhash,
             })
         }
         _ => Ok(MessageContent::PlainText("Unsupported message".to_string())),

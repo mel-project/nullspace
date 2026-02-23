@@ -5,8 +5,8 @@ use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::{State, Var};
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
-use nullspace_client::internal::UserDetails;
-use nullspace_structs::fragment::Attachment;
+use nullspace_client::internal::{UploadedRoot, UserDetails};
+use nullspace_structs::fragment::ImageAttachment;
 use pollster::FutureExt;
 use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, Style};
@@ -21,13 +21,13 @@ use crate::widgets::avatar::Avatar;
 enum AvatarChoice {
     Keep,
     Clear,
-    Set(Attachment),
+    Set(ImageAttachment),
 }
 
 #[derive(Clone)]
 struct SaveRequest {
     display_name: Option<String>,
-    avatar: Option<Attachment>,
+    avatar: Option<ImageAttachment>,
 }
 
 enum SaveOutcome {
@@ -247,7 +247,15 @@ impl Widget for ProfileInner<'_> {
                             ui.add(eframe::egui::ProgressBar::new(progress).text("Uploading..."));
                         } else if let Some(done) = self.app.state.upload_done.get(&upload_id) {
                             let root = done.clone();
-                            avatar_choice.set_next(AvatarChoice::Set(root));
+                            match root {
+                                UploadedRoot::ImageAttachment(root) => {
+                                    avatar_choice.set_next(AvatarChoice::Set(root));
+                                }
+                                UploadedRoot::Attachment(_) => {
+                                    self.app.state.error_dialog =
+                                        Some("avatar upload produced non-image payload".to_string());
+                                }
+                            }
                             avatar_upload_id.set_next(None);
                             self.app.state.upload_done.remove(&upload_id);
                             self.app.state.upload_progress.remove(&upload_id);
@@ -336,7 +344,7 @@ fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &State<Option<i64>>, p
         app.state.error_dialog = Some("avatar must be an image".to_string());
         return;
     }
-    let Ok(id) = flatten_rpc(get_rpc().attachment_upload(path, mime).block_on()) else {
+    let Ok(id) = flatten_rpc(get_rpc().image_attachment_upload(path).block_on()) else {
         return;
     };
     upload_id.set_next(Some(id));

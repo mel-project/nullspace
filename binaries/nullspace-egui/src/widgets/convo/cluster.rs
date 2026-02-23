@@ -15,6 +15,7 @@ pub struct MessageRenderMeta {
 enum MessageKind {
     Text,
     Attachment,
+    ImageAttachment,
     GroupInvite,
 }
 
@@ -22,6 +23,7 @@ fn message_kind(message: &ConvoMessage) -> MessageKind {
     match message.body {
         MessageContent::PlainText(_) => MessageKind::Text,
         MessageContent::Attachment { .. } => MessageKind::Attachment,
+        MessageContent::ImageAttachment { .. } => MessageKind::ImageAttachment,
         MessageContent::GroupInvite { .. } => MessageKind::GroupInvite,
     }
 }

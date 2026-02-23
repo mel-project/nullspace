@@ -277,7 +277,7 @@ user_profile = { display_name, avatar, created, signature }
 ```
 
 - `display_name`: string or `null`
-- `avatar`: attachment root object or `null` (see [attachments](attachments.md))
+- `avatar`: image attachment object or `null` (see [attachments](attachments.md))
 - `created`: Unix timestamp (seconds)
 - `signature`: Ed25519 signature (base64url)
 

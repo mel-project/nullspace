@@ -3,7 +3,7 @@ use egui::{Button, Color32, Image, Label, Modal, ProgressBar, ScrollArea, TextEd
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use egui_infinite_scroll::InfiniteScroll;
-use nullspace_client::internal::{ConvoId, ConvoMessage, OutgoingMessage};
+use nullspace_client::internal::{ConvoId, ConvoMessage, OutgoingMessage, UploadedRoot};
 use nullspace_structs::username::UserName;
 use pollster::block_on;
 use smol_str::SmolStr;
@@ -318,7 +318,12 @@ fn start_upload(attachment: &mut Var<Option<i64>>, path: PathBuf) {
         "picked an attachment, starting upload..."
     );
     let mime = infer_mime(&path);
-    let Ok(upload_id) = flatten_rpc(block_on(get_rpc().attachment_upload(path, mime))) else {
+    let result = if mime.starts_with("image/") {
+        flatten_rpc(block_on(get_rpc().image_attachment_upload(path)))
+    } else {
+        flatten_rpc(block_on(get_rpc().attachment_upload(path, mime)))
+    };
+    let Ok(upload_id) = result else {
         return;
     };
     attachment.replace(upload_id);
@@ -348,11 +353,11 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
             let root = done.clone();
             let convo_id = convo_id.clone();
             smol::spawn(async move {
-                let _ = flatten_rpc(
-                    get_rpc()
-                        .convo_send(convo_id, OutgoingMessage::Attachment(root))
-                        .await,
-                );
+                let message = match root {
+                    UploadedRoot::Attachment(root) => OutgoingMessage::Attachment(root),
+                    UploadedRoot::ImageAttachment(root) => OutgoingMessage::ImageAttachment(root),
+                };
+                let _ = flatten_rpc(get_rpc().convo_send(convo_id, message).await);
             })
             .detach();
             *attachment = None;

@@ -196,6 +196,12 @@ async fn process_group_message_entry(
     {
         let _ = store_attachment_root(&mut conn, &sender, &root).await;
     }
+    if content.mime == nullspace_structs::fragment::ImageAttachment::mime()
+        && let Ok(root) =
+            serde_json::from_slice::<nullspace_structs::fragment::ImageAttachment>(&content.body)
+    {
+        let _ = store_attachment_root(&mut conn, &sender, &root.inner).await;
+    }
     let convo_id = ensure_convo_id(&mut *conn, "group", &group.group_id.to_string()).await?;
     sqlx::query(
         "INSERT OR IGNORE INTO convo_messages \

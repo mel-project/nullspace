@@ -7,10 +7,12 @@ use clap::Parser;
 
 use egui::Modal;
 use egui_file_dialog::FileDialog as EguiFileDialog;
-use nullspace_client::{Client, Config, internal::Event};
+use nullspace_client::{
+    Client, Config,
+    internal::{Event, UploadedRoot},
+};
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::SigningPublic;
-use nullspace_structs::fragment::Attachment;
 use smol::channel::Receiver;
 use url::Url;
 
@@ -80,10 +82,12 @@ struct AppState {
     attach_updates: u64,
 
     upload_progress: BTreeMap<i64, (u64, u64)>,
-    upload_done: BTreeMap<i64, Attachment>,
+    upload_done: BTreeMap<i64, UploadedRoot>,
     upload_error: BTreeMap<i64, String>,
     download_progress: BTreeMap<Hash, (u64, u64)>,
     download_error: BTreeMap<Hash, String>,
+
+    image_viewer: Option<PathBuf>,
 }
 
 impl NullspaceApp {
@@ -174,6 +178,7 @@ impl NullspaceApp {
                 upload_error: BTreeMap::new(),
                 download_progress: BTreeMap::new(),
                 download_error: BTreeMap::new(),
+                image_viewer: None,
             },
         }
     }
@@ -297,6 +302,7 @@ impl eframe::App for NullspaceApp {
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add(widgets::image_viewer::ImageViewer(&mut self.state.image_viewer));
             if let Some(e) = self.state.error_dialog.clone() {
                 Modal::new("error_modal".into()).show(ctx, |ui| {
                     ui.heading("Error");

@@ -77,6 +77,21 @@ impl fmt::Display for HashParseError {
 
 impl std::error::Error for HashParseError {}
 
+/// Extension trait for hashing raw byte slices directly.
+pub trait BytesHashExt: AsRef<[u8]> {
+    /// Hash raw bytes with BLAKE3.
+    fn bytes_hash(&self) -> Hash;
+}
+
+impl<T> BytesHashExt for T
+where
+    T: AsRef<[u8]>,
+{
+    fn bytes_hash(&self) -> Hash {
+        Hash::digest(self.as_ref())
+    }
+}
+
 /// Extension trait for hashing any BCS-serializable value.
 pub trait BcsHashExt: Serialize {
     /// Serialize with BCS and hash the resulting bytes.

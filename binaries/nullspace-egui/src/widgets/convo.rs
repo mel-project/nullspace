@@ -36,6 +36,86 @@ type Scroller = InfiniteScroll<ConvoMessage, i64>;
 
 pub struct Convo<'a>(pub &'a mut NullspaceApp, pub ConvoId);
 
+impl Widget for Convo<'_> {
+    fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        let app = self.0;
+        let convo_id = self.1;
+        let convo_id = ui.use_gbox(|| convo_id, ());
+        let scroller = ui.use_gbox(move || new_scroller(convo_id.get()), ());
+        let read_up_to = scroller.read().items.last().map(|m| m.id);
+        ui.use_state(
+            move || {
+                smol::spawn(async move {
+                    smol::Timer::after(Duration::from_secs(1)).await;
+                    if let Some(val) = read_up_to {
+                        let _ = get_rpc().convo_mark_read(convo_id.get(), val).await;
+                    }
+                })
+            },
+            read_up_to,
+        );
+
+        let response = ui.push_id(&*convo_id.read(), |ui| {
+            let mut show_roster: Var<bool> = ui.use_state(|| false, ()).into_var();
+            let mut user_info_target: Option<UserName> = None;
+            let mut last_update_seen: Var<u64> =
+                ui.use_state(|| app.state.msg_updates, ()).into_var();
+            let mut scroller = scroller.write();
+
+            if *last_update_seen != app.state.msg_updates {
+                refresh_newer(convo_id.get(), &mut scroller);
+                *last_update_seen = app.state.msg_updates;
+            }
+
+            let full_rect = ui.available_rect_before_wrap();
+            let header_height = 40.0;
+            let composer_height = 100.0;
+            let width = full_rect.width();
+            let header_rect =
+                egui::Rect::from_min_size(full_rect.min, egui::vec2(width, header_height));
+            let messages_height = (full_rect.height() - header_height - composer_height).max(0.0);
+            let messages_rect = egui::Rect::from_min_size(
+                egui::pos2(full_rect.min.x, full_rect.min.y + header_height),
+                egui::vec2(width, messages_height),
+            );
+            let composer_rect = egui::Rect::from_min_size(
+                egui::pos2(full_rect.min.x, full_rect.max.y - composer_height),
+                egui::vec2(width, composer_height),
+            );
+
+            ui.allocate_rect(full_rect, egui::Sense::hover());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+                render_header(
+                    app,
+                    ui,
+                    convo_id.get(),
+                    &mut show_roster,
+                    &mut user_info_target,
+                );
+            });
+            ui.scope_builder(egui::UiBuilder::new().max_rect(messages_rect), |ui| {
+                render_messages(ui, app, &mut scroller);
+            });
+            ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
+                render_composer(ui, app, convo_id.get());
+            });
+
+            if let ConvoId::Group { group_id } = convo_id.get() {
+                ui.add(GroupRoster {
+                    app,
+                    open: &mut show_roster,
+                    group: group_id,
+                    user_info: &mut user_info_target,
+                });
+            }
+            ui.add(UserInfo(user_info_target));
+
+            ui.response()
+        });
+        response.inner
+    }
+}
+
 fn infer_mime(path: &Path) -> SmolStr {
     infer::get_from_path(path)
         .ok()
@@ -125,87 +205,6 @@ fn refresh_newer(convo_id: ConvoId, scroller: &mut Scroller) {
     scroller.items = by_id.into_values().collect();
     if replaced_existing {
         scroller.reset_virtual_list();
-    }
-}
-
-impl Widget for Convo<'_> {
-    fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let app = self.0;
-        let convo_id = self.1;
-        let convo_id = ui.use_gbox(|| convo_id, ());
-
-        let scroller = ui.use_gbox(move || new_scroller(convo_id.get()), ());
-        let read_up_to = scroller.read().items.last().map(|m| m.id);
-        ui.use_state(
-            move || {
-                smol::spawn(async move {
-                    smol::Timer::after(Duration::from_secs(1)).await;
-                    if let Some(val) = read_up_to {
-                        let _ = get_rpc().convo_mark_read(convo_id.get(), val).await;
-                    }
-                })
-            },
-            read_up_to,
-        );
-
-        let response = ui.push_id(&*convo_id.read(), |ui| {
-            let mut show_roster: Var<bool> = ui.use_state(|| false, ()).into_var();
-            let mut user_info_target: Option<UserName> = None;
-            let mut last_update_seen: Var<u64> =
-                ui.use_state(|| app.state.msg_updates, ()).into_var();
-            let mut scroller = scroller.write();
-
-            if *last_update_seen != app.state.msg_updates {
-                refresh_newer(convo_id.get(), &mut scroller);
-                *last_update_seen = app.state.msg_updates;
-            }
-
-            let full_rect = ui.available_rect_before_wrap();
-            let header_height = 40.0;
-            let composer_height = 100.0;
-            let width = full_rect.width();
-            let header_rect =
-                egui::Rect::from_min_size(full_rect.min, egui::vec2(width, header_height));
-            let messages_height = (full_rect.height() - header_height - composer_height).max(0.0);
-            let messages_rect = egui::Rect::from_min_size(
-                egui::pos2(full_rect.min.x, full_rect.min.y + header_height),
-                egui::vec2(width, messages_height),
-            );
-            let composer_rect = egui::Rect::from_min_size(
-                egui::pos2(full_rect.min.x, full_rect.max.y - composer_height),
-                egui::vec2(width, composer_height),
-            );
-
-            ui.allocate_rect(full_rect, egui::Sense::hover());
-            ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
-                render_header(
-                    app,
-                    ui,
-                    convo_id.get(),
-                    &mut show_roster,
-                    &mut user_info_target,
-                );
-            });
-            ui.scope_builder(egui::UiBuilder::new().max_rect(messages_rect), |ui| {
-                render_messages(ui, app, &mut scroller);
-            });
-            ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
-                render_composer(ui, app, convo_id.get());
-            });
-
-            if let ConvoId::Group { group_id } = convo_id.get() {
-                ui.add(GroupRoster {
-                    app,
-                    open: &mut show_roster,
-                    group: group_id,
-                    user_info: &mut user_info_target,
-                });
-            }
-            ui.add(UserInfo(user_info_target));
-
-            ui.response()
-        });
-        response.inner
     }
 }
 

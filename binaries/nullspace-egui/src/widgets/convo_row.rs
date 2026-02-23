@@ -2,7 +2,7 @@ use core::f32;
 use std::path::PathBuf;
 
 use eframe::egui::{Response, RichText, Widget};
-use egui::{Color32, CornerRadius, ProgressBar, TextFormat, TextStyle, text::LayoutJob};
+use egui::{Color32, ProgressBar, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use nullspace_client::internal::{ConvoMessage, MessageContent};
 use nullspace_crypt::hash::Hash;
@@ -15,7 +15,6 @@ use crate::utils::color::username_color;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::utils::units::{format_filesize, unit_for_bytes};
-use crate::widgets::smooth::SmoothImage;
 use crate::{NullspaceApp, widgets::avatar::Avatar};
 
 pub struct ConvoRow<'a> {
@@ -140,15 +139,14 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
             MessageContent::Attachment {
                 id,
                 size,
-                mime,
                 filename,
+                ..
             } => {
                 ui.push_id(id, |ui| {
                     ui.add(AttachmentContent {
                         app,
                         id: *id,
                         size: *size,
-                        mime,
                         filename,
                     });
                 });
@@ -174,7 +172,6 @@ struct AttachmentContent<'a> {
     app: &'a mut NullspaceApp,
     id: Hash,
     size: u64,
-    mime: &'a str,
     filename: &'a str,
 }
 
@@ -184,7 +181,6 @@ impl Widget for AttachmentContent<'_> {
             || flatten_rpc(get_rpc().attachment_status(self.id).block_on()),
             self.app.state.attach_updates,
         );
-        let dl_path = status.as_ref().ok().and_then(|s| s.saved_to.as_ref());
         let dl_progress = self
             .app
             .state
@@ -192,7 +188,6 @@ impl Widget for AttachmentContent<'_> {
             .get(&self.id)
             .map(|(downloaded, total)| (*downloaded, *total));
         let dl_error = self.app.state.download_error.get(&self.id);
-        let image_downloading = ui.use_state(|| false, ());
 
         defmac::defmac!(start_dl => {
             let save_dir = default_download_dir();
@@ -204,25 +199,6 @@ impl Widget for AttachmentContent<'_> {
             format!("\u{ea7b} [{} {}] {}", size_text, unit_suffix, self.filename);
 
         ui.colored_label(Color32::DARK_BLUE, attachment_label);
-
-        if self.mime.starts_with("image/") {
-            if let Some(path) = dl_path {
-                let box_width = ui.available_width().min(500.0);
-                let max_box = egui::vec2(ui.available_width(), box_width * 0.6);
-
-                ui.add(
-                    SmoothImage::new(path.as_path())
-                        .fit_to_size(max_box)
-                        .corner_radius(CornerRadius::ZERO.at_least(4)),
-                );
-            } else if !*image_downloading
-                && let Some(limit) = self.app.state.prefs.max_auto_image_download_bytes
-                && self.size <= limit
-            {
-                image_downloading.set_next(true);
-                start_dl!();
-            }
-        }
 
         if let Some((downloaded, total)) = dl_progress {
             let speed_key = format!("download-{}", self.id);

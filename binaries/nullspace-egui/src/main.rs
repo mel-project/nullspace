@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 
-use egui::{Modal, Spinner};
+use egui::Modal;
 use egui_file_dialog::FileDialog as EguiFileDialog;
 use nullspace_client::{Client, Config, internal::Event};
 use nullspace_crypt::hash::Hash;

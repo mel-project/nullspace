@@ -3,12 +3,12 @@ use egui::{Color32, ComboBox, Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
 use nullspace_client::internal::RegisterFinish;
 use nullspace_structs::username::UserName;
+use poll_promise::Promise;
 
 use crate::NullspaceApp;
-use crate::promises::flatten_rpc;
+use crate::promises::{PromiseSlot, flatten_rpc};
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
-use crate::utils::generational::UseGBoxExt;
 
 pub struct Login<'a>(pub &'a mut NullspaceApp);
 
@@ -25,65 +25,80 @@ impl Default for LoginStep {
     }
 }
 
+#[derive(Clone)]
+enum LoginRpcOutcome {
+    RegisterStart { user_exists: bool },
+    RegisterFinishBootstrap,
+    RegisterFinishAddDevice,
+}
+
 impl Widget for Login<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let step = ui.use_gbox(LoginStep::default, ());
-        let rpc_running = ui.use_gbox(|| false, ());
-        let rpc_error = ui.use_gbox(|| None::<String>, ());
-        let rpc_notice = ui.use_gbox(|| None::<String>, ());
+        let mut step = ui.use_state(LoginStep::default, ()).into_var();
+        let mut rpc_error = ui.use_state(|| None::<String>, ()).into_var();
+        let mut rpc_notice = ui.use_state(|| None::<String>, ()).into_var();
+        let rpc = ui.use_state(PromiseSlot::<Result<LoginRpcOutcome, String>>::new, ());
         let mut username_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut server_choice = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut pairing_code = ui.use_state(String::new, ()).into_var();
 
+        let rpc_running = rpc.is_running();
+        if let Some(result) = rpc.take() {
+            match result {
+                Ok(LoginRpcOutcome::RegisterStart { user_exists: true }) => {
+                    *step = LoginStep::FinishAddDevice;
+                }
+                Ok(LoginRpcOutcome::RegisterStart { user_exists: false }) => {
+                    *step = LoginStep::FinishBootstrap;
+                }
+                Ok(LoginRpcOutcome::RegisterFinishBootstrap) => {
+                    *rpc_notice = Some("registration submitted".to_string());
+                }
+                Ok(LoginRpcOutcome::RegisterFinishAddDevice) => {
+                    *rpc_notice = Some("device added".to_string());
+                }
+                Err(err) => {
+                    *rpc_error = Some(err);
+                }
+            }
+        }
+
         Modal::new(ui.next_auto_id()).show(ui.ctx(), |ui| {
-            if let Some(err) = rpc_error.read().as_ref() {
+            if let Some(err) = rpc_error.as_ref() {
                 ui.colored_label(Color32::RED, err);
             }
-            if let Some(notice) = rpc_notice.read().as_ref() {
+            if let Some(notice) = rpc_notice.as_ref() {
                 ui.colored_label(Color32::LIGHT_GREEN, notice);
             }
             ui.heading("Login or register");
             ui.separator();
-            match *step.read() {
+            match *step {
                 LoginStep::EnterUsername => {
                     ui.add(
                         TextEdit::singleline(&mut *username_str).hint_text("Enter a @username"),
                     );
 
-                    if *rpc_running.read() {
+                    if rpc_running {
                         ui.add(Spinner::new());
                     } else if ui.add(Button::new("Next")).clicked() {
-                        let username =
-                            match username_str.parse::<nullspace_structs::username::UserName>() {
-                                Ok(username) => username,
-                                Err(err) => {
-                                    self.0.state.error_dialog =
-                                        Some(format!("invalid username: {err}"));
-                                    return;
-                                }
-                            };
-                        *rpc_error.write() = None;
-                        *rpc_notice.write() = None;
-                        *rpc_running.write() = true;
-
-                        let ctx = ui.ctx().clone();
-                        smol::spawn(async move {
-                            match flatten_rpc(get_rpc().register_start(username).await) {
-                                Ok(Some(_info)) => {
-                                    *step.write() = LoginStep::FinishAddDevice;
-                                }
-                                Ok(None) => {
-                                    *step.write() = LoginStep::FinishBootstrap;
-                                }
-                                Err(err) => {
-                                    *rpc_error.write() = Some(format!("register_start: {err}"));
-                                }
+                        let username = match username_str.parse::<UserName>() {
+                            Ok(username) => username,
+                            Err(err) => {
+                                self.0.state.error_dialog = Some(format!("invalid username: {err}"));
+                                return;
                             }
-                            *rpc_running.write() = false;
-                            ctx.request_repaint();
-                        })
-                        .detach();
+                        };
+                        *rpc_error = None;
+                        *rpc_notice = None;
+                        let promise = Promise::spawn_async(async move {
+                            flatten_rpc(get_rpc().register_start(username).await)
+                                .map(|value| LoginRpcOutcome::RegisterStart {
+                                    user_exists: value.is_some(),
+                                })
+                                .map_err(|err| format!("register_start: {err}"))
+                        });
+                        rpc.start(promise);
                     }
                 }
                 LoginStep::FinishBootstrap => {
@@ -130,7 +145,7 @@ impl Widget for Login<'_> {
                         (*server_choice).clone()
                     };
 
-                    let register_enabled = !*rpc_running.read();
+                    let register_enabled = !rpc_running;
 
                     ui.horizontal_centered(|ui| {
                         if ui
@@ -146,32 +161,20 @@ impl Widget for Login<'_> {
                                         return;
                                     }
                                 };
+                            *rpc_error = None;
+                            *rpc_notice = None;
                             let request = RegisterFinish::BootstrapNewUser {
                                 username,
                                 server_name,
                             };
-                            *rpc_error.write() = None;
-                            *rpc_notice.write() = None;
-                            *rpc_running.write() = true;
-
-                            let ctx = ui.ctx().clone();
-                            smol::spawn(async move {
-                                match flatten_rpc(get_rpc().register_finish(request).await) {
-                                    Ok(()) => {
-                                        *rpc_notice.write() =
-                                            Some("registration submitted".to_string());
-                                    }
-                                    Err(err) => {
-                                        *rpc_error.write() =
-                                            Some(format!("register_finish: {err}"));
-                                    }
-                                }
-                                *rpc_running.write() = false;
-                                ctx.request_repaint();
-                            })
-                            .detach();
+                            let promise = Promise::spawn_async(async move {
+                                flatten_rpc(get_rpc().register_finish(request).await)
+                                    .map(|()| LoginRpcOutcome::RegisterFinishBootstrap)
+                                    .map_err(|err| format!("register_finish: {err}"))
+                            });
+                            rpc.start(promise);
                         }
-                        if *rpc_running.read() {
+                        if rpc_running {
                             ui.add(Spinner::new());
                         }
                     });
@@ -183,7 +186,7 @@ impl Widget for Login<'_> {
                     ui.label(
                         RichText::new("On your other device, go to [File] > [Add device]").small(),
                     );
-                    let add_enabled = !*rpc_running.read();
+                    let add_enabled = !rpc_running;
                     if ui
                         .add_enabled(add_enabled, eframe::egui::Button::new("Log in"))
                         .clicked()
@@ -195,30 +198,20 @@ impl Widget for Login<'_> {
                                 return;
                             }
                         };
+                        *rpc_error = None;
+                        *rpc_notice = None;
                         let request = RegisterFinish::AddDeviceByCode {
                             username,
                             code: (*pairing_code).trim().to_string(),
                         };
-                        *rpc_error.write() = None;
-                        *rpc_notice.write() = None;
-                        *rpc_running.write() = true;
-
-                        let ctx = ui.ctx().clone();
-                        smol::spawn(async move {
-                            match flatten_rpc(get_rpc().register_finish(request).await) {
-                                Ok(()) => {
-                                    *rpc_notice.write() = Some("device added".to_string());
-                                }
-                                Err(err) => {
-                                    *rpc_error.write() = Some(format!("register_finish: {err}"));
-                                }
-                            }
-                            *rpc_running.write() = false;
-                            ctx.request_repaint();
-                        })
-                        .detach();
+                        let promise = Promise::spawn_async(async move {
+                            flatten_rpc(get_rpc().register_finish(request).await)
+                                .map(|()| LoginRpcOutcome::RegisterFinishAddDevice)
+                                .map_err(|err| format!("register_finish: {err}"))
+                        });
+                        rpc.start(promise);
                     }
-                    if *rpc_running.read() {
+                    if rpc_running {
                         ui.add(Spinner::new());
                     }
                 }

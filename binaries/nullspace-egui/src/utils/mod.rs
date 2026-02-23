@@ -1,5 +1,6 @@
 pub mod color;
 pub mod generational;
+pub mod hooks;
 pub mod prefs;
 pub mod profile_cache;
 pub mod profile_loader;

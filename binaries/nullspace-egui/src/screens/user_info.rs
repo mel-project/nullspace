@@ -3,7 +3,6 @@ use eframe::egui::{Response, TextWrapMode, Widget, Window};
 use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
-use nullspace_client::internal::UserDetails;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use taffy::style_helpers::{auto, fr, length};
@@ -11,7 +10,7 @@ use taffy::{AlignItems, Display, FlexDirection, LengthPercentage, Size as TaffyS
 
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
-use crate::utils::generational::UseGBoxExt;
+use crate::utils::hooks::CustomHooksExt;
 use crate::widgets::avatar::Avatar;
 
 pub struct UserInfo(pub Option<UserName>);
@@ -38,26 +37,19 @@ impl Widget for UserInfo {
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
                 let username = ui.use_gbox(|| username.clone(), username.clone());
-                let details_result =
-                    ui.use_gbox(|| None::<Result<UserDetails, String>>, username.id());
-                ui.use_effect(
-                    move || {
-                        smol::spawn(async move {
-                            let result = flatten_rpc(get_rpc().user_details(username.get()).await);
-                            *details_result.write() = Some(result);
-                        })
-                        .detach();
-                    },
+                let details_result = ui.use_async(
+                    async move { flatten_rpc(get_rpc().user_details(username.get()).await) },
                     username.id(),
                 );
 
-                let details_guard = details_result.read();
-                let details = match details_guard.as_ref() {
-                    Some(Ok(details)) => details,
-                    Some(Err(err)) => {
-                        ui.label(RichText::new(err).color(Color32::RED));
-                        return;
-                    }
+                let details = match details_result.as_ref() {
+                    Some(result) => match result.as_ref() {
+                        Ok(details) => details,
+                        Err(err) => {
+                            ui.label(RichText::new(err).color(Color32::RED));
+                            return;
+                        }
+                    },
                     None => {
                         ui.spinner();
                         return;

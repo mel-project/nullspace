@@ -13,7 +13,7 @@ use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::group_roster::GroupRoster;
 use crate::screens::user_info::UserInfo;
-use crate::utils::generational::UseGBoxExt;
+use crate::utils::hooks::CustomHooksExt;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::widgets::avatar::Avatar;
@@ -40,17 +40,16 @@ impl Widget for Convo<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let app = self.0;
         let convo_id = self.1;
-        let convo_id = ui.use_gbox(|| convo_id, ());
-        let scroller = ui.use_gbox(move || new_scroller(convo_id.get()), ());
+        let key = convo_id.clone();
+        let convo_id = ui.use_gbox(|| convo_id, key.clone());
+        let scroller = ui.use_gbox(move || new_scroller(convo_id.get()), key.clone());
         let read_up_to = scroller.read().items.last().map(|m| m.id);
-        ui.use_state(
-            move || {
-                smol::spawn(async move {
-                    smol::Timer::after(Duration::from_secs(1)).await;
-                    if let Some(val) = read_up_to {
-                        let _ = get_rpc().convo_mark_read(convo_id.get(), val).await;
-                    }
-                })
+        ui.use_async(
+            async move {
+                smol::Timer::after(Duration::from_secs(1)).await;
+                if let Some(val) = read_up_to {
+                    let _ = get_rpc().convo_mark_read(convo_id.get(), val).await;
+                }
             },
             read_up_to,
         );

@@ -14,6 +14,7 @@ use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, St
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
+use crate::utils::hooks::CustomHooksExt;
 use crate::widgets::avatar::Avatar;
 
 #[derive(Clone)]
@@ -21,6 +22,17 @@ enum AvatarChoice {
     Keep,
     Clear,
     Set(Attachment),
+}
+
+#[derive(Clone)]
+struct SaveRequest {
+    display_name: Option<String>,
+    avatar: Option<Attachment>,
+}
+
+enum SaveOutcome {
+    Idle,
+    Done(Result<(), String>),
 }
 
 pub struct Profile<'a> {
@@ -100,8 +112,47 @@ impl Widget for ProfileInner<'_> {
             .into_var();
         let avatar_choice: State<AvatarChoice> = ui.use_state(|| AvatarChoice::Keep, ());
         let avatar_upload_id: State<Option<i64>> = ui.use_state(|| None, ());
-        let save_running: State<bool> = ui.use_state(|| false, ());
-        let save_result: State<Option<Result<(), String>>> = ui.use_state(|| None, ());
+        let save_request = ui.use_gbox(|| None::<SaveRequest>, ());
+        let save_nonce = ui.use_gbox(|| 0_u64, ());
+        let save_handled_nonce = ui.use_gbox(|| 0_u64, ());
+        let current_save_nonce = save_nonce.get();
+        let save_outcome = ui.use_async(
+            {
+                let request = save_request.get();
+                async move {
+                    match request {
+                        Some(request) => SaveOutcome::Done(
+                            flatten_rpc(
+                                get_rpc()
+                                    .own_profile_set(request.display_name, request.avatar)
+                                    .await,
+                            ),
+                        ),
+                        None => SaveOutcome::Idle,
+                    }
+                }
+            },
+            current_save_nonce,
+        );
+        let save_running = save_request.read().is_some() && save_outcome.is_none();
+
+        if let Some(outcome) = save_outcome.as_ref()
+            && *save_handled_nonce.read() != current_save_nonce
+        {
+            *save_handled_nonce.write() = current_save_nonce;
+            *save_request.write() = None;
+            if let SaveOutcome::Done(result) = outcome.as_ref() {
+                match result {
+                    Ok(()) => {
+                        self.app.state.profile_loader.invalidate(&username);
+                        avatar_choice.set_next(AvatarChoice::Keep);
+                    }
+                    Err(err) => {
+                        self.app.state.error_dialog = Some(err.clone());
+                    }
+                }
+            }
+        }
 
         tui(ui, ui.id().with("profile_editor"))
             .style(Style {
@@ -241,40 +292,19 @@ impl Widget for ProfileInner<'_> {
                     let avatar_changed = !matches!(&*avatar_choice, AvatarChoice::Keep);
 
                     let upload_busy = avatar_upload_id.is_some();
-                    let save_busy = *save_running;
+                    let save_busy = save_running;
                     let can_save =
                         (display_changed || avatar_changed) && !upload_busy && !save_busy;
 
                     if ui.add_enabled(can_save, Button::new("Save")).clicked() {
-                        let display_name = new_display_name.clone();
-                        let avatar = avatar_to_send.clone();
-                        save_running.set_next(true);
-                        save_result.set_next(None);
-                        let save_running = save_running.clone();
-                        let save_result = save_result.clone();
-                        smol::spawn(async move {
-                            let result =
-                                flatten_rpc(get_rpc().own_profile_set(display_name, avatar).await);
-                            save_result.set_next(Some(result));
-                            save_running.set_next(false);
-                        })
-                        .detach();
+                        *save_request.write() = Some(SaveRequest {
+                            display_name: new_display_name.clone(),
+                            avatar: avatar_to_send.clone(),
+                        });
+                        *save_nonce.write() += 1;
                     }
                 });
             });
-
-        if let Some(result) = (*save_result).clone() {
-            save_result.set_next(None);
-            match result {
-                Ok(()) => {
-                    self.app.state.profile_loader.invalidate(&username);
-                    avatar_choice.set_next(AvatarChoice::Keep);
-                }
-                Err(err) => {
-                    self.app.state.error_dialog = Some(err);
-                }
-            }
-        }
 
         self.app.profile_file_dialog.update(ui.ctx());
         if let Some(path) = self.app.profile_file_dialog.take_picked() {

@@ -5,8 +5,8 @@ use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::{State, Var};
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
+use nullspace_client::internal::UserDetails;
 use nullspace_structs::fragment::Attachment;
-use nullspace_structs::username::UserName;
 use pollster::FutureExt;
 use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, Style};
@@ -41,6 +41,20 @@ impl Widget for Profile<'_> {
         };
 
         if *self.open {
+            enum ProfileState {
+                Ready(UserDetails),
+                Loading,
+                Error(String),
+            }
+
+            let profile_state = match flatten_rpc(get_rpc().own_username().block_on()) {
+                Ok(username) => match self.app.state.profile_loader.view(&username) {
+                    Some(profile) => ProfileState::Ready(profile),
+                    None => ProfileState::Loading,
+                },
+                Err(err) => ProfileState::Error(err),
+            };
+
             let mut window_open = *self.open;
             let center = ui.ctx().content_rect().center();
             Window::new("Edit profile")
@@ -48,14 +62,25 @@ impl Widget for Profile<'_> {
                 .default_pos(center)
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
-                    ui.add(ProfileInner {
-                        app: self.app,
-                        open_generation: current_open_generation,
-                    });
+                    match profile_state {
+                        ProfileState::Ready(profile) => {
+                            ui.push_id(current_open_generation, |ui| {
+                                ui.add(ProfileInner {
+                                    app: self.app,
+                                    profile,
+                                });
+                            });
+                        }
+                        ProfileState::Loading => {
+                            ui.spinner();
+                        }
+                        ProfileState::Error(err) => {
+                            ui.colored_label(Color32::RED, err);
+                        }
+                    }
                 });
             *self.open = window_open;
         }
-
         was_open.set_next(*self.open);
         ui.response()
     }
@@ -63,45 +88,20 @@ impl Widget for Profile<'_> {
 
 pub struct ProfileInner<'a> {
     pub app: &'a mut NullspaceApp,
-    pub open_generation: u64,
+    pub profile: UserDetails,
 }
 
 impl Widget for ProfileInner<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let mut display_name_input: Var<String> = ui.use_state(String::new, ()).into_var();
+        let username = self.profile.username.clone();
+        let initial_display_name = self.profile.display_name.clone().unwrap_or_default();
+        let mut display_name_input: Var<String> = ui
+            .use_state(move || initial_display_name.clone(), ())
+            .into_var();
         let avatar_choice: State<AvatarChoice> = ui.use_state(|| AvatarChoice::Keep, ());
         let avatar_upload_id: State<Option<i64>> = ui.use_state(|| None, ());
-        let initialized_generation: State<Option<u64>> = ui.use_state(|| None, ());
-        let active_username: State<Option<UserName>> = ui.use_state(|| None, ());
         let save_running: State<bool> = ui.use_state(|| false, ());
         let save_result: State<Option<Result<(), String>>> = ui.use_state(|| None, ());
-
-        let username = match flatten_rpc(get_rpc().own_username().block_on()) {
-            Ok(username) => username,
-            Err(err) => {
-                ui.colored_label(Color32::RED, err);
-                return ui.response();
-            }
-        };
-
-        let profile_view = self.app.state.profile_loader.view(&username);
-
-        let Some(profile_view) = profile_view else {
-            ui.spinner();
-            return ui.response();
-        };
-
-        let reset_for_open = *initialized_generation != Some(self.open_generation);
-        let reset_for_username = (*active_username).as_ref() != Some(&username);
-        if reset_for_open || reset_for_username {
-            *display_name_input = profile_view.display_name.clone().unwrap_or_default();
-            avatar_choice.set_next(AvatarChoice::Keep);
-            avatar_upload_id.set_next(None);
-            active_username.set_next(Some(username.clone()));
-            initialized_generation.set_next(Some(self.open_generation));
-            save_running.set_next(false);
-            save_result.set_next(None);
-        }
 
         tui(ui, ui.id().with("profile_editor"))
             .style(Style {
@@ -149,7 +149,7 @@ impl Widget for ProfileInner<'_> {
                         .ui(|ui| {
                             let size = 64.0;
                             let attachment = match &*avatar_choice {
-                                AvatarChoice::Keep => profile_view.avatar.clone(),
+                                AvatarChoice::Keep => self.profile.avatar.clone(),
                                 AvatarChoice::Clear => None,
                                 AvatarChoice::Set(attachment) => Some(attachment.clone()),
                             };
@@ -228,8 +228,8 @@ impl Widget for ProfileInner<'_> {
                         Some(display_name_trimmed.to_string())
                     };
 
-                    let existing_display_name = profile_view.display_name.clone();
-                    let existing_avatar = profile_view.avatar.clone();
+                    let existing_display_name = self.profile.display_name.clone();
+                    let existing_avatar = self.profile.avatar.clone();
 
                     let avatar_to_send = match &*avatar_choice {
                         AvatarChoice::Keep => existing_avatar,

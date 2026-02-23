@@ -26,9 +26,9 @@ use std::sync::Arc;
 mod cluster;
 mod image_clip;
 
-const INITIAL_HISTORY_LIMIT: u16 = 10;
+const INITIAL_HISTORY_LIMIT: u16 = 100;
 const PAGE_HISTORY_LIMIT: u16 = 10;
-const MESSAGE_PREFETCH: usize = 1;
+const MESSAGE_PREFETCH: usize = 10;
 
 type Scroller = InfiniteScroll<ConvoMessage, i64>;
 

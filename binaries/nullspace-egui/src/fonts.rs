@@ -35,24 +35,22 @@ fn load_font_family(family_names: &[&str]) -> Option<Vec<u8>> {
 pub fn load_fonts(mut fonts: FontDefinitions) -> FontDefinitions {
     fonts.font_data.insert(
         "main".to_string(),
-        egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Regular.ttf"))
+        egui::FontData::from_static(include_bytes!("fonts/NotoSansNerdFontPropo-Regular.ttf"))
             .into(),
     );
     fonts.font_data.insert(
         "main_bold".to_string(),
-        egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Bold.ttf")).into(),
+        egui::FontData::from_static(include_bytes!("fonts/NotoSansNerdFontPropo-Bold.ttf")).into(),
     );
     fonts.font_data.insert(
         "main_italic".to_string(),
-        egui::FontData::from_static(include_bytes!("fonts/FantasqueSansMNerdFont-Italic.ttf"))
+        egui::FontData::from_static(include_bytes!("fonts/NotoSansNerdFontPropo-Italic.ttf"))
             .into(),
     );
     fonts.font_data.insert(
         "main_bold_italic".to_string(),
-        egui::FontData::from_static(include_bytes!(
-            "fonts/FantasqueSansMNerdFont-BoldItalic.ttf"
-        ))
-        .into(),
+        egui::FontData::from_static(include_bytes!("fonts/NotoSansNerdFontPropo-BoldItalic.ttf"))
+            .into(),
     );
     fonts.families.insert(
         egui::FontFamily::Name("main".into()),

@@ -22,6 +22,7 @@ impl<T: Send + Sync + 'static> GBox<T> {
     /// Create a GBox with no owner. The backing storage will never be reclaimed
     /// unless you call [`GenerationalBox::manually_drop`] on it.
     #[track_caller]
+    #[allow(dead_code)]
     pub fn leak(inner: T) -> Self {
         Self(GenerationalBox::leak(inner, std::panic::Location::caller()))
     }

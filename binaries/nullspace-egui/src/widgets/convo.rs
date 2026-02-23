@@ -11,7 +11,7 @@ use smol_str::SmolStr;
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
-use crate::screens::group_roster::GroupRoster;
+use crate::screens::group_info::GroupInfo;
 use crate::screens::user_info::UserInfo;
 use crate::utils::hooks::CustomHooksExt;
 use crate::utils::prefs::ConvoRowStyle;
@@ -100,7 +100,7 @@ impl Widget for Convo<'_> {
             });
 
             if let ConvoId::Group { group_id } = convo_id.get() {
-                ui.add(GroupRoster {
+                ui.add(GroupInfo {
                     app,
                     open: &mut show_roster,
                     group: group_id,
@@ -225,7 +225,9 @@ fn render_header(
                     attachment: view.and_then(|details| details.avatar),
                     size,
                 });
-                ui.heading(display);
+                ui.add(Label::new(
+                    RichText::new(display).family(egui::FontFamily::Name("main_bold".into())),
+                ));
                 if ui.button("Info").clicked() {
                     *user_info_target = Some(peer.clone());
                 }
@@ -261,23 +263,16 @@ fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: 
         .id_salt("scroll")
         .stick_to_bottom(true)
         .show(ui, |ui| {
-            if no_more_items {
-                if !scroller.items.is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("Start of conversation")
-                            .size(11.0)
-                            .color(Color32::GRAY),
-                    );
-                }
-            }
             ui.set_width(ui.available_width());
 
             scroller.ui(ui, MESSAGE_PREFETCH, |ui, index, item| {
                 let meta = message_meta.get(index).copied().unwrap_or_default();
                 if let Some(date) = meta.date_label {
-                    let label = format!("[{}]", date.format("%A, %d %b %Y"));
-                    ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
+                    ui.add_space(8.0);
+                    ui.vertical_centered(|ui| {
+                        let label = format!("{}", date.format("%A, %d %b %Y"));
+                        ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
+                    });
                     ui.add_space(4.0);
                 }
                 ui.push_id(item.id, |ui| {
@@ -291,16 +286,6 @@ fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: 
                 });
             });
 
-            if top_loading {
-                ui.vertical_centered(|ui| {
-                    ui.spinner();
-                });
-            }
-            if initial_loading {
-                ui.vertical_centered(|ui| {
-                    ui.spinner();
-                });
-            }
             if let Some(err) = top_error.as_ref() {
                 ui.horizontal(|ui| {
                     ui.colored_label(Color32::RED, format!("History load failed: {err}"));

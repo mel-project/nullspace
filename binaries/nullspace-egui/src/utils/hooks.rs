@@ -201,9 +201,7 @@ where
             return Some(output.clone());
         }
 
-        let Some(future) = state.future.as_mut() else {
-            return None;
-        };
+        let future = state.future.as_mut()?;
 
         let mut cx = Context::from_waker(noop_waker_ref());
         let poll_result = future.as_mut().poll(&mut cx);

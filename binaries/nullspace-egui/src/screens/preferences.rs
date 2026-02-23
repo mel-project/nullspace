@@ -1,8 +1,8 @@
-use eframe::egui::{Button, ComboBox, Grid, Response, Widget, Window};
+use eframe::egui::{ComboBox, Grid, Response, Widget, Window};
 
 use crate::{
     NullspaceApp,
-    utils::prefs::{ConvoRowStyle, IMAGE_AUTO_DOWNLOAD_OPTIONS, label_for_auto_image_limit},
+    utils::prefs::ConvoRowStyle,
 };
 
 pub struct Preferences<'a> {
@@ -12,9 +12,7 @@ pub struct Preferences<'a> {
 
 impl Widget for Preferences<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        const MIN_ZOOM_PERCENT: u16 = 70;
-        const MAX_ZOOM_PERCENT: u16 = 200;
-        const ZOOM_STEP_PERCENT: u16 = 10;
+        const ZOOM_OPTIONS: &[u16] = &[75, 100, 125, 150, 175, 200];
 
         if *self.open {
             let mut window_open = *self.open;
@@ -29,41 +27,28 @@ impl Widget for Preferences<'_> {
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
                             ui.label("Zoom");
-                            ui.horizontal(|ui| {
-                                let can_decrease =
-                                    self.app.state.prefs.zoom_percent > MIN_ZOOM_PERCENT;
-                                if ui.add_enabled(can_decrease, Button::new("-")).clicked() {
-                                    self.app.state.prefs.zoom_percent =
-                                        self.app.state.prefs.zoom_percent
-                                            .saturating_sub(ZOOM_STEP_PERCENT)
-                                            .max(MIN_ZOOM_PERCENT);
-                                }
-                                ui.label(format!("{}%", self.app.state.prefs.zoom_percent));
-                                let can_increase =
-                                    self.app.state.prefs.zoom_percent < MAX_ZOOM_PERCENT;
-                                if ui.add_enabled(can_increase, Button::new("+")).clicked() {
-                                    self.app.state.prefs.zoom_percent =
-                                        self.app.state.prefs.zoom_percent
-                                            .saturating_add(ZOOM_STEP_PERCENT)
-                                            .min(MAX_ZOOM_PERCENT);
-                                }
-                            });
-                            ui.end_row();
-
-                            ui.label("Auto-download images");
-                            ComboBox::from_id_salt("auto_download_images_max")
-                                .selected_text(label_for_auto_image_limit(
-                                    self.app.state.prefs.max_auto_image_download_bytes,
+                            ComboBox::from_id_salt("zoom_percent")
+                                .selected_text(format!(
+                                    "{}%",
+                                    self.app.state.prefs.zoom_percent
                                 ))
                                 .show_ui(ui, |ui| {
-                                    for (bytes, label) in IMAGE_AUTO_DOWNLOAD_OPTIONS {
+                                    for &pct in ZOOM_OPTIONS {
                                         ui.selectable_value(
-                                            &mut self.app.state.prefs.max_auto_image_download_bytes,
-                                            *bytes,
-                                            *label,
+                                            &mut self.app.state.prefs.zoom_percent,
+                                            pct,
+                                            format!("{pct}%"),
                                         );
                                     }
                                 });
+                            ui.end_row();
+
+                            ui.label("Auto-download images");
+                            let mut enabled =
+                                self.app.state.prefs.max_auto_image_download_bytes.is_some();
+                            ui.checkbox(&mut enabled, "");
+                            self.app.state.prefs.max_auto_image_download_bytes =
+                                enabled.then_some(1_000_000);
                             ui.end_row();
 
                             ui.label("Message style");

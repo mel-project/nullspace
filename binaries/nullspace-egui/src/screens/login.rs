@@ -13,23 +13,20 @@ use crate::utils::color::username_color;
 pub struct Login<'a>(pub &'a mut NullspaceApp);
 
 #[derive(Clone, Copy)]
+#[derive(Default)]
 enum LoginStep {
+    #[default]
     EnterUsername,
     FinishBootstrap,
     FinishAddDevice,
 }
 
-impl Default for LoginStep {
-    fn default() -> Self {
-        Self::EnterUsername
-    }
-}
 
 #[derive(Clone)]
 enum LoginRpcOutcome {
-    RegisterStart { user_exists: bool },
-    RegisterFinishBootstrap,
-    RegisterFinishAddDevice,
+    Start { user_exists: bool },
+    FinishBootstrap,
+    FinishAddDevice,
 }
 
 impl Widget for Login<'_> {
@@ -46,16 +43,16 @@ impl Widget for Login<'_> {
         let rpc_running = rpc.is_running();
         if let Some(result) = rpc.take() {
             match result {
-                Ok(LoginRpcOutcome::RegisterStart { user_exists: true }) => {
+                Ok(LoginRpcOutcome::Start { user_exists: true }) => {
                     *step = LoginStep::FinishAddDevice;
                 }
-                Ok(LoginRpcOutcome::RegisterStart { user_exists: false }) => {
+                Ok(LoginRpcOutcome::Start { user_exists: false }) => {
                     *step = LoginStep::FinishBootstrap;
                 }
-                Ok(LoginRpcOutcome::RegisterFinishBootstrap) => {
+                Ok(LoginRpcOutcome::FinishBootstrap) => {
                     *rpc_notice = Some("registration submitted".to_string());
                 }
-                Ok(LoginRpcOutcome::RegisterFinishAddDevice) => {
+                Ok(LoginRpcOutcome::FinishAddDevice) => {
                     *rpc_notice = Some("device added".to_string());
                 }
                 Err(err) => {
@@ -93,7 +90,7 @@ impl Widget for Login<'_> {
                         *rpc_notice = None;
                         let promise = Promise::spawn_async(async move {
                             flatten_rpc(get_rpc().register_start(username).await)
-                                .map(|value| LoginRpcOutcome::RegisterStart {
+                                .map(|value| LoginRpcOutcome::Start {
                                     user_exists: value.is_some(),
                                 })
                                 .map_err(|err| format!("register_start: {err}"))
@@ -169,7 +166,7 @@ impl Widget for Login<'_> {
                             };
                             let promise = Promise::spawn_async(async move {
                                 flatten_rpc(get_rpc().register_finish(request).await)
-                                    .map(|()| LoginRpcOutcome::RegisterFinishBootstrap)
+                                    .map(|()| LoginRpcOutcome::FinishBootstrap)
                                     .map_err(|err| format!("register_finish: {err}"))
                             });
                             rpc.start(promise);
@@ -206,7 +203,7 @@ impl Widget for Login<'_> {
                         };
                         let promise = Promise::spawn_async(async move {
                             flatten_rpc(get_rpc().register_finish(request).await)
-                                .map(|()| LoginRpcOutcome::RegisterFinishAddDevice)
+                                .map(|()| LoginRpcOutcome::FinishAddDevice)
                                 .map_err(|err| format!("register_finish: {err}"))
                         });
                         rpc.start(promise);

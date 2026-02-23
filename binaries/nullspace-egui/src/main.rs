@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 
-use egui::Modal;
+use egui::style::ScrollStyle;
+use egui::{Color32, Modal};
 use egui_file_dialog::FileDialog as EguiFileDialog;
 use nullspace_client::{
     Client, Config,
@@ -119,8 +120,8 @@ impl NullspaceApp {
             style.spacing.item_spacing = egui::vec2(6.0, 6.0);
             style.spacing.window_margin = egui::Margin::same(8);
             style.spacing.button_padding = egui::vec2(8.0, 4.0);
-            style.spacing.indent = 16.0;
-            // style.spacing.scroll = ScrollStyle::solid();
+            // style.spacing.indent = 16.0;
+            style.spacing.scroll = ScrollStyle::solid();
             for wid in [
                 &mut style.visuals.widgets.active,
                 &mut style.visuals.widgets.hovered,
@@ -134,7 +135,9 @@ impl NullspaceApp {
                 egui::TextStyle::Heading,
                 egui::FontId::new(14.0, egui::FontFamily::Proportional),
             );
-
+            // style.visuals.panel_fill = Color32::WHITE;
+            // style.visuals.window_fill = Color32::WHITE;
+            // style.visuals.faint_bg_color = Color32::from_gray(240);
             style.interaction.selectable_labels = false;
             // style.debug.debug_on_hover = true; // show callstack / rects on hover
             // style.debug.show_expand_width = true; // highlight width expanders
@@ -391,8 +394,7 @@ fn main() -> eframe::Result<()> {
             .expect("dir anchor pk"),
     };
     let client = Client::new(config);
-    let mut options = eframe::NativeOptions::default();
-    options.renderer = eframe::Renderer::Wgpu;
+    let options = eframe::NativeOptions::default();
 
     eframe::run_native(
         "nullspace-egui",

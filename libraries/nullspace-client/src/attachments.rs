@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use anyctx::AnyCtx;
 use bytes::Bytes;

@@ -30,7 +30,7 @@ use crate::internal::{
     authenticate_device, internal_err, persist_identity, register_medium_key, server_from_name,
 };
 
-const PROVISION_HOST_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const PROVISION_HOST_POLL_INTERVAL: Duration = Duration::from_millis(1500);
 const PROVISION_HOST_REPOST_INTERVAL: Duration = Duration::from_secs(5);
 const PROVISION_GUEST_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 

@@ -1,6 +1,8 @@
 use std::{ops::Deref, time::Duration};
 
 use crate::rpc::get_rpc;
+use crate::utils::generational::GBox;
+use crate::utils::hooks::CustomHooksExt;
 use eframe::egui::{Response, Widget, Window};
 use egui::{Color32, RichText};
 use egui_hooks::{UseHookExt, hook::state::State};
@@ -22,16 +24,39 @@ impl Widget for AddDevice<'_> {
                 let pairing_code: State<Option<String>> = ui.use_state(|| None, ());
                 let pairing_done: State<bool> = ui.use_state(|| false, ());
                 let fatal_error: State<Option<String>> = ui.use_state(|| None, ());
+                let session_id: GBox<Option<u64>> = ui.use_gbox(|| None, ());
+                let task: GBox<Option<smol::Task<()>>> = ui.use_gbox(|| None, ());
                 let mut refreshes = ui.use_state(|| 0, ()).into_var();
+                ui.use_cleanup(
+                    move || {
+                        // Drop the task to cancel the polling loop
+                        task.set(None);
+                        if let Some(id) = session_id.get() {
+                            smol::spawn(async move {
+                                let _ = get_rpc().provision_host_stop(id).await;
+                            })
+                            .detach();
+                        }
+                    },
+                    (),
+                );
                 ui.use_effect(
                     || {
                         let pairing_code = pairing_code.clone();
                         let pairing_done = pairing_done.clone();
                         let fatal_error = fatal_error.clone();
-                        smol::spawn(async move {
-                            let result: anyhow::Result<()> = async move {
+                        // Drop the old task, cancelling its polling loop
+                        task.set(None);
+                        let old_session_id = session_id.get();
+                        task.set(Some(smol::spawn(async move {
+                            // Stop the previous session on the server
+                            if let Some(old_id) = old_session_id {
+                                let _ = get_rpc().provision_host_stop(old_id).await;
+                            }
+                            let result: anyhow::Result<()> = async {
                                 let rpc = get_rpc();
                                 let started = rpc.provision_host_start().await??;
+                                session_id.set(Some(started.session_id));
                                 pairing_code.set_next(started.display_code.into());
                                 loop {
                                     let status =
@@ -52,8 +77,7 @@ impl Widget for AddDevice<'_> {
                             if let Err(err) = result {
                                 fatal_error.set_next(Some(err.to_string()));
                             }
-                        })
-                        .detach();
+                        })));
                     },
                     *refreshes,
                 );

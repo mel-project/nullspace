@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
     ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
 };
@@ -17,15 +17,19 @@ impl<T> Clone for GBox<T> {
     }
 }
 
+impl<T: Send + Sync + Clone + 'static> GBox<T> {
+    /// Gets a cloned copy of the content of the GBox.
+    pub fn get(&self) -> T {
+        self.read().clone()
+    }
+}
+
 impl<T: Send + Sync + 'static> GBox<T> {
     /// Create a GBox with no owner. The backing storage will never be reclaimed
     /// unless you call [`GenerationalBox::manually_drop`] on it.
     #[track_caller]
     pub fn leak(inner: T) -> Self {
-        Self(GenerationalBox::leak(
-            inner,
-            std::panic::Location::caller(),
-        ))
+        Self(GenerationalBox::leak(inner, std::panic::Location::caller()))
     }
 }
 
@@ -53,10 +57,7 @@ struct WidgetOwnerEntry {
     last_seen_pass: u64,
 }
 
-fn prune_stale_widget_owners(
-    owners: &mut HashMap<egui::Id, WidgetOwnerEntry>,
-    current_pass: u64,
-) {
+fn prune_stale_widget_owners(owners: &mut HashMap<egui::Id, WidgetOwnerEntry>, current_pass: u64) {
     // Match egui_hooks two-frame cleanup behavior:
     // keep owners seen this pass or previous pass, prune older.
     owners.retain(|_, owner| owner.last_seen_pass.saturating_add(1) >= current_pass);

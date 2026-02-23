@@ -20,7 +20,10 @@ use crate::widgets::avatar::Avatar;
 use crate::widgets::convo_row::ConvoRow;
 use cluster::message_render_meta;
 use image_clip::{PasteImage, persist_paste_image, read_clipboard_image};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 mod cluster;
 mod image_clip;
@@ -62,7 +65,7 @@ fn new_scroller(convo_id: ConvoId) -> Scroller {
     })
 }
 
-fn refresh_newer(convo_id: &ConvoId, scroller: &mut Scroller) {
+fn refresh_newer(convo_id: ConvoId, scroller: &mut Scroller) {
     let mut after = scroller
         .items
         .iter()
@@ -129,18 +132,31 @@ impl Widget for Convo<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let app = self.0;
         let convo_id = self.1;
-        let response = ui.push_id(&convo_id, |ui| {
+        let convo_id = ui.use_gbox(|| convo_id, ());
+
+        let scroller = ui.use_gbox(move || new_scroller(convo_id.get()), ());
+        let read_up_to = scroller.read().items.last().map(|m| m.id);
+        ui.use_state(
+            move || {
+                smol::spawn(async move {
+                    smol::Timer::after(Duration::from_secs(1)).await;
+                    if let Some(val) = read_up_to {
+                        let _ = get_rpc().convo_mark_read(convo_id.get(), val).await;
+                    }
+                })
+            },
+            read_up_to,
+        );
+
+        let response = ui.push_id(&*convo_id.read(), |ui| {
             let mut show_roster: Var<bool> = ui.use_state(|| false, ()).into_var();
             let mut user_info_target: Option<UserName> = None;
             let mut last_update_seen: Var<u64> =
                 ui.use_state(|| app.state.msg_updates, ()).into_var();
-
-            let convo_id_for_loader = convo_id.clone();
-            let scroller = ui.use_gbox(move || new_scroller(convo_id_for_loader), ());
             let mut scroller = scroller.write();
 
             if *last_update_seen != app.state.msg_updates {
-                refresh_newer(&convo_id, &mut scroller);
+                refresh_newer(convo_id.get(), &mut scroller);
                 *last_update_seen = app.state.msg_updates;
             }
 
@@ -162,20 +178,26 @@ impl Widget for Convo<'_> {
 
             ui.allocate_rect(full_rect, egui::Sense::hover());
             ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
-                render_header(app, ui, &convo_id, &mut show_roster, &mut user_info_target);
+                render_header(
+                    app,
+                    ui,
+                    convo_id.get(),
+                    &mut show_roster,
+                    &mut user_info_target,
+                );
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(messages_rect), |ui| {
                 render_messages(ui, app, &mut scroller);
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
-                render_composer(ui, app, &convo_id);
+                render_composer(ui, app, convo_id.get());
             });
 
-            if let ConvoId::Group { group_id } = &convo_id {
+            if let ConvoId::Group { group_id } = convo_id.get() {
                 ui.add(GroupRoster {
                     app,
                     open: &mut show_roster,
-                    group: *group_id,
+                    group: group_id,
                     user_info: &mut user_info_target,
                 });
             }
@@ -190,14 +212,14 @@ impl Widget for Convo<'_> {
 fn render_header(
     app: &mut NullspaceApp,
     ui: &mut eframe::egui::Ui,
-    convo_id: &ConvoId,
+    convo_id: ConvoId,
     show_roster: &mut bool,
     user_info_target: &mut Option<UserName>,
 ) {
     match convo_id {
         ConvoId::Direct { peer } => {
-            let view = app.state.profile_loader.view(peer);
-            let display = app.state.profile_loader.label_for(peer);
+            let view = app.state.profile_loader.view(&peer);
+            let display = app.state.profile_loader.label_for(&peer);
             ui.horizontal_centered(|ui| {
                 let size = 24.0;
                 ui.add(Avatar {
@@ -304,7 +326,7 @@ fn start_upload(attachment: &mut Var<Option<i64>>, path: PathBuf) {
     attachment.replace(upload_id);
 }
 
-fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId) {
+fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId) {
     ui.add_space(8.0);
     let mut attachment: Var<Option<i64>> = ui.use_state(|| None, ()).into_var();
 
@@ -402,7 +424,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: &ConvoId
     let send_now = enter_pressed;
     if send_now && !draft.trim().is_empty() {
         let message = draft.clone();
-        send_message(convo_id, message);
+        send_message(&convo_id, message);
         draft.clear();
     }
 

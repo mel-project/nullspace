@@ -359,14 +359,14 @@ fn make_thumbhash_b91(image: &image::RgbaImage) -> anyhow::Result<String> {
 pub async fn attachment_download(
     ctx: &AnyCtx<Config>,
     attachment_id: Hash,
-    save_dir: PathBuf,
+    save_path: PathBuf,
 ) -> anyhow::Result<Hash> {
-    if !save_dir.is_absolute() {
-        return Err(anyhow::anyhow!("save dir must be absolute"));
+    if !save_path.is_absolute() {
+        return Err(anyhow::anyhow!("save path must be absolute"));
     }
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        if let Err(err) = download_inner(&ctx, attachment_id, save_dir).await {
+        if let Err(err) = download_inner(&ctx, attachment_id, save_path).await {
             emit_event(
                 &ctx,
                 Event::DownloadFailed {
@@ -411,7 +411,7 @@ pub async fn attachment_download_oneshot(
 async fn download_inner(
     ctx: &AnyCtx<Config>,
     attachment_id: Hash,
-    save_dir: PathBuf,
+    save_path: PathBuf,
 ) -> anyhow::Result<()> {
     static IN_PROGRESS: LazyLock<Mutex<HashSet<Hash>>> = LazyLock::new(Default::default);
     {
@@ -439,20 +439,20 @@ async fn download_inner(
         .server_name;
     let client = get_server_client(ctx, &server_name).await?;
 
-    tokio::fs::create_dir_all(&save_dir).await?;
-    let filename = sanitize_filename(root.filename.as_str());
-    let final_path = unique_path(&save_dir, &filename).await?;
-    download_attachment_to_path(ctx, client, &root, Some(attachment_id), &final_path).await?;
+    if let Some(parent) = save_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    download_attachment_to_path(ctx, client, &root, Some(attachment_id), &save_path).await?;
     sqlx::query("insert or replace into attachment_paths (hash, download_path) values ($1, $2)")
         .bind(attachment_id.to_bytes().as_slice())
-        .bind(final_path.to_string_lossy())
+        .bind(save_path.to_string_lossy())
         .execute(ctx.get(DATABASE))
         .await?;
     emit_event(
         ctx,
         Event::DownloadDone {
             attachment_id,
-            absolute_path: final_path,
+            absolute_path: save_path,
         },
     );
     Ok(())
@@ -728,50 +728,3 @@ fn file_basename(path: &Path) -> anyhow::Result<String> {
     Ok(name.to_string())
 }
 
-fn sanitize_filename(name: &str) -> String {
-    let mut out = String::with_capacity(name.len().max(12));
-    for ch in name.chars() {
-        if ch == '/' || ch == '\\' || ch.is_control() {
-            continue;
-        }
-        out.push(ch);
-    }
-    let trimmed = out.trim();
-    if trimmed.is_empty() {
-        "attachment.bin".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-async fn unique_path(dir: &Path, filename: &str) -> anyhow::Result<PathBuf> {
-    let base = dir.join(filename);
-    if !(tokio::fs::try_exists(&base).await?) {
-        return Ok(base);
-    }
-    let (stem, ext) = split_extension(filename);
-    for i in 1..=9999 {
-        let candidate = if ext.is_empty() {
-            dir.join(format!("{stem} ({i})"))
-        } else {
-            dir.join(format!("{stem} ({i}).{ext}"))
-        };
-        if !(tokio::fs::try_exists(&candidate).await?) {
-            return Ok(candidate);
-        }
-    }
-    Err(anyhow::anyhow!("could not pick unique filename"))
-}
-
-fn split_extension(filename: &str) -> (&str, &str) {
-    let Some(pos) = filename.rfind('.') else {
-        return (filename, "");
-    };
-    let (stem, ext) = filename.split_at(pos);
-    let ext = ext.trim_start_matches('.');
-    if stem.is_empty() || ext.is_empty() {
-        (filename, "")
-    } else {
-        (stem, ext)
-    }
-}

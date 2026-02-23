@@ -13,6 +13,8 @@ use nullspace_client::{
 };
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::SigningPublic;
+use nullspace_structs::username::UserName;
+use pollster::FutureExt;
 use smol::channel::Receiver;
 use url::Url;
 
@@ -72,6 +74,7 @@ struct NullspaceApp {
 
 struct AppState {
     logged_in: Option<bool>,
+    own_username: Option<UserName>,
     msg_updates: u64,
     error_dialog: Option<String>,
     prefs: PrefData,
@@ -114,7 +117,7 @@ impl NullspaceApp {
 
         cc.egui_ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-            style.spacing.window_margin = egui::Margin::same(12);
+            style.spacing.window_margin = egui::Margin::same(8);
             style.spacing.button_padding = egui::vec2(8.0, 4.0);
             style.spacing.indent = 16.0;
             // style.spacing.scroll = ScrollStyle::solid();
@@ -127,6 +130,10 @@ impl NullspaceApp {
             ] {
                 wid.corner_radius = egui::CornerRadius::ZERO.at_least(6);
             }
+            style.text_styles.insert(
+                egui::TextStyle::Heading,
+                egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            );
 
             style.interaction.selectable_labels = false;
             // style.debug.debug_on_hover = true; // show callstack / rects on hover
@@ -167,6 +174,7 @@ impl NullspaceApp {
             supports_hide,
             state: AppState {
                 logged_in: None,
+                own_username: None,
                 msg_updates: 0,
                 error_dialog: None,
                 prefs: prefs.clone(),
@@ -223,7 +231,17 @@ impl eframe::App for NullspaceApp {
         while let Ok(event) = self.recv_event.try_recv() {
             tracing::debug!(event = ?event, "processing nullspace event");
             match event {
-                Event::State { logged_in } => self.state.logged_in = Some(logged_in),
+                Event::State { logged_in } => {
+                    self.state.logged_in = Some(logged_in);
+                    if logged_in {
+                        self.state.own_username = crate::promises::flatten_rpc(
+                            crate::rpc::get_rpc().own_username().block_on(),
+                        )
+                        .ok();
+                    } else {
+                        self.state.own_username = None;
+                    }
+                }
                 Event::ConvoUpdated { convo_id } => {
                     let _ = convo_id;
                     self.state.msg_updates = self.state.msg_updates.saturating_add(1);
@@ -302,7 +320,9 @@ impl eframe::App for NullspaceApp {
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add(widgets::image_viewer::ImageViewer(&mut self.state.image_viewer));
+            ui.add(screens::image_viewer::ImageViewer(
+                &mut self.state.image_viewer,
+            ));
             if let Some(e) = self.state.error_dialog.clone() {
                 Modal::new("error_modal".into()).show(ctx, |ui| {
                     ui.heading("Error");

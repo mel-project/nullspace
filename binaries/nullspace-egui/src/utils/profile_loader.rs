@@ -33,19 +33,8 @@ struct ProfileEntry {
 
 impl ProfileLoader {
     pub fn new(cache_dir: PathBuf) -> Self {
-        let mut entries = HashMap::new();
-        let initial = profile_cache::load_all(&cache_dir);
-        for (username, details) in initial {
-            entries.insert(
-                username,
-                ProfileEntry {
-                    last_good: Some(details),
-                    ..ProfileEntry::default()
-                },
-            );
-        }
         Self {
-            entries,
+            entries: HashMap::new(),
             label_counts: HashMap::new(),
             label_index_dirty: true,
             cache_dir,
@@ -57,7 +46,11 @@ impl ProfileLoader {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 self.label_index_dirty = true;
-                entry.insert(ProfileEntry::default())
+                let cached = profile_cache::load_entry(&self.cache_dir, username);
+                entry.insert(ProfileEntry {
+                    last_good: cached,
+                    ..ProfileEntry::default()
+                })
             }
         };
 

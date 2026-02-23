@@ -142,7 +142,11 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
                 });
             }
             MessageContent::Attachment {
-                id, size, filename, mime, ..
+                id,
+                size,
+                filename,
+                mime,
+                ..
             } => {
                 ui.push_id(id, |ui| {
                     ui.add(AttachmentContent {
@@ -160,6 +164,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
                 width,
                 height,
                 thumbhash,
+                filename,
                 ..
             } => {
                 ui.push_id(id, |ui| {
@@ -170,6 +175,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
                         width: *width,
                         height: *height,
                         thumbhash,
+                        filename,
                     });
                 });
             }
@@ -213,8 +219,10 @@ impl Widget for AttachmentContent<'_> {
         let dl_error = self.app.state.download_error.get(&self.id);
 
         defmac::defmac!(start_dl => {
-            let save_dir = default_download_dir();
-            let _ = flatten_rpc(get_rpc().attachment_download(self.id, save_dir).block_on());
+            let dir = default_download_dir();
+            let filename = sanitize_filename(self.filename);
+            let save_path = unique_path(&dir, &filename);
+            let _ = flatten_rpc(get_rpc().attachment_download(self.id, save_path).block_on());
         });
         let (unit_scale, unit_suffix) = unit_for_bytes(self.size);
         let size_text = format_filesize(self.size, unit_scale);
@@ -270,6 +278,7 @@ struct ImageAttachmentContent<'a> {
     width: u32,
     height: u32,
     thumbhash: &'a str,
+    filename: &'a str,
 }
 
 impl Widget for ImageAttachmentContent<'_> {
@@ -290,8 +299,10 @@ impl Widget for ImageAttachmentContent<'_> {
         let should_auto_download = auto_limit.map(|max| self.size <= max).unwrap_or(false);
 
         defmac::defmac!(start_dl => {
-            let save_dir = image_cache_dir();
-            let _ = flatten_rpc(get_rpc().attachment_download(self.id, save_dir).block_on());
+            let dir = image_cache_dir();
+            let filename = sanitize_filename(self.filename);
+            let save_path = dir.join(&filename);
+            let _ = flatten_rpc(get_rpc().attachment_download(self.id, save_path).block_on());
         });
 
         let downloaded_path = status
@@ -345,7 +356,7 @@ impl Widget for ImageAttachmentContent<'_> {
                     Color32::from_white_alpha(200),
                 );
                 if let Some((downloaded, total)) = dl_progress {
-                    ui.label(format!("{:2}%", downloaded as f32 / total as f32 * 100.0));
+                    ui.label(format!("{:.2}%", downloaded as f32 / total as f32 * 100.0));
                     ui.spinner();
                 } else if let Some(error) = dl_error {
                     ui.label(
@@ -416,6 +427,54 @@ fn image_cache_dir() -> PathBuf {
                 .map(|cwd| cwd.join(".cache").join("images"))
         })
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max(12));
+    for ch in name.chars() {
+        if ch == '/' || ch == '\\' || ch.is_control() {
+            continue;
+        }
+        out.push(ch);
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        "attachment.bin".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn unique_path(dir: &std::path::Path, filename: &str) -> PathBuf {
+    let base = dir.join(filename);
+    if !base.exists() {
+        return base;
+    }
+    let (stem, ext) = split_extension(filename);
+    for i in 1..=9999 {
+        let candidate = if ext.is_empty() {
+            dir.join(format!("{stem} ({i})"))
+        } else {
+            dir.join(format!("{stem} ({i}).{ext}"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    base
+}
+
+fn split_extension(filename: &str) -> (&str, &str) {
+    let Some(pos) = filename.rfind('.') else {
+        return (filename, "");
+    };
+    let (stem, ext) = filename.split_at(pos);
+    let ext = ext.trim_start_matches('.');
+    if stem.is_empty() || ext.is_empty() {
+        (filename, "")
+    } else {
+        (stem, ext)
+    }
 }
 
 fn fit_size_preserving_aspect(aspect: f32, max_width: f32, max_height: f32) -> (f32, f32) {

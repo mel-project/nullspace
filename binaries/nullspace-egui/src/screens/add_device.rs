@@ -13,6 +13,7 @@ pub struct AddDevice<'a> {
 impl Widget for AddDevice<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let center = ui.ctx().content_rect().center();
+
         Window::new("Add device")
             .collapsible(false)
             .default_pos(center)

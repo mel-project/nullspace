@@ -10,6 +10,7 @@ use taffy::{AlignItems, Display, FlexDirection, LengthPercentage, Size as TaffyS
 
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
+use crate::utils::color::username_color;
 use crate::utils::hooks::CustomHooksExt;
 use crate::widgets::avatar::Avatar;
 
@@ -103,7 +104,8 @@ impl Widget for UserInfo {
                                     .unwrap_or_else(|| details.username.as_str());
                                 ui.heading(display);
                                 ui.label(
-                                    RichText::new(details.username.as_str()).color(Color32::GRAY),
+                                    RichText::new(details.username.as_str())
+                                        .color(username_color(&details.username)),
                                 );
                             });
                         });

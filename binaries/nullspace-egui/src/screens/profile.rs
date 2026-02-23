@@ -14,7 +14,9 @@ use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, St
 use crate::NullspaceApp;
 use crate::promises::flatten_rpc;
 use crate::rpc::get_rpc;
+use crate::utils::generational::GBox;
 use crate::utils::hooks::CustomHooksExt;
+use crate::utils::color::username_color;
 use crate::widgets::avatar::Avatar;
 
 #[derive(Clone)]
@@ -24,17 +26,6 @@ enum AvatarChoice {
     Set(ImageAttachment),
 }
 
-#[derive(Clone)]
-struct SaveRequest {
-    display_name: Option<String>,
-    avatar: Option<ImageAttachment>,
-}
-
-enum SaveOutcome {
-    Idle,
-    Done(Result<(), String>),
-}
-
 pub struct Profile<'a> {
     pub app: &'a mut NullspaceApp,
     pub open: &'a mut bool,
@@ -42,31 +33,7 @@ pub struct Profile<'a> {
 
 impl Widget for Profile<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let was_open: State<bool> = ui.use_state(|| false, ());
-        let open_generation: State<u64> = ui.use_state(|| 0, ());
-        let current_open_generation = if *self.open && !*was_open {
-            let next = *open_generation + 1;
-            open_generation.set_next(next);
-            next
-        } else {
-            *open_generation
-        };
-
         if *self.open {
-            enum ProfileState {
-                Ready(UserDetails),
-                Loading,
-                Error(String),
-            }
-
-            let profile_state = match flatten_rpc(get_rpc().own_username().block_on()) {
-                Ok(username) => match self.app.state.profile_loader.view(&username) {
-                    Some(profile) => ProfileState::Ready(profile),
-                    None => ProfileState::Loading,
-                },
-                Err(err) => ProfileState::Error(err),
-            };
-
             let mut window_open = *self.open;
             let center = ui.ctx().content_rect().center();
             Window::new("Edit profile")
@@ -74,84 +41,58 @@ impl Widget for Profile<'_> {
                 .default_pos(center)
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
-                    match profile_state {
-                        ProfileState::Ready(profile) => {
-                            ui.push_id(current_open_generation, |ui| {
-                                ui.add(ProfileInner {
-                                    app: self.app,
-                                    profile,
-                                });
-                            });
-                        }
-                        ProfileState::Loading => {
-                            ui.spinner();
-                        }
-                        ProfileState::Error(err) => {
-                            ui.colored_label(Color32::RED, err);
-                        }
-                    }
+                    ui.add(ProfileInner { app: self.app });
                 });
             *self.open = window_open;
         }
-        was_open.set_next(*self.open);
         ui.response()
     }
 }
 
 pub struct ProfileInner<'a> {
     pub app: &'a mut NullspaceApp,
-    pub profile: UserDetails,
 }
 
 impl Widget for ProfileInner<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let username = self.profile.username.clone();
-        let initial_display_name = self.profile.display_name.clone().unwrap_or_default();
+        let Some(username) = self.app.state.own_username.clone() else {
+            return ui.response();
+        };
+
+        // Fetch profile once; on error fall back to empty.
+        let fetch_username = username.clone();
+        let profile_result = ui.use_async(
+            async move { flatten_rpc(get_rpc().user_details(fetch_username).await) },
+            (),
+        );
+        let profile = profile_result
+            .as_deref()
+            .and_then(|r| r.as_ref().ok().cloned())
+            .unwrap_or_else(|| UserDetails {
+                username: username.clone(),
+                display_name: None,
+                avatar: None,
+                server_name: None,
+                common_groups: vec![],
+                last_dm_message: None,
+            });
+
+        let initial_display_name = profile.display_name.clone().unwrap_or_default();
         let mut display_name_input: Var<String> = ui
-            .use_state(move || initial_display_name.clone(), ())
+            .use_state(
+                move || initial_display_name.clone(),
+                profile.display_name.clone(),
+            )
             .into_var();
         let avatar_choice: State<AvatarChoice> = ui.use_state(|| AvatarChoice::Keep, ());
         let avatar_upload_id: State<Option<i64>> = ui.use_state(|| None, ());
-        let save_request = ui.use_gbox(|| None::<SaveRequest>, ());
-        let save_nonce = ui.use_gbox(|| 0_u64, ());
-        let save_handled_nonce = ui.use_gbox(|| 0_u64, ());
-        let current_save_nonce = save_nonce.get();
-        let save_outcome = ui.use_async(
-            {
-                let request = save_request.get();
-                async move {
-                    match request {
-                        Some(request) => SaveOutcome::Done(
-                            flatten_rpc(
-                                get_rpc()
-                                    .own_profile_set(request.display_name, request.avatar)
-                                    .await,
-                            ),
-                        ),
-                        None => SaveOutcome::Idle,
-                    }
-                }
-            },
-            current_save_nonce,
-        );
-        let save_running = save_request.read().is_some() && save_outcome.is_none();
+        let save_error: GBox<Option<String>> = ui.use_gbox(|| None, ());
+        let save_busy: GBox<bool> = ui.use_gbox(|| false, ());
+        let save_succeeded: GBox<bool> = ui.use_gbox(|| false, ());
 
-        if let Some(outcome) = save_outcome.as_ref()
-            && *save_handled_nonce.read() != current_save_nonce
-        {
-            *save_handled_nonce.write() = current_save_nonce;
-            *save_request.write() = None;
-            if let SaveOutcome::Done(result) = outcome.as_ref() {
-                match result {
-                    Ok(()) => {
-                        self.app.state.profile_loader.invalidate(&username);
-                        avatar_choice.set_next(AvatarChoice::Keep);
-                    }
-                    Err(err) => {
-                        self.app.state.error_dialog = Some(err.clone());
-                    }
-                }
-            }
+        if save_succeeded.get() {
+            save_succeeded.set(false);
+            self.app.state.profile_loader.invalidate(&username);
         }
 
         tui(ui, ui.id().with("profile_editor"))
@@ -163,7 +104,7 @@ impl Widget for ProfileInner<'_> {
             .show(|tui| {
                 // Username
                 tui.ui(|ui| {
-                    ui.label(RichText::new(username.as_str()).color(Color32::GRAY));
+                    ui.label(RichText::new(username.as_str()).color(username_color(&username)));
                 });
 
                 // Display name row
@@ -200,7 +141,7 @@ impl Widget for ProfileInner<'_> {
                         .ui(|ui| {
                             let size = 64.0;
                             let attachment = match &*avatar_choice {
-                                AvatarChoice::Keep => self.profile.avatar.clone(),
+                                AvatarChoice::Keep => profile.avatar.clone(),
                                 AvatarChoice::Clear => None,
                                 AvatarChoice::Set(attachment) => Some(attachment.clone()),
                             };
@@ -252,8 +193,9 @@ impl Widget for ProfileInner<'_> {
                                     avatar_choice.set_next(AvatarChoice::Set(root));
                                 }
                                 UploadedRoot::Attachment(_) => {
-                                    self.app.state.error_dialog =
-                                        Some("avatar upload produced non-image payload".to_string());
+                                    self.app.state.error_dialog = Some(
+                                        "avatar upload produced non-image payload".to_string(),
+                                    );
                                 }
                             }
                             avatar_upload_id.set_next(None);
@@ -278,6 +220,13 @@ impl Widget for ProfileInner<'_> {
                     });
                 }
 
+                // Save error
+                if let Some(err) = save_error.get() {
+                    tui.ui(|ui| {
+                        ui.colored_label(Color32::RED, format!("Save failed: {err}"));
+                    });
+                }
+
                 // Save button
                 tui.ui(|ui| {
                     let display_name_trimmed = display_name_input.trim();
@@ -287,8 +236,8 @@ impl Widget for ProfileInner<'_> {
                         Some(display_name_trimmed.to_string())
                     };
 
-                    let existing_display_name = self.profile.display_name.clone();
-                    let existing_avatar = self.profile.avatar.clone();
+                    let existing_display_name = profile.display_name.clone();
+                    let existing_avatar = profile.avatar.clone();
 
                     let avatar_to_send = match &*avatar_choice {
                         AvatarChoice::Keep => existing_avatar,
@@ -300,16 +249,29 @@ impl Widget for ProfileInner<'_> {
                     let avatar_changed = !matches!(&*avatar_choice, AvatarChoice::Keep);
 
                     let upload_busy = avatar_upload_id.is_some();
-                    let save_busy = save_running;
                     let can_save =
-                        (display_changed || avatar_changed) && !upload_busy && !save_busy;
+                        (display_changed || avatar_changed) && !upload_busy && !save_busy.get();
 
                     if ui.add_enabled(can_save, Button::new("Save")).clicked() {
-                        *save_request.write() = Some(SaveRequest {
-                            display_name: new_display_name.clone(),
-                            avatar: avatar_to_send.clone(),
-                        });
-                        *save_nonce.write() += 1;
+                        save_busy.set(true);
+                        save_error.set(None);
+                        let display_name = new_display_name.clone();
+                        let avatar = avatar_to_send.clone();
+                        smol::spawn(async move {
+                            match flatten_rpc(
+                                get_rpc().own_profile_set(display_name, avatar).await,
+                            ) {
+                                Ok(()) => {
+                                    save_error.set(None);
+                                    save_succeeded.set(true);
+                                }
+                                Err(err) => {
+                                    save_error.set(Some(err));
+                                }
+                            }
+                            save_busy.set(false);
+                        })
+                        .detach();
                     }
                 });
             });

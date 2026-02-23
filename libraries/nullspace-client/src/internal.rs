@@ -219,13 +219,14 @@ pub trait InternalProtocol {
     /// Starts an asynchronous attachment download.
     ///
     /// The fragment tree is fetched from the sender's server, decrypted,
-    /// and reassembled into a file in `save_dir`.  Progress is reported
-    /// through [`Event::DownloadProgress`]; on completion
-    /// [`Event::DownloadDone`] provides the final file path.
+    /// and reassembled into a file at `save_path`.  The caller is
+    /// responsible for choosing the filename (including uniqueness).
+    /// Progress is reported through [`Event::DownloadProgress`]; on
+    /// completion [`Event::DownloadDone`] provides the final file path.
     async fn attachment_download(
         &self,
         attachment_id: nullspace_crypt::hash::Hash,
-        save_dir: PathBuf,
+        save_path: PathBuf,
     ) -> Result<Hash, InternalRpcError>;
 
     /// Queries the current status of a known attachment (download path, root
@@ -736,9 +737,9 @@ impl InternalProtocol for InternalImpl {
     async fn attachment_download(
         &self,
         attachment_id: nullspace_crypt::hash::Hash,
-        save_dir: PathBuf,
+        save_path: PathBuf,
     ) -> Result<Hash, InternalRpcError> {
-        attachments::attachment_download(&self.ctx, attachment_id, save_dir)
+        attachments::attachment_download(&self.ctx, attachment_id, save_path)
             .await
             .map_err(map_anyhow_err)
     }

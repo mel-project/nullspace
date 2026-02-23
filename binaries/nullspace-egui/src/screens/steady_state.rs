@@ -36,11 +36,9 @@ impl Widget for SteadyState<'_> {
             self.0.state.msg_updates,
         );
         let convos = ui_unwrap!(ui, convos);
-        let own_username = ui.use_memo(
-            || flatten_rpc(pollster::block_on(get_rpc().own_username())),
-            (),
-        );
-        let own_username = ui_unwrap!(ui, own_username);
+        let Some(own_username) = self.0.state.own_username.clone() else {
+            return ui.response();
+        };
 
         let frame = eframe::egui::Frame::default().inner_margin(eframe::egui::Margin::same(8));
         eframe::egui::TopBottomPanel::top("steady_menu")

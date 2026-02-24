@@ -21,21 +21,15 @@ struct CacheKey {
     preserve_aspect_ratio: bool,
 }
 
-static IMAGE_CACHE: LazyLock<Cache<CacheKey, eframe::egui::TextureHandle>> = LazyLock::new(|| {
-    Cache::builder()
-        .time_to_idle(Duration::from_secs(300))
-        .build()
-});
+static IMAGE_CACHE: LazyLock<Cache<CacheKey, eframe::egui::TextureHandle>> =
+    LazyLock::new(|| Cache::builder().max_capacity(100).build());
 
 /// Stores any texture for a given file path, regardless of target size.
 /// Used as a fast fallback: if the exact size isn't ready yet but we have
 /// a previously-rendered version, we can display it hardware-scaled while
 /// the Lanczos3 resize runs in the background.
-static ANY_CACHE: LazyLock<Cache<PathBuf, eframe::egui::TextureHandle>> = LazyLock::new(|| {
-    Cache::builder()
-        .time_to_idle(Duration::from_secs(300))
-        .build()
-});
+static ANY_CACHE: LazyLock<Cache<PathBuf, eframe::egui::TextureHandle>> =
+    LazyLock::new(|| Cache::builder().max_capacity(100).build());
 
 pub struct SmoothImage<'a> {
     filename: &'a Path,

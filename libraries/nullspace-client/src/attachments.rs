@@ -266,26 +266,39 @@ async fn upload_image_inner(
 
 fn prepare_webp_and_thumbhash(source_bytes: &[u8]) -> anyhow::Result<(Vec<u8>, String, u32, u32)> {
     let decoded = image::load_from_memory(source_bytes)?;
-    let src = decoded.to_rgba8();
-    let (src_w, src_h) = src.dimensions();
+    let (src_w, src_h) = (decoded.width(), decoded.height());
     if src_w == 0 || src_h == 0 {
         return Err(anyhow::anyhow!("image has invalid dimensions"));
     }
 
+    // Use native pixel format to avoid a full-resolution RGBA conversion.
+    let (src_buf, pixel_type) = match decoded {
+        image::DynamicImage::ImageRgb8(img) => (img.into_raw(), fr::PixelType::U8x3),
+        image::DynamicImage::ImageRgba8(img) => (img.into_raw(), fr::PixelType::U8x4),
+        other => (other.into_rgba8().into_raw(), fr::PixelType::U8x4),
+    };
+
+    // Linearize the source image once, then reuse for all resize iterations.
+    let mut src_image = fr::images::Image::from_vec_u8(src_w, src_h, src_buf, pixel_type)
+        .map_err(|err| anyhow::anyhow!("failed to prepare source image: {err}"))?;
+    let srgb_mapper = fr::create_srgb_mapper();
+    srgb_mapper
+        .forward_map_inplace(&mut src_image)
+        .map_err(|err| anyhow::anyhow!("failed to linearize source image: {err}"))?;
+
     let (mut width, mut height) = fit_within(src_w, src_h, IMAGE_MAX_DIMENSION);
-    let quality = IMAGE_WEBP_QUALITY;
     tracing::debug!(
         width,
         height,
-        quality,
+        quality = IMAGE_WEBP_QUALITY,
         "image upload compression parameters"
     );
 
     loop {
-        let resized = resize_rgba_with_fir(&src, width, height)?;
-        let webp_bytes = encode_webp(&resized)?;
+        let resized = resize_linear(&src_image, &srgb_mapper, width, height)?;
+        let webp_bytes = encode_webp(pixel_type, &resized, width, height)?;
         if webp_bytes.len() <= IMAGE_TARGET_SIZE_BYTES || (width == 1 && height == 1) {
-            let thumbhash = make_thumbhash_b91(&resized)?;
+            let thumbhash = make_thumbhash_b91(pixel_type, &resized, width, height)?;
             return Ok((webp_bytes, thumbhash, src_w, src_h));
         }
         width = (width / 2).max(1);
@@ -304,55 +317,89 @@ fn fit_within(width: u32, height: u32, max_side: u32) -> (u32, u32) {
     (new_w, new_h)
 }
 
-fn resize_rgba_with_fir(
-    src: &image::RgbaImage,
+/// Resize an already-linearized source image and convert the result back to sRGB.
+fn resize_linear(
+    src: &fr::images::Image,
+    srgb_mapper: &fr::PixelComponentMapper,
     dst_w: u32,
     dst_h: u32,
-) -> anyhow::Result<image::RgbaImage> {
+) -> anyhow::Result<fr::images::Image<'static>> {
     if src.width() == dst_w && src.height() == dst_h {
-        return Ok(src.clone());
+        let mut out = src.copy();
+        srgb_mapper
+            .backward_map_inplace(&mut out)
+            .map_err(|err| anyhow::anyhow!("failed to convert from linear: {err}"))?;
+        return Ok(out);
     }
-    let mut src_image = fr::images::Image::from_vec_u8(
-        src.width(),
-        src.height(),
-        src.as_raw().clone(),
-        fr::PixelType::U8x4,
-    )
-    .map_err(|err| anyhow::anyhow!("failed to prepare source image: {err}"))?;
-    let srgb_mapper = fr::create_srgb_mapper();
-    srgb_mapper
-        .forward_map_inplace(&mut src_image)
-        .map_err(|err| anyhow::anyhow!("failed to linearize source image: {err}"))?;
-
-    let mut dst_image = fr::images::Image::new(dst_w, dst_h, fr::PixelType::U8x4);
+    let mut dst = fr::images::Image::new(dst_w, dst_h, src.pixel_type());
     let options =
         fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3));
     let mut resizer = fr::Resizer::new();
     resizer
-        .resize(&src_image, &mut dst_image, Some(&options))
+        .resize(src, &mut dst, Some(&options))
         .map_err(|err| anyhow::anyhow!("failed to resize image: {err}"))?;
     srgb_mapper
-        .backward_map_inplace(&mut dst_image)
-        .map_err(|err| anyhow::anyhow!("failed to convert resized image from linear RGB: {err}"))?;
-
-    image::RgbaImage::from_raw(dst_w, dst_h, dst_image.buffer().to_vec())
-        .ok_or_else(|| anyhow::anyhow!("failed to rebuild resized image"))
+        .backward_map_inplace(&mut dst)
+        .map_err(|err| anyhow::anyhow!("failed to convert from linear: {err}"))?;
+    Ok(dst)
 }
 
-fn encode_webp(image: &image::RgbaImage) -> anyhow::Result<Vec<u8>> {
-    let encoded = webp::Encoder::from_rgba(image.as_raw(), image.width(), image.height())
-        .encode(IMAGE_WEBP_QUALITY);
-    Ok(encoded.to_vec())
+fn encode_webp(
+    pixel_type: fr::PixelType,
+    image: &fr::images::Image,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let encoder = match pixel_type {
+        fr::PixelType::U8x3 => webp::Encoder::from_rgb(image.buffer(), width, height),
+        _ => webp::Encoder::from_rgba(image.buffer(), width, height),
+    };
+    Ok(encoder.encode(IMAGE_WEBP_QUALITY).to_vec())
 }
 
-fn make_thumbhash_b91(image: &image::RgbaImage) -> anyhow::Result<String> {
-    let (thumb_w, thumb_h) = fit_within(image.width(), image.height(), THUMBHASH_MAX_DIMENSION);
-    let preview = resize_rgba_with_fir(image, thumb_w, thumb_h)?;
+fn make_thumbhash_b91(
+    pixel_type: fr::PixelType,
+    image: &fr::images::Image,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<String> {
+    let (thumb_w, thumb_h) = fit_within(width, height, THUMBHASH_MAX_DIMENSION);
+    // Thumbhash needs RGBA. Convert only this small image.
+    let rgba_buf = if thumb_w == width && thumb_h == height {
+        to_rgba_buf(pixel_type, image.buffer())
+    } else {
+        // Re-linearize the (already sRGB) resized image for a second resize.
+        let srgb_mapper = fr::create_srgb_mapper();
+        let mut src = fr::images::Image::from_vec_u8(
+            width,
+            height,
+            image.buffer().to_vec(),
+            pixel_type,
+        )
+        .map_err(|err| anyhow::anyhow!("failed to prepare thumbhash source: {err}"))?;
+        srgb_mapper.forward_map_inplace(&mut src).ok();
+        let preview = resize_linear(&src, &srgb_mapper, thumb_w, thumb_h)?;
+        to_rgba_buf(pixel_type, preview.buffer())
+    };
     Ok(rgba_to_thumb_hash_b91(
         thumb_w as usize,
         thumb_h as usize,
-        preview.as_raw(),
+        &rgba_buf,
     ))
+}
+
+fn to_rgba_buf(pixel_type: fr::PixelType, buf: &[u8]) -> Vec<u8> {
+    match pixel_type {
+        fr::PixelType::U8x4 => buf.to_vec(),
+        _ => {
+            let mut rgba = Vec::with_capacity(buf.len() / 3 * 4);
+            for chunk in buf.chunks_exact(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            rgba
+        }
+    }
 }
 
 pub async fn attachment_download(

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use clap::Parser;
 
 use egui::style::ScrollStyle;
-use egui::{Color32, Modal};
+use egui::{Color32, Modal, Shadow};
 use egui_file_dialog::FileDialog as EguiFileDialog;
 use nullspace_client::{
     Client, Config,
@@ -135,6 +135,9 @@ impl NullspaceApp {
                 egui::TextStyle::Heading,
                 egui::FontId::new(14.0, egui::FontFamily::Proportional),
             );
+            style.visuals.window_shadow.offset = [0, 3];
+            style.visuals.window_shadow.blur = 20;
+            style.visuals.window_shadow.color = Color32::from_black_alpha(25);
             // style.visuals.panel_fill = Color32::WHITE;
             // style.visuals.window_fill = Color32::WHITE;
             // style.visuals.faint_bg_color = Color32::from_gray(240);

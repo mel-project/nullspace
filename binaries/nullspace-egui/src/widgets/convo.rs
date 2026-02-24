@@ -363,7 +363,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
                 app.state.upload_error.remove(&upload_id);
             }
         } else {
-            ui.spinner();
+            ui.add(ProgressBar::new(0.0));
         }
     } else {
         ui.horizontal(|ui| {

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{Response, Widget};
@@ -9,6 +10,7 @@ use fast_thumbhash::thumb_hash_from_b91;
 use image::GenericImageView;
 use moka::sync::Cache;
 use poll_promise::Promise;
+use smol::lock::Semaphore;
 
 use crate::promises::PromiseSlot;
 
@@ -189,6 +191,11 @@ impl Widget for SmoothImage<'_> {
                     if debounce {
                         smol::Timer::after(Duration::from_millis(50)).await;
                     }
+                    // limit concurrency
+                    static SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| {
+                        Semaphore::new((available_parallelism().unwrap().get() / 2).max(1))
+                    });
+                    let _guard = SEMAPHORE.acquire().await;
                     smol::unblock(move || {
                         let bytes = std::fs::read(&filename).map_err(|e| e.to_string())?;
                         let decoded = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
@@ -284,26 +291,32 @@ fn make_texture(
     id: eframe::egui::Id,
 ) -> Result<eframe::egui::TextureHandle, String> {
     let start = Instant::now();
-    let rgba = decoded.to_rgba8();
-    let (src_w, src_h) = rgba.dimensions();
-    let mut src_image = fast_image_resize::images::Image::from_vec_u8(
-        src_w,
-        src_h,
-        rgba.into_raw(),
-        fast_image_resize::PixelType::U8x4,
-    )
-    .map_err(|e| format!("failed to prepare source image for resize: {e}"))?;
+    let (src_w, src_h) = decoded.dimensions();
 
+    // Use the native pixel format directly—avoids a full-resolution RGBA conversion.
+    let (src_buf, pixel_type, has_alpha) = match decoded {
+        image::DynamicImage::ImageRgb8(img) => {
+            (img.into_raw(), fast_image_resize::PixelType::U8x3, false)
+        }
+        image::DynamicImage::ImageRgba8(img) => {
+            (img.into_raw(), fast_image_resize::PixelType::U8x4, true)
+        }
+        other => (
+            other.into_rgba8().into_raw(),
+            fast_image_resize::PixelType::U8x4,
+            true,
+        ),
+    };
+
+    let mut src_image =
+        fast_image_resize::images::Image::from_vec_u8(src_w, src_h, src_buf, pixel_type)
+            .map_err(|e| format!("failed to prepare source image for resize: {e}"))?;
     let srgb_mapper = fast_image_resize::create_srgb_mapper();
     srgb_mapper
         .forward_map_inplace(&mut src_image)
         .map_err(|e| format!("failed to convert source image from sRGB to linear RGB: {e}"))?;
-
-    let mut dst_image = fast_image_resize::images::Image::new(
-        texel_size[0],
-        texel_size[1],
-        fast_image_resize::PixelType::U8x4,
-    );
+    let mut dst_image =
+        fast_image_resize::images::Image::new(texel_size[0], texel_size[1], pixel_type);
     let options = fast_image_resize::ResizeOptions::new().resize_alg(
         fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Lanczos3),
     );
@@ -311,16 +324,17 @@ fn make_texture(
     resizer
         .resize(&src_image, &mut dst_image, Some(&options))
         .map_err(|e| format!("failed to resize image: {e}"))?;
-
     srgb_mapper
         .backward_map_inplace(&mut dst_image)
         .map_err(|e| format!("failed to convert resized image from linear RGB to sRGB: {e}"))?;
 
-    let color_image = eframe::egui::ColorImage::from_rgba_unmultiplied(
-        [texel_size[0] as usize, texel_size[1] as usize],
-        dst_image.buffer(),
-    );
-    tracing::debug!(texel_size=?texel_size, elapsed=debug(start.elapsed()), "loaded image!");
+    let size = [texel_size[0] as usize, texel_size[1] as usize];
+    let color_image = if has_alpha {
+        eframe::egui::ColorImage::from_rgba_unmultiplied(size, dst_image.buffer())
+    } else {
+        eframe::egui::ColorImage::from_rgb(size, dst_image.buffer())
+    };
+    tracing::debug!(texel_size=?texel_size, elapsed=debug(start.elapsed()), "finished processing image");
 
     Ok(ctx.load_texture(
         format!("smooth_image_{:?}_{}x{}", id, texel_size[0], texel_size[1]),

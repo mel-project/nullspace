@@ -9,7 +9,7 @@ edition.workspace = true
 catppuccin-egui = { version = "5.7.0", default-features = false, features = [
     "egui33",
 ] }
-eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
+eframe = { version = "0.33.3", features = ["persistence"] }
 base64 = "0.22.1"
 bytes = "1.10.1"
 clap = { version = "4.5.40", features = ["derive"] }

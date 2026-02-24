@@ -67,6 +67,7 @@ impl Client {
         let (send_rpc, recv_rpc) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("nullspace-tokio".to_string())
+            .stack_size(16_000_000)
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()

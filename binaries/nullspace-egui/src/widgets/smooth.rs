@@ -5,14 +5,13 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{Response, Widget};
 
-use egui_hooks::UseHookExt;
 use fast_thumbhash::thumb_hash_from_b91;
 use image::GenericImageView;
 use moka::sync::Cache;
-use poll_promise::Promise;
 use smol::lock::Semaphore;
 
-use crate::promises::PromiseSlot;
+use crate::utils::hooks::{CustomHooksExt, SlotState};
+
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
@@ -115,21 +114,19 @@ impl Widget for SmoothImage<'_> {
         // placeholder while the Lanczos3 resize runs in the background.
         let stale_texture = ANY_CACHE.get(&self.filename.to_path_buf());
 
-        let promise = ui.use_state(
-            PromiseSlot::<Result<eframe::egui::TextureHandle, String>>::new,
-            cache_key.clone(),
-        );
+        let resize =
+            ui.use_slot::<Result<eframe::egui::TextureHandle, String>>(cache_key.clone());
 
-        let texture = match promise.poll() {
-            Some(Ok(texture)) => Some(texture),
-            Some(Err(err)) => {
+        let texture = match resize.poll() {
+            SlotState::Done(Ok(texture)) => Some(texture),
+            SlotState::Done(Err(err)) => {
                 let ui_size =
                     fallback_ui_size(self.max_size, self.preserve_aspect_ratio, self.aspect_ratio);
                 let (rect, response) = ui.allocate_exact_size(ui_size, self.sense);
                 paint_error(ui, rect, &err);
                 return response;
             }
-            None => None,
+            SlotState::Idle | SlotState::Busy => None,
         };
 
         // Determine the display size.  Prefer the exact texture's size, then
@@ -174,13 +171,13 @@ impl Widget for SmoothImage<'_> {
                 debounce = false;
             }
 
-            if promise.is_idle() && ui.is_rect_visible(rect) {
+            if resize.is_idle() && ui.is_rect_visible(rect) {
                 let ctx = ui.ctx().clone();
                 let id = ui.id();
                 let filename = self.filename.to_path_buf();
                 let cache_key = cache_key.clone();
                 let preserve_aspect_ratio = self.preserve_aspect_ratio;
-                let spawned = Promise::spawn_async(async move {
+                resize.start(async move {
                     // debounce a bit
                     if debounce {
                         smol::Timer::after(Duration::from_millis(50)).await;
@@ -206,7 +203,6 @@ impl Widget for SmoothImage<'_> {
                     })
                     .await
                 });
-                promise.start(spawned);
             }
         }
 

@@ -3,13 +3,10 @@ use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use poll_promise::Promise;
-
 use nullspace_client::internal::UserDetails;
 use nullspace_structs::username::UserName;
 
-use crate::promises::flatten_rpc;
-use crate::rpc::get_rpc;
+use crate::rpc::{flatten_rpc, get_rpc};
 use crate::utils::profile_cache;
 
 const PROFILE_RETRY_BACKOFF: Duration = Duration::from_secs(60);
@@ -24,7 +21,7 @@ pub struct ProfileLoader {
 #[derive(Default)]
 struct ProfileEntry {
     last_good: Option<UserDetails>,
-    inflight: Option<Promise<Result<UserDetails, String>>>,
+    inflight: Option<smol::channel::Receiver<Result<UserDetails, String>>>,
     last_error: Option<String>,
     retry_after: Option<Instant>,
     missing: bool,
@@ -54,36 +51,40 @@ impl ProfileLoader {
             }
         };
 
-        if let Some(promise) = entry.inflight.take() {
+        if let Some(rx) = &entry.inflight {
             let previous_display = entry
                 .last_good
                 .as_ref()
                 .and_then(|profile| profile.display_name.clone());
-            if let Some(result) = promise.ready().cloned() {
-                match result {
-                    Ok(profile) => {
-                        entry.missing = false;
-                        entry.last_good = Some(profile);
-                        entry.last_error = None;
-                        entry.retry_after = None;
-                        if let Some(details) = entry.last_good.as_ref() {
-                            profile_cache::write_entry(&self.cache_dir, details);
+            match rx.try_recv() {
+                Ok(result) => {
+                    entry.inflight = None;
+                    match result {
+                        Ok(profile) => {
+                            entry.missing = false;
+                            entry.last_good = Some(profile);
+                            entry.last_error = None;
+                            entry.retry_after = None;
+                            if let Some(details) = entry.last_good.as_ref() {
+                                profile_cache::write_entry(&self.cache_dir, details);
+                            }
+                            let next_display = entry
+                                .last_good
+                                .as_ref()
+                                .and_then(|profile| profile.display_name.clone());
+                            if previous_display != next_display {
+                                self.label_index_dirty = true;
+                            }
                         }
-                        let next_display = entry
-                            .last_good
-                            .as_ref()
-                            .and_then(|profile| profile.display_name.clone());
-                        if previous_display != next_display {
-                            self.label_index_dirty = true;
+                        Err(err) => {
+                            entry.last_error = Some(err);
+                            entry.retry_after = Some(Instant::now() + PROFILE_RETRY_BACKOFF);
                         }
-                    }
-                    Err(err) => {
-                        entry.last_error = Some(err);
-                        entry.retry_after = Some(Instant::now() + PROFILE_RETRY_BACKOFF);
                     }
                 }
-            } else {
-                entry.inflight = Some(promise);
+                Err(_) => {
+                    // still pending or sender dropped
+                }
             }
         }
 
@@ -99,11 +100,13 @@ impl ProfileLoader {
         if should_fetch {
             entry.force_refresh = false;
             let username = username.clone();
-            let promise =
-                Promise::spawn_async(
-                    async move { flatten_rpc(get_rpc().user_details(username).await) },
-                );
-            entry.inflight = Some(promise);
+            let (tx, rx) = smol::channel::bounded(1);
+            smol::spawn(async move {
+                let result = flatten_rpc(get_rpc().user_details(username).await);
+                let _ = tx.send(result).await;
+            })
+            .detach();
+            entry.inflight = Some(rx);
         }
 
         entry.last_good.clone()

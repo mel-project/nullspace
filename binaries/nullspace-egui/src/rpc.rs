@@ -13,3 +13,16 @@ pub fn init_rpc(rpc: InternalClient) {
 pub fn get_rpc() -> &'static InternalClient {
     RPC.get().expect("rpc not initialized")
 }
+
+pub fn flatten_rpc<T, E>(
+    result: Result<Result<T, nullspace_client::internal::InternalRpcError>, E>,
+) -> Result<T, String>
+where
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(err) => Err(err.to_string()),
+    }
+}

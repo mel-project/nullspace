@@ -12,7 +12,7 @@ use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, Style};
 
 use crate::NullspaceApp;
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::generational::GBox;
 use crate::utils::hooks::CustomHooksExt;

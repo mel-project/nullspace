@@ -8,7 +8,7 @@ use nullspace_structs::username::UserName;
 use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Display, FlexDirection, LengthPercentage, Size as TaffySize, Style};
 
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
 use crate::utils::hooks::CustomHooksExt;

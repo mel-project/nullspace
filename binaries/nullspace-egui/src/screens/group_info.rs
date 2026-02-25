@@ -9,7 +9,7 @@ use nullspace_structs::username::UserName;
 use pollster::{FutureExt, block_on};
 
 use crate::NullspaceApp;
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 
 pub struct GroupInfo<'a> {

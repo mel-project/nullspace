@@ -7,7 +7,7 @@ use notify_rust::Notification;
 
 use nullspace_client::internal::{ConvoId, Event, MessageContent};
 
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 
 const NOTIFICATION_SOUND: &[u8] = include_bytes!("sounds/notification.mp3");

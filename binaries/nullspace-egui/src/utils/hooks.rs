@@ -119,12 +119,24 @@ pub trait CustomHooksExt {
     ///
     /// While the future is pending, this hook requests repaint every frame.
     ///
-    /// Because the hook returns the "same" value over and over after the future completes, it returns Arc<T> to avoid cloning.
+    /// Because the hook returns the "same" value over and over after the future
+    /// completes, it returns `Arc<T>` to avoid cloning.
     fn use_async<T: Send + Sync + 'static>(
         &mut self,
         future: impl Future<Output = T> + Send + 'static,
         deps: impl PartialEq + Send + Sync + 'static,
     ) -> Option<Arc<T>>;
+
+    /// Imperative async slot, polled once per frame like [`use_async`].
+    ///
+    /// Starts idle. Call [`Slot::start`] to submit a future; the hook polls
+    /// it each frame and stores the result when ready. The future is dropped
+    /// if the widget is removed or `deps` change, so there is no risk of
+    /// writing to dead state.
+    fn use_slot<T: Send + Sync + Clone + 'static>(
+        &mut self,
+        deps: impl PartialEq + Send + Sync + 'static,
+    ) -> Slot<T>;
 }
 
 impl CustomHooksExt for egui::Ui {
@@ -142,7 +154,20 @@ impl CustomHooksExt for egui::Ui {
     ) -> Option<Arc<T>> {
         self.use_hook(AsyncHook::new(future), deps)
     }
+    fn use_slot<T: Send + Sync + Clone + 'static>(
+        &mut self,
+        deps: impl PartialEq + Send + Sync + 'static,
+    ) -> Slot<T> {
+        let state = self.use_state(Slot::<T>::new, deps);
+        let slot = (*state).clone();
+        slot.poll_step(self.ctx());
+        slot
+    }
 }
+
+// ---------------------------------------------------------------------------
+// use_async
+// ---------------------------------------------------------------------------
 
 struct AsyncBackend<T> {
     state: Mutex<AsyncState<T>>,
@@ -215,6 +240,118 @@ where
                 ui.ctx().request_repaint();
                 None
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// use_slot
+// ---------------------------------------------------------------------------
+
+enum SlotPhase<T> {
+    Idle,
+    Busy(Pin<Box<dyn Future<Output = T> + Send + 'static>>),
+    Done(T),
+}
+
+struct SlotInner<T> {
+    phase: SlotPhase<T>,
+    ctx: Option<egui::Context>,
+}
+
+/// Snapshot of a [`Slot`]'s current phase.
+pub enum SlotState<T> {
+    /// No future submitted yet (or result was consumed via [`Slot::take`]).
+    Idle,
+    /// A future is in flight.
+    Busy,
+    /// The future resolved to this value.
+    Done(T),
+}
+
+impl<T> SlotState<T> {
+    #[allow(dead_code)]
+    pub fn into_option(self) -> Option<T> {
+        match self {
+            SlotState::Done(val) => Some(val),
+            _ => None,
+        }
+    }
+}
+
+/// Imperative async slot returned by [`CustomHooksExt::use_slot`].
+///
+/// The future is polled on the UI thread each frame; it is dropped when
+/// the owning widget disappears or when deps change.
+pub struct Slot<T>(Arc<Mutex<SlotInner<T>>>);
+
+impl<T> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: Send + Sync + Clone + 'static> Slot<T> {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(SlotInner {
+            phase: SlotPhase::Idle,
+            ctx: None,
+        })))
+    }
+
+    fn poll_step(&self, ctx: &egui::Context) {
+        let mut inner = self.0.lock().unwrap();
+        inner.ctx = Some(ctx.clone());
+
+        if let SlotPhase::Busy(future) = &mut inner.phase {
+            let mut cx = Context::from_waker(noop_waker_ref());
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(output) => {
+                    inner.phase = SlotPhase::Done(output);
+                }
+                Poll::Pending => {
+                    ctx.request_repaint();
+                }
+            }
+        }
+    }
+
+    /// Submit a future. Any in-flight future is dropped.
+    pub fn start(&self, future: impl Future<Output = T> + Send + 'static) {
+        let mut inner = self.0.lock().unwrap();
+        inner.phase = SlotPhase::Busy(Box::pin(future));
+        if let Some(ctx) = &inner.ctx {
+            ctx.request_repaint();
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        matches!(self.poll(), SlotState::Idle)
+    }
+
+    pub fn is_busy(&self) -> bool {
+        matches!(self.poll(), SlotState::Busy)
+    }
+
+    /// Current state as a three-way enum.
+    pub fn poll(&self) -> SlotState<T> {
+        match &self.0.lock().unwrap().phase {
+            SlotPhase::Idle => SlotState::Idle,
+            SlotPhase::Busy(_) => SlotState::Busy,
+            SlotPhase::Done(val) => SlotState::Done(val.clone()),
+        }
+    }
+
+    /// Consuming read: returns the result and resets to idle.
+    pub fn take(&self) -> Option<T> {
+        let mut inner = self.0.lock().unwrap();
+        if matches!(inner.phase, SlotPhase::Done(_)) {
+            let SlotPhase::Done(val) = std::mem::replace(&mut inner.phase, SlotPhase::Idle) else {
+                unreachable!()
+            };
+            Some(val)
+        } else {
+            None
         }
     }
 }

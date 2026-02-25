@@ -5,7 +5,7 @@ use nullspace_client::internal::{ConvoId, OutgoingMessage};
 use nullspace_structs::username::UserName;
 
 use crate::NullspaceApp;
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::hooks::CustomHooksExt;
 

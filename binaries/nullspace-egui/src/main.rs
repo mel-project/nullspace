@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use clap::Parser;
 
 use egui::style::ScrollStyle;
-use egui::{Color32, Modal, Shadow};
+use egui::{Color32, Modal};
 use egui_file_dialog::FileDialog as EguiFileDialog;
 use nullspace_client::{
     Client, Config,
@@ -36,7 +36,6 @@ macro_rules! ui_unwrap {
 mod events;
 mod fonts;
 mod notify;
-mod promises;
 mod rpc;
 mod screens;
 mod tray;
@@ -133,7 +132,7 @@ impl NullspaceApp {
             }
             style.text_styles.insert(
                 egui::TextStyle::Heading,
-                egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                egui::FontId::new(14.0, egui::FontFamily::Name("main_bold".into())),
             );
             style.visuals.window_shadow.offset = [0, 3];
             style.visuals.window_shadow.blur = 20;
@@ -240,7 +239,7 @@ impl eframe::App for NullspaceApp {
                 Event::State { logged_in } => {
                     self.state.logged_in = Some(logged_in);
                     if logged_in {
-                        self.state.own_username = crate::promises::flatten_rpc(
+                        self.state.own_username = crate::rpc::flatten_rpc(
                             crate::rpc::get_rpc().own_username().block_on(),
                         )
                         .ok();

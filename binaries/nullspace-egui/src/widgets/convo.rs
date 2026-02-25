@@ -9,7 +9,7 @@ use pollster::block_on;
 use smol_str::SmolStr;
 
 use crate::NullspaceApp;
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::group_info::GroupInfo;
 use crate::screens::user_info::UserInfo;
@@ -249,16 +249,10 @@ fn render_header(
 fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: &mut Scroller) {
     let style: ConvoRowStyle = app.state.prefs.convo_row_style;
     let message_meta = message_render_meta(&scroller.items);
-    let top_loading = scroller.top_loading_state().loading();
-    let initial_loading = scroller.initial_loading();
     let top_error = match scroller.top_loading_state() {
         egui_infinite_scroll::LoadingState::Error(err) => Some(err.clone()),
         _ => None,
     };
-    let no_more_items = matches!(
-        scroller.top_loading_state(),
-        egui_infinite_scroll::LoadingState::NoMoreItems
-    );
     ScrollArea::vertical()
         .id_salt("scroll")
         .stick_to_bottom(true)

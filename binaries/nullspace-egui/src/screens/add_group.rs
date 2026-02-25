@@ -1,10 +1,9 @@
 use eframe::egui::{Button, Modal, Response, Spinner, Widget};
 use egui_hooks::UseHookExt;
-use poll_promise::Promise;
 
 use crate::NullspaceApp;
-use crate::promises::{PromiseSlot, flatten_rpc};
-use crate::rpc::get_rpc;
+use crate::rpc::{flatten_rpc, get_rpc};
+use crate::utils::hooks::CustomHooksExt;
 
 pub struct AddGroup<'a> {
     pub app: &'a mut NullspaceApp,
@@ -13,10 +12,7 @@ pub struct AddGroup<'a> {
 
 impl Widget for AddGroup<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let create_group = ui.use_state(
-            PromiseSlot::<Result<nullspace_client::internal::ConvoId, String>>::new,
-            (),
-        );
+        let create = ui.use_slot::<Result<nullspace_client::internal::ConvoId, String>>(());
         let server = ui.use_memo(
             || {
                 let result = pollster::block_on(get_rpc().own_server());
@@ -28,7 +24,7 @@ impl Widget for AddGroup<'_> {
         if *self.open {
             Modal::new("add_group_modal".into()).show(ui.ctx(), |ui| {
                 ui.heading("New group");
-                let busy = create_group.is_running();
+                let busy = create.is_busy();
                 match &server {
                     Ok(name) => {
                         ui.horizontal(|ui| {
@@ -49,16 +45,15 @@ impl Widget for AddGroup<'_> {
                         let server = server.clone().unwrap_or_else(|_| {
                             unreachable!("server must be available when create is enabled")
                         });
-                        let promise = Promise::spawn_async(async move {
+                        create.start(async move {
                             flatten_rpc(get_rpc().convo_create_group(server).await)
                         });
-                        create_group.start(promise);
                     }
                 });
-                if create_group.is_running() {
+                if create.is_busy() {
                     ui.add(Spinner::new());
                 }
-                if let Some(result) = create_group.take() {
+                if let Some(result) = create.take() {
                     match result {
                         Ok(_group_id) => {
                             *self.open = false;

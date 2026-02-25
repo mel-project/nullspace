@@ -3,11 +3,10 @@ use egui::{Color32, ComboBox, Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
 use nullspace_client::internal::RegisterFinish;
 use nullspace_structs::username::UserName;
-use poll_promise::Promise;
 
 use crate::NullspaceApp;
-use crate::promises::{PromiseSlot, flatten_rpc};
-use crate::rpc::get_rpc;
+use crate::rpc::{flatten_rpc, get_rpc};
+use crate::utils::hooks::CustomHooksExt;
 use crate::utils::color::username_color;
 
 pub struct Login<'a>(pub &'a mut NullspaceApp);
@@ -34,13 +33,13 @@ impl Widget for Login<'_> {
         let mut step = ui.use_state(LoginStep::default, ()).into_var();
         let mut rpc_error = ui.use_state(|| None::<String>, ()).into_var();
         let mut rpc_notice = ui.use_state(|| None::<String>, ()).into_var();
-        let rpc = ui.use_state(PromiseSlot::<Result<LoginRpcOutcome, String>>::new, ());
+        let rpc = ui.use_slot::<Result<LoginRpcOutcome, String>>(());
         let mut username_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut server_choice = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut pairing_code = ui.use_state(String::new, ()).into_var();
 
-        let rpc_running = rpc.is_running();
+        let rpc_running = rpc.is_busy();
         if let Some(result) = rpc.take() {
             match result {
                 Ok(LoginRpcOutcome::Start { user_exists: true }) => {
@@ -88,14 +87,13 @@ impl Widget for Login<'_> {
                         };
                         *rpc_error = None;
                         *rpc_notice = None;
-                        let promise = Promise::spawn_async(async move {
+                        rpc.start(async move {
                             flatten_rpc(get_rpc().register_start(username).await)
                                 .map(|value| LoginRpcOutcome::Start {
                                     user_exists: value.is_some(),
                                 })
                                 .map_err(|err| format!("register_start: {err}"))
                         });
-                        rpc.start(promise);
                     }
                 }
                 LoginStep::FinishBootstrap => {
@@ -164,12 +162,11 @@ impl Widget for Login<'_> {
                                 username,
                                 server_name,
                             };
-                            let promise = Promise::spawn_async(async move {
+                            rpc.start(async move {
                                 flatten_rpc(get_rpc().register_finish(request).await)
                                     .map(|()| LoginRpcOutcome::FinishBootstrap)
                                     .map_err(|err| format!("register_finish: {err}"))
                             });
-                            rpc.start(promise);
                         }
                         if rpc_running {
                             ui.add(Spinner::new());
@@ -201,12 +198,11 @@ impl Widget for Login<'_> {
                             username,
                             code: (*pairing_code).trim().to_string(),
                         };
-                        let promise = Promise::spawn_async(async move {
+                        rpc.start(async move {
                             flatten_rpc(get_rpc().register_finish(request).await)
                                 .map(|()| LoginRpcOutcome::FinishAddDevice)
                                 .map_err(|err| format!("register_finish: {err}"))
                         });
-                        rpc.start(promise);
                     }
                     if rpc_running {
                         ui.add(Spinner::new());

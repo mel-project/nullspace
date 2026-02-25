@@ -5,7 +5,7 @@ use egui_hooks::hook::state::Var;
 use nullspace_client::internal::{ConvoId, ConvoSummary};
 
 use crate::NullspaceApp;
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::add_contact::AddContact;
 use crate::screens::add_device::AddDevice;

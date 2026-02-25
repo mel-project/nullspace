@@ -10,7 +10,7 @@ use nullspace_crypt::hash::Hash;
 use nullspace_structs::timestamp::NanoTimestamp;
 use pollster::FutureExt;
 
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
 use crate::utils::prefs::ConvoRowStyle;

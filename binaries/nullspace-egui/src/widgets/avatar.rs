@@ -6,7 +6,7 @@ use nullspace_crypt::hash::BcsHashExt;
 use nullspace_structs::fragment::ImageAttachment;
 use nullspace_structs::username::UserName;
 
-use crate::promises::flatten_rpc;
+use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
 use crate::widgets::smooth::SmoothImage;

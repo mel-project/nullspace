@@ -70,7 +70,7 @@ value = BCS(next_descriptor)
 signature = ed25519_sign(signer_sk, BCS([username_key, nonce, signer_pk, owners, value]))
 ```
 
-4. Submit `update` using `v1_insert_update` from [directory](directory.md).
+4. Submit `update` using `v1_insert_update` from the [directory RPC](../rpc/directory.md).
 
 Validation is enforced by the raw directory:
 

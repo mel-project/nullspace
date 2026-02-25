@@ -18,7 +18,7 @@ sequenceDiagram
 
 ## Bidirectional channel transport
 
-Provisioning uses server channel RPCs from [server](server.md):
+Provisioning uses server channel RPCs from the [server RPC](../rpc/server.md):
 
 - `v1_chan_allocate(auth_token) -> channel_id`
 - `v1_chan_send(channel_id, direction, blob) -> ()`

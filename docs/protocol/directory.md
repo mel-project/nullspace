@@ -204,65 +204,6 @@ The bitmap has:
 
 Clients can decompress by walking the bitmap left-to-right and consuming 32-byte hashes from `siblings` for each zero bit.
 
-## RPC API (JSON-RPC)
+## RPC API
 
-Directory RPC is JSON-RPC 2.0. Method names are versioned with a `v1_` prefix.
-
-### `v1_get_pow_seed() -> pow_seed`
-
-Returns a PoW seed that can be used to rate-limit an update submission.
-
-Clients SHOULD fetch a fresh seed shortly before calling `v1_insert_update`.
-
-### `v1_get_anchor() -> anchor`
-
-Returns the current signed head of the directory.
-
-Clients MUST verify the anchor signature with the trusted directory public key.
-
-### `v1_get_headers(first, last) -> [header]`
-
-Returns headers in the inclusive range `[first, last]`.
-
-Clients use this to sync and validate the header chain up to the anchor height.
-
-### `v1_get_chunk(height) -> chunk`
-
-Returns the chunk at `height`.
-
-Clients MAY fetch chunks for audit, mirroring, or debugging. Inclusion proofs do not require chunks.
-
-### `v1_get_item(key) -> [leaf_value_bytes_or_null, proof_height, compressed_proof_bytes]`
-
-Returns:
-
-- `leaf_value_bytes_or_null`: `null` for key absence, otherwise SMT leaf value bytes
-- `proof_height`: the height of the header whose `smt_root` the proof targets
-- `compressed_proof_bytes`: compressed Merkle proof bytes
-
-Clients MUST:
-- sync headers up to `proof_height`
-- verify the Merkle proof against `header[proof_height].smt_root`
-
-### `v1_insert_update(update, pow_solution) -> ()`
-
-Submits an update for the key/value registry.
-
-Validation rules:
-- `pow_solution` must be valid and unexpired
-- update signature must verify under `signer_pk`
-- `nonce` must be strictly greater than the current nonce floor for `key`
-- authorization:
-  - if the key has no committed owners, then the update MUST include `signer_pk` in `owners`
-  - otherwise, `signer_pk` MUST be in the committed owners list
-
-If accepted, the update is placed into the per-key mempool and will be applied at the next commit.
-
-The directory MAY accept multiple updates for the same key without an intervening commit, as long as nonces are strictly increasing.
-
-## Errors and retry
-
-The directory may return:
-
-- `retry later`: temporary failure (clients should retry with backoff)
-- `update rejected(reason)`: permanent rejection for the given update (clients should not retry the same update)
+The directory RPC methods are specified in [Directory RPC](../rpc/directory.md).

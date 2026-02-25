@@ -44,7 +44,7 @@ impl Widget for Convo<'_> {
         let convo_id = ui.use_gbox(|| convo_id, key.clone());
         let scroller = ui.use_gbox(move || new_scroller(convo_id.get()), key.clone());
         let read_up_to = scroller.read().items.last().map(|m| m.id);
-        ui.use_async(
+        ui.use_async_memo(
             async move {
                 smol::Timer::after(Duration::from_secs(1)).await;
                 if let Some(val) = read_up_to {

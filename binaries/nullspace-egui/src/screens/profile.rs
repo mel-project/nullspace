@@ -61,7 +61,7 @@ impl Widget for ProfileInner<'_> {
 
         // Fetch profile once; on error fall back to empty.
         let fetch_username = username.clone();
-        let profile_result = ui.use_async(
+        let profile_result = ui.use_async_memo(
             async move { flatten_rpc(get_rpc().user_details(fetch_username).await) },
             (),
         );

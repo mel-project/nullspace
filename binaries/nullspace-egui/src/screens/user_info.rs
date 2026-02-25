@@ -38,7 +38,7 @@ impl Widget for UserInfo {
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
                 let username = ui.use_gbox(|| username.clone(), username.clone());
-                let details_result = ui.use_async(
+                let details_result = ui.use_async_memo(
                     async move { flatten_rpc(get_rpc().user_details(username.get()).await) },
                     username.id(),
                 );

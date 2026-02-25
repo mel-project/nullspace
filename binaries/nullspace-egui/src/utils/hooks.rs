@@ -121,19 +121,19 @@ pub trait CustomHooksExt {
     ///
     /// Because the hook returns the "same" value over and over after the future
     /// completes, it returns `Arc<T>` to avoid cloning.
-    fn use_async<T: Send + Sync + 'static>(
+    fn use_async_memo<T: Send + Sync + 'static>(
         &mut self,
         future: impl Future<Output = T> + Send + 'static,
         deps: impl PartialEq + Send + Sync + 'static,
     ) -> Option<Arc<T>>;
 
-    /// Imperative async slot, polled once per frame like [`use_async`].
+    /// Imperative async slot, polled once per frame like [`use_async_memo`].
     ///
     /// Starts idle. Call [`Slot::start`] to submit a future; the hook polls
     /// it each frame and stores the result when ready. The future is dropped
     /// if the widget is removed or `deps` change, so there is no risk of
     /// writing to dead state.
-    fn use_slot<T: Send + Sync + Clone + 'static>(
+    fn use_async_slot<T: Send + Sync + Clone + 'static>(
         &mut self,
         deps: impl PartialEq + Send + Sync + 'static,
     ) -> Slot<T>;
@@ -147,14 +147,14 @@ impl CustomHooksExt for egui::Ui {
     ) -> GBox<T> {
         self.use_hook(GBoxHook::new(init), deps)
     }
-    fn use_async<T: Send + Sync + 'static>(
+    fn use_async_memo<T: Send + Sync + 'static>(
         &mut self,
         future: impl Future<Output = T> + Send + 'static,
         deps: impl PartialEq + Send + Sync + 'static,
     ) -> Option<Arc<T>> {
         self.use_hook(AsyncHook::new(future), deps)
     }
-    fn use_slot<T: Send + Sync + Clone + 'static>(
+    fn use_async_slot<T: Send + Sync + Clone + 'static>(
         &mut self,
         deps: impl PartialEq + Send + Sync + 'static,
     ) -> Slot<T> {
@@ -166,7 +166,7 @@ impl CustomHooksExt for egui::Ui {
 }
 
 // ---------------------------------------------------------------------------
-// use_async
+// use_async_memo
 // ---------------------------------------------------------------------------
 
 struct AsyncBackend<T> {
@@ -245,7 +245,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// use_slot
+// use_async_slot
 // ---------------------------------------------------------------------------
 
 enum SlotPhase<T> {
@@ -279,7 +279,7 @@ impl<T> SlotState<T> {
     }
 }
 
-/// Imperative async slot returned by [`CustomHooksExt::use_slot`].
+/// Imperative async slot returned by [`CustomHooksExt::use_async_slot`].
 ///
 /// The future is polled on the UI thread each frame; it is dropped when
 /// the owning widget disappears or when deps change.

@@ -115,7 +115,7 @@ impl Widget for SmoothImage<'_> {
         let stale_texture = ANY_CACHE.get(&self.filename.to_path_buf());
 
         let resize =
-            ui.use_slot::<Result<eframe::egui::TextureHandle, String>>(cache_key.clone());
+            ui.use_async_slot::<Result<eframe::egui::TextureHandle, String>>(cache_key.clone());
 
         let texture = match resize.poll() {
             SlotState::Done(Ok(texture)) => Some(texture),

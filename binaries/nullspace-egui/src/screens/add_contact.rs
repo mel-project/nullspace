@@ -22,7 +22,7 @@ impl Widget for AddContact<'_> {
         ui.scope(|ui| {
             let username_str = ui.use_gbox(String::new, ());
             let message_str = ui.use_gbox(String::new, ());
-            let validate_username = ui.use_async(
+            let validate_username = ui.use_async_memo(
                 async move {
                     smol::Timer::after(Duration::from_millis(100)).await;
                     anyhow::Ok(

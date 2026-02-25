@@ -33,7 +33,7 @@ impl Widget for Login<'_> {
         let mut step = ui.use_state(LoginStep::default, ()).into_var();
         let mut rpc_error = ui.use_state(|| None::<String>, ()).into_var();
         let mut rpc_notice = ui.use_state(|| None::<String>, ()).into_var();
-        let rpc = ui.use_slot::<Result<LoginRpcOutcome, String>>(());
+        let rpc = ui.use_async_slot::<Result<LoginRpcOutcome, String>>(());
         let mut username_str = ui.use_state(|| "".to_string(), ()).into_var();
         let mut server_choice = ui.use_state(|| "~public_test".to_string(), ()).into_var();
         let mut custom_server_str = ui.use_state(|| "".to_string(), ()).into_var();

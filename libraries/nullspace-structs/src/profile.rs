@@ -4,13 +4,14 @@ use nullspace_crypt::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{fragment::ImageAttachment, timestamp::Timestamp};
+use crate::{fragment::ImageAttachment, server::MailboxId, timestamp::Timestamp};
 
 /// A signed user profile, containing the profile picture and various other objects.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserProfile {
     pub display_name: Option<String>,
     pub avatar: Option<ImageAttachment>,
+    pub dm_mailbox: MailboxId,
     pub created: Timestamp,
 
     pub signature: Signature,
@@ -18,7 +19,12 @@ pub struct UserProfile {
 
 impl Signable for UserProfile {
     fn signed_value(&self) -> Vec<u8> {
-        (&self.display_name, &self.avatar, self.created)
+        (
+            &self.display_name,
+            &self.avatar,
+            self.dm_mailbox,
+            self.created,
+        )
             .bcs_keyed_hash("user_profile")
             .to_bytes()
             .to_vec()

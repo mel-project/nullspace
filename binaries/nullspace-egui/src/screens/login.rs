@@ -6,20 +6,18 @@ use nullspace_structs::username::UserName;
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
-use crate::utils::hooks::CustomHooksExt;
 use crate::utils::color::username_color;
+use crate::utils::hooks::CustomHooksExt;
 
 pub struct Login<'a>(pub &'a mut NullspaceApp);
 
-#[derive(Clone, Copy)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 enum LoginStep {
     #[default]
     EnterUsername,
     FinishBootstrap,
     FinishAddDevice,
 }
-
 
 #[derive(Clone)]
 enum LoginRpcOutcome {

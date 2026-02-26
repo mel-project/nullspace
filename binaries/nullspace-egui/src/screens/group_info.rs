@@ -92,8 +92,7 @@ impl Widget for GroupInfo<'_> {
                                 }
                             };
                             let group = self.group;
-                            let _ =
-                                flatten_rpc(get_rpc().group_invite(group, username).block_on());
+                            let _ = flatten_rpc(get_rpc().group_invite(group, username).block_on());
                         }
                         ui.end_row();
                     });

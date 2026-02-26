@@ -51,7 +51,6 @@ pub async fn show_notification(
                         MessageContent::PlainText(text) => text.clone(),
                         MessageContent::Attachment { .. } => "Attachment".to_string(),
                         MessageContent::ImageAttachment { .. } => "Image".to_string(),
-                        MessageContent::GroupInvite { .. } => "Group invite".to_string(),
                     };
                     let title = format!("Message from {}", message.sender);
                     #[cfg(target_os = "linux")]

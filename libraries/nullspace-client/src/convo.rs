@@ -1,9 +1,7 @@
 //! Conversation primitives shared across the frontend API.
 //!
 //! This module defines the types that frontends use to display and interact
-//! with conversations.  The heavy lifting -- encryption, sending, receiving,
-//! group management, key rotation -- lives in private sub-modules and is
-//! never exposed.
+//! with conversations.
 
 use anyctx::AnyCtx;
 use futures_concurrency::future::Race;
@@ -20,14 +18,8 @@ use crate::config::Config;
 
 mod dm_common;
 mod dm_recv;
-mod group;
-mod group_recv;
-mod rekey;
-mod roster;
 mod send;
 
-pub use group::{accept_invite, create_group, invite, load_group};
-pub use roster::GroupRoster;
 pub use send::queue_message;
 
 /// Identifies a conversation.
@@ -141,15 +133,6 @@ pub enum MessageContent {
         /// Base91-encoded ThumbHash string.
         thumbhash: String,
     },
-    /// An invitation to join a group, embedded in a DM.
-    ///
-    /// Accept it with
-    /// [`group_accept_invite`](crate::internal::InternalProtocol::group_accept_invite).
-    GroupInvite {
-        /// The message ID of this invitation (pass to
-        /// `group_accept_invite`).
-        invite_id: i64,
-    },
 }
 
 /// A message the frontend wishes to send.
@@ -184,12 +167,7 @@ pub struct ConvoSummary {
 }
 
 pub async fn convo_loop(ctx: &AnyCtx<Config>) {
-    (
-        send::send_loop(ctx),
-        dm_recv::dm_recv_loop(ctx),
-        group_recv::group_recv_loop(ctx),
-        rekey::group_rekey_loop(ctx),
-    )
+    (send::send_loop(ctx), dm_recv::dm_recv_loop(ctx))
         .race()
         .await;
 }

@@ -20,16 +20,16 @@ use crate::timestamp::Timestamp;
 #[async_trait]
 /// The RPC protocol for accessing the directory.
 pub trait DirectoryProtocol {
-    async fn v1_get_pow_seed(&self) -> PowSeed;
-    async fn v1_get_anchor(&self) -> Result<DirectoryAnchor, DirectoryErr>;
-    async fn v1_get_chunk(&self, height: u64) -> Result<DirectoryChunk, DirectoryErr>;
-    async fn v1_get_headers(
+    async fn get_pow_seed(&self) -> PowSeed;
+    async fn get_anchor(&self) -> Result<DirectoryAnchor, DirectoryErr>;
+    async fn get_chunk(&self, height: u64) -> Result<DirectoryChunk, DirectoryErr>;
+    async fn get_headers(
         &self,
         first: u64,
         last: u64,
     ) -> Result<Vec<DirectoryHeader>, DirectoryErr>;
-    async fn v1_get_item(&self, key: String) -> Result<DirectoryResponse, DirectoryErr>;
-    async fn v1_insert_update(
+    async fn get_item(&self, key: String) -> Result<DirectoryResponse, DirectoryErr>;
+    async fn insert_update(
         &self,
         update: DirectoryUpdate,
         pow: PowSolution,

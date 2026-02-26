@@ -106,7 +106,7 @@ async fn fetch_medium_pks(
     username: &UserName,
 ) -> anyhow::Result<BTreeMap<Hash, SignedMediumPk>> {
     server
-        .v1_device_medium_pks(username.clone())
+        .device_medium_pks(username.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }

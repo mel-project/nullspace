@@ -129,18 +129,6 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
     }
     ui.vertical(|ui| {
         match &message.body {
-            MessageContent::GroupInvite { invite_id } => {
-                ui.horizontal_top(|ui| {
-                    ui.colored_label(Color32::GRAY, "Invitation to group");
-                    if ui.link("Accept").clicked() {
-                        let invite_id = *invite_id;
-                        smol::spawn(async move {
-                            let _ = flatten_rpc(get_rpc().group_accept_invite(invite_id).await);
-                        })
-                        .detach();
-                    }
-                });
-            }
             MessageContent::Attachment {
                 id,
                 size,

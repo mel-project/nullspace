@@ -8,8 +8,6 @@ use serde_with::formats::Unpadded;
 use serde_with::{Bytes as SerdeBytes, FromInto, IfIsHumanReadable, serde_as};
 use smol_str::SmolStr;
 
-use crate::event::EventPayload;
-
 /// An image attachment, with image-specific metadata.
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ImageAttachment {
@@ -19,12 +17,6 @@ pub struct ImageAttachment {
     pub inner: Attachment,
 }
 
-impl EventPayload for ImageAttachment {
-    fn mime() -> &'static str {
-        "application/vnd.nullspace.v1.imageattachment"
-    }
-}
-
 /// An attachment, which assigns a filename and mime to a series of encrypted fragments. This is something that can be sent in messages to represent attachments, for example.
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Attachment {
@@ -32,12 +24,6 @@ pub struct Attachment {
     pub mime: SmolStr,
     pub children: Vec<(Hash, u64)>,
     pub content_key: AeadKey,
-}
-
-impl EventPayload for Attachment {
-    fn mime() -> &'static str {
-        "application/vnd.nullspace.v1.attachment"
-    }
 }
 
 /// A fragment node, which contains pointers to other fragment nodes and/or leaves.

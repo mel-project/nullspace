@@ -65,7 +65,7 @@ pub async fn sync_headers(
         let end = (next + BATCH_LIMIT - 1).min(anchor.last_header_height);
         debug!(from = next, to = end, "syncing directory headers");
         let headers = raw
-            .v1_get_headers(next, end)
+            .get_headers(next, end)
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         let expected_len = (end - next + 1) as usize;

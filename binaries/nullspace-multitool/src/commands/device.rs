@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use nullspace_crypt::signing::Signable;
 use nullspace_rpc_pool::RpcPool;
@@ -9,7 +8,7 @@ use nullspace_structs::{
     Blob,
     certificate::DeviceSecret,
     server::{
-        AuthToken, DeviceAuthRequest, MailboxId, MailboxRecvArgs, ServerClient,
+        AuthToken, DeviceAuthRequest, MailboxKey, MailboxRecvArgs, ServerClient,
         SignedDeviceAuthRequest,
     },
     timestamp::NanoTimestamp,
@@ -39,14 +38,14 @@ enum Command {
     },
     MailboxSend {
         username: UserName,
-        #[arg(long)]
-        device_secret: PathBuf,
         message: String,
     },
     MailboxRecv {
         username: UserName,
         #[arg(long)]
         device_secret: PathBuf,
+        #[arg(long)]
+        mailbox_key_file: PathBuf,
         #[arg(long, default_value_t = 30000)]
         timeout_ms: u64,
     },
@@ -79,44 +78,39 @@ pub async fn run(args: Args, global: &GlobalArgs) -> anyhow::Result<()> {
             let secret = DeviceSecret::random();
             write_secret_file(&out, &secret)?;
         }
-        Command::MailboxSend {
-            username,
-            device_secret,
-            message,
-        } => {
+        Command::MailboxSend { username, message } => {
             let endpoint = resolve_server_endpoint(global, &username).await?;
             let client = ServerClient::from(rpc_pool.rpc(endpoint));
-            let device_secret = read_bcs::<DeviceSecret>(&device_secret)?;
-            let auth = authenticate(&client, &username, &device_secret).await?;
-            let mailbox = MailboxId::direct(&username);
-            let msg = Blob {
-                kind: Blob::V1_PLAINTEXT_DIRECT_MESSAGE.into(),
-                inner: Bytes::from(message.into_bytes()),
-            };
+            let mailbox = mailbox_id_from_profile(&client, &username).await?;
             client
-                .v1_mailbox_send(auth, mailbox, msg, 0)
+                .mailbox_send(mailbox, Blob(message.into_bytes().into()), 0)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         }
         Command::MailboxRecv {
             username,
             device_secret,
+            mailbox_key_file,
             timeout_ms,
         } => {
             let endpoint = resolve_server_endpoint(global, &username).await?;
             let client = ServerClient::from(rpc_pool.rpc(endpoint));
             let device_secret = read_bcs::<DeviceSecret>(&device_secret)?;
             let auth = authenticate(&client, &username, &device_secret).await?;
-            let mailbox = MailboxId::direct(&username);
+            let mailbox_key = read_bcs::<MailboxKey>(&mailbox_key_file)?;
+            let mailbox = client
+                .mailbox_create(auth, mailbox_key)
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             let mut after = NanoTimestamp(0);
             loop {
                 let args = vec![MailboxRecvArgs {
-                    auth,
                     mailbox,
+                    mailbox_key,
                     after,
                 }];
                 let response = client
-                    .v1_mailbox_multirecv(args, timeout_ms)
+                    .mailbox_multirecv(args, timeout_ms)
                     .await?
                     .map_err(|err| anyhow::anyhow!(err.to_string()))?;
                 let entries = response.get(&mailbox).cloned().unwrap_or_default();
@@ -140,7 +134,7 @@ async fn authenticate(
 ) -> anyhow::Result<AuthToken> {
     let device_pk = device_secret.public().signing_public();
     let challenge = client
-        .v1_device_auth_start(username.clone(), device_pk)
+        .device_auth_start(username.clone(), device_pk)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let mut request = SignedDeviceAuthRequest {
@@ -153,9 +147,21 @@ async fn authenticate(
     };
     request.sign(device_secret);
     client
-        .v1_device_auth_finish(request)
+        .device_auth_finish(request)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+async fn mailbox_id_from_profile(
+    client: &ServerClient,
+    username: &UserName,
+) -> anyhow::Result<nullspace_structs::server::MailboxId> {
+    let profile = client
+        .profile(username.clone())
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?
+        .context("profile not found")?;
+    Ok(profile.dm_mailbox)
 }
 
 async fn resolve_server_endpoint(global: &GlobalArgs, username: &UserName) -> anyhow::Result<Url> {

@@ -1,12 +1,12 @@
 use bytes::Bytes;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nullspace_crypt::dh::DhSecret;
-use nullspace_structs::Blob;
 use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
-use nullspace_structs::event::Event;
+use nullspace_structs::event::{Event, MessagePayload, MessageText, TAG_MESSAGE};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
+use std::collections::BTreeMap;
 
 fn dm_benchmarks(c: &mut Criterion) {
     let sender_secret = DeviceSecret::random();
@@ -15,15 +15,21 @@ fn dm_benchmarks(c: &mut Criterion) {
     let recipient = UserName::parse("@rcpt01").expect("recipient username");
 
     let content = Event {
-        recipient: recipient.into(),
+        recipient,
         sent_at: NanoTimestamp(0),
-        mime: smol_str::SmolStr::new("text/plain"),
-        body: Bytes::from_static(b"benchmark dm payload"),
+        after: None,
+        tag: TAG_MESSAGE,
+        body: Bytes::from(
+            bcs::to_bytes(&MessagePayload {
+                payload: MessageText::Plain("benchmark dm payload".to_string()),
+                attachments: Vec::new(),
+                replies_to: None,
+                metadata: BTreeMap::new(),
+            })
+            .expect("payload"),
+        ),
     };
-    let message = Blob {
-        kind: Blob::V1_MESSAGE_CONTENT.into(),
-        inner: Bytes::from(bcs::to_bytes(&content).expect("content")),
-    };
+    let content_bytes = Bytes::from(bcs::to_bytes(&content).expect("content"));
 
     let recipient_one_medium = DhSecret::random();
     let recipients_one = vec![recipient_one_medium.public_key()];
@@ -38,13 +44,12 @@ fn dm_benchmarks(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     group.bench_function("encrypt_1_device", |b| {
         b.iter(|| {
-            let signed = DeviceSigned::sign_blob(
-                &message,
+            let signed = DeviceSigned::sign_bytes(
+                content_bytes.clone(),
                 sender_username.clone(),
                 sender_device_pk,
                 &sender_secret,
-            )
-            .expect("sign");
+            );
             let signed_bytes = bcs::to_bytes(&signed).expect("encode signed");
             let encrypted =
                 HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients_one.iter().cloned())
@@ -54,13 +59,12 @@ fn dm_benchmarks(c: &mut Criterion) {
     });
     group.bench_function("encrypt_10_devices", |b| {
         b.iter(|| {
-            let signed = DeviceSigned::sign_blob(
-                &message,
+            let signed = DeviceSigned::sign_bytes(
+                content_bytes.clone(),
                 sender_username.clone(),
                 sender_device_pk,
                 &sender_secret,
-            )
-            .expect("sign");
+            );
             let signed_bytes = bcs::to_bytes(&signed).expect("encode signed");
             let encrypted =
                 HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients_ten.iter().cloned())

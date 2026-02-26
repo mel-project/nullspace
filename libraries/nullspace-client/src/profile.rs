@@ -12,7 +12,7 @@ pub async fn get_profile(
     let user = get_user_info(ctx, username).await?;
     let profile = user
         .server
-        .v1_profile(username.clone())
+        .profile(username.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 

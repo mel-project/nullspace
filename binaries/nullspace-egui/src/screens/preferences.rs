@@ -1,9 +1,6 @@
 use eframe::egui::{ComboBox, Grid, Response, Widget, Window};
 
-use crate::{
-    NullspaceApp,
-    utils::prefs::ConvoRowStyle,
-};
+use crate::{NullspaceApp, utils::prefs::ConvoRowStyle};
 
 pub struct Preferences<'a> {
     pub app: &'a mut NullspaceApp,
@@ -28,10 +25,7 @@ impl Widget for Preferences<'_> {
                         .show(ui, |ui| {
                             ui.label("Zoom");
                             ComboBox::from_id_salt("zoom_percent")
-                                .selected_text(format!(
-                                    "{}%",
-                                    self.app.state.prefs.zoom_percent
-                                ))
+                                .selected_text(format!("{}%", self.app.state.prefs.zoom_percent))
                                 .show_ui(ui, |ui| {
                                     for &pct in ZOOM_OPTIONS {
                                         ui.selectable_value(

@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use anyctx::AnyCtx;
 use futures_concurrency::future::Race;
-use nullspace_structs::group::GroupId;
 use nullspace_structs::server::MailboxId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -13,7 +12,7 @@ use crate::config::Ctx;
 use crate::convo::parse_convo_id;
 use crate::events::emit_event;
 use crate::internal::Event;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Notify;
 
@@ -107,7 +106,6 @@ async fn message_event_loop(ctx: &AnyCtx<Config>) {
     let mut last_seen_id = current_max_msg(db).await.unwrap_or(0);
     let mut last_seen_received_at = current_max_received_at(db).await.unwrap_or(0);
     let mut last_seen_read_rowid = current_max_read_rowid(db).await.unwrap_or(0);
-    let mut group_versions = load_group_versions(db).await.unwrap_or_default();
     loop {
         notify.wait_for_change().await;
         let (new_last, mut convos) = match new_message_convos(db, last_seen_id).await {
@@ -140,18 +138,6 @@ async fn message_event_loop(ctx: &AnyCtx<Config>) {
         for convo_id in convos {
             emit_event(ctx, Event::ConvoUpdated { convo_id });
         }
-        let (next_versions, roster_groups) = match updated_group_versions(db, &group_versions).await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to query group roster updates");
-                continue;
-            }
-        };
-        group_versions = next_versions;
-        for group in roster_groups {
-            emit_event(ctx, Event::GroupUpdated { group });
-        }
     }
 }
 
@@ -163,7 +149,7 @@ pub async fn identity_exists(db: &sqlx::SqlitePool) -> anyhow::Result<bool> {
 }
 
 async fn current_max_msg(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
-    let row = sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(id) FROM convo_messages")
+    let row = sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(id) FROM thread_events")
         .fetch_one(db)
         .await?;
     Ok(row.0.unwrap_or(0))
@@ -171,7 +157,7 @@ async fn current_max_msg(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
 
 async fn current_max_received_at(db: &sqlx::SqlitePool) -> anyhow::Result<i64> {
     let row = sqlx::query_as::<_, (Option<i64>,)>(
-        "SELECT MAX(received_at) FROM convo_messages WHERE received_at IS NOT NULL",
+        "SELECT MAX(received_at) FROM thread_events WHERE received_at IS NOT NULL",
     )
     .fetch_one(db)
     .await?;
@@ -190,11 +176,11 @@ async fn new_message_convos(
     last_seen_id: i64,
 ) -> anyhow::Result<(i64, Vec<crate::convo::ConvoId>)> {
     let rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT m.id, c.convo_type, c.convo_counterparty \
-         FROM convo_messages m \
-         JOIN convos c ON m.convo_id = c.id \
-         WHERE m.id > ? \
-         ORDER BY m.id",
+        "SELECT e.id, t.thread_kind, t.thread_counterparty \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         WHERE e.id > ? \
+         ORDER BY e.id",
     )
     .bind(last_seen_id)
     .fetch_all(db)
@@ -218,11 +204,11 @@ async fn new_received_convos(
     last_seen_received_at: i64,
 ) -> anyhow::Result<(i64, Vec<crate::convo::ConvoId>)> {
     let rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT m.received_at, c.convo_type, c.convo_counterparty \
-         FROM convo_messages m \
-         JOIN convos c ON m.convo_id = c.id \
-         WHERE m.received_at IS NOT NULL AND m.received_at > ? \
-         ORDER BY m.received_at",
+        "SELECT e.received_at, t.thread_kind, t.thread_counterparty \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         WHERE e.received_at IS NOT NULL AND e.received_at > ? \
+         ORDER BY e.received_at",
     )
     .bind(last_seen_received_at)
     .fetch_all(db)
@@ -246,10 +232,10 @@ async fn new_read_convos(
     last_seen_rowid: i64,
 ) -> anyhow::Result<(i64, Vec<crate::convo::ConvoId>)> {
     let rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT mr.rowid, c.convo_type, c.convo_counterparty \
+        "SELECT mr.rowid, t.thread_kind, t.thread_counterparty \
          FROM message_reads mr \
-         JOIN convo_messages m ON m.id = mr.message_id \
-         JOIN convos c ON m.convo_id = c.id \
+         JOIN thread_events e ON e.id = mr.message_id \
+         JOIN event_threads t ON e.thread_id = t.id \
          WHERE mr.rowid > ? \
          ORDER BY mr.rowid",
     )
@@ -268,39 +254,6 @@ async fn new_read_convos(
         }
     }
     Ok((max_rowid, convos.into_iter().collect()))
-}
-
-async fn load_group_versions(db: &sqlx::SqlitePool) -> anyhow::Result<HashMap<GroupId, i64>> {
-    let rows = sqlx::query_as::<_, (Vec<u8>, i64)>("SELECT group_id, roster_version FROM groups")
-        .fetch_all(db)
-        .await?;
-    let mut out = HashMap::new();
-    for (group_id, roster_version) in rows {
-        let Ok(group_id) = <[u8; 32]>::try_from(group_id.as_slice()).map(GroupId::from_bytes)
-        else {
-            continue;
-        };
-        out.insert(group_id, roster_version);
-    }
-    Ok(out)
-}
-
-async fn updated_group_versions(
-    db: &sqlx::SqlitePool,
-    known: &HashMap<GroupId, i64>,
-) -> anyhow::Result<(HashMap<GroupId, i64>, Vec<GroupId>)> {
-    let current = load_group_versions(db).await?;
-    if current.is_empty() {
-        return Ok((current, Vec::new()));
-    }
-    let mut updated = Vec::new();
-    for (group_id, roster_version) in &current {
-        match known.get(group_id) {
-            Some(prev) if *prev >= *roster_version => {}
-            _ => updated.push(*group_id),
-        }
-    }
-    Ok((current, updated))
 }
 
 pub async fn ensure_mailbox_state<'e, E>(
@@ -366,9 +319,9 @@ where
     Ok(())
 }
 
-pub async fn ensure_convo_id<'e, E>(
+pub async fn ensure_thread_id<'e, E>(
     exec: E,
-    convo_type: &str,
+    thread_kind: &str,
     counterparty: &str,
 ) -> anyhow::Result<i64>
 where
@@ -376,13 +329,13 @@ where
 {
     let created_at = NanoTimestamp::now().0 as i64;
     let row = sqlx::query_as::<_, (i64,)>(
-        "INSERT INTO convos (convo_type, convo_counterparty, created_at) \
+        "INSERT INTO event_threads (thread_kind, thread_counterparty, created_at) \
          VALUES (?, ?, ?) \
-         ON CONFLICT(convo_type, convo_counterparty) DO UPDATE \
-         SET convo_type = excluded.convo_type \
+         ON CONFLICT(thread_kind, thread_counterparty) DO UPDATE \
+         SET thread_kind = excluded.thread_kind \
          RETURNING id",
     )
-    .bind(convo_type)
+    .bind(thread_kind)
     .bind(counterparty)
     .bind(created_at)
     .fetch_one(exec)

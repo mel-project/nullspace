@@ -14,9 +14,9 @@ use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, St
 use crate::NullspaceApp;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
+use crate::utils::color::username_color;
 use crate::utils::generational::GBox;
 use crate::utils::hooks::CustomHooksExt;
-use crate::utils::color::username_color;
 use crate::widgets::avatar::Avatar;
 
 #[derive(Clone)]
@@ -258,9 +258,8 @@ impl Widget for ProfileInner<'_> {
                         let display_name = new_display_name.clone();
                         let avatar = avatar_to_send.clone();
                         smol::spawn(async move {
-                            match flatten_rpc(
-                                get_rpc().own_profile_set(display_name, avatar).await,
-                            ) {
+                            match flatten_rpc(get_rpc().own_profile_set(display_name, avatar).await)
+                            {
                                 Ok(()) => {
                                     save_error.set(None);
                                     save_succeeded.set(true);

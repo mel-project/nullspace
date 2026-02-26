@@ -10,13 +10,12 @@ use nullspace_crypt::{hash::Hash, signing::SigningPublic};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::hex::Hex;
-use serde_with::{Bytes, IfIsHumanReadable, serde_as};
+use serde_with::{Bytes as SerdeBytes, IfIsHumanReadable, serde_as};
 use smol_str::{SmolStr, format_smolstr};
 use thiserror::Error;
 use url::Url;
 
 use crate::fragment::Fragment;
-use crate::group::GroupId;
 use crate::profile::UserProfile;
 use crate::timestamp::Timestamp;
 use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
@@ -26,10 +25,10 @@ use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
 #[async_trait]
 pub trait ServerProtocol {
     /// Allocates a one-time message-passing channel, used for device provisioning and other similar use cases. Returns the ID of the channel, which should be a fairly small number, allocated sequentially (the smallest free number).
-    async fn v1_chan_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError>;
+    async fn chan_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError>;
 
     /// Sends to one direction of a channel.
-    async fn v1_chan_send(
+    async fn chan_send(
         &self,
         channel: u32,
         direction: ChanDirection,
@@ -37,81 +36,72 @@ pub trait ServerProtocol {
     ) -> Result<(), ServerRpcError>;
 
     /// Receives a message from a channel. Does not block.
-    async fn v1_chan_recv(
+    async fn chan_recv(
         &self,
         channel: u32,
         direction: ChanDirection,
     ) -> Result<Option<Blob>, ServerRpcError>;
 
     /// Start challenge/response authentication for a device.
-    async fn v1_device_auth_start(
+    async fn device_auth_start(
         &self,
         username: UserName,
         device_pk: SigningPublic,
     ) -> Result<DeviceAuthChallenge, ServerRpcError>;
 
     /// Finish challenge/response authentication for a device.
-    async fn v1_device_auth_finish(
+    async fn device_auth_finish(
         &self,
         request: SignedDeviceAuthRequest,
     ) -> Result<AuthToken, ServerRpcError>;
 
     /// Retrieve the medium-term keys for a given username.
-    async fn v1_device_medium_pks(
+    async fn device_medium_pks(
         &self,
         username: UserName,
     ) -> Result<BTreeMap<Hash, SignedMediumPk>, ServerRpcError>;
 
     /// Retrieve a user's profile.
-    async fn v1_profile(&self, username: UserName) -> Result<Option<UserProfile>, ServerRpcError>;
+    async fn profile(&self, username: UserName) -> Result<Option<UserProfile>, ServerRpcError>;
 
     /// Set a user's profile.
-    async fn v1_profile_set(
+    async fn profile_set(
         &self,
         username: UserName,
         profile: UserProfile,
     ) -> Result<(), ServerRpcError>;
 
     /// Store a device's medium-term public key.
-    async fn v1_device_add_medium_pk(
+    async fn device_add_medium_pk(
         &self,
         auth: AuthToken,
         medium_pk: SignedMediumPk,
     ) -> Result<(), ServerRpcError>;
 
     /// Send a message into a mailbox.
-    async fn v1_mailbox_send(
+    async fn mailbox_send(
         &self,
-        auth: AuthToken,
         mailbox: MailboxId,
         message: Blob,
         ttl: u32,
     ) -> Result<NanoTimestamp, ServerRpcError>;
 
+    /// Create (or fetch) a mailbox owned by this authenticated user.
+    async fn mailbox_create(
+        &self,
+        auth: AuthToken,
+        mailbox_key: MailboxKey,
+    ) -> Result<MailboxId, ServerRpcError>;
+
     /// Receive one or more messages, from one or many mailboxes. This is batched to make long-polling more efficient. The server may choose to limit the number of messages in the response, so clients should be prepared to repeat until getting an empty "page".
-    async fn v1_mailbox_multirecv(
+    async fn mailbox_multirecv(
         &self,
         args: Vec<MailboxRecvArgs>,
         timeout_ms: u64,
     ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerRpcError>;
 
-    /// Edit the mailbox ACL.
-    async fn v1_mailbox_acl_edit(
-        &self,
-        auth: AuthToken,
-        mailbox: MailboxId,
-        arg: MailboxAcl,
-    ) -> Result<(), ServerRpcError>;
-
-    /// Create group mailboxes and grant the caller full ACL rights.
-    async fn v1_register_group(
-        &self,
-        auth: AuthToken,
-        group: GroupId,
-    ) -> Result<(), ServerRpcError>;
-
     /// Proxy a request to another server.
-    async fn v1_proxy_server(
+    async fn proxy_server(
         &self,
         auth: AuthToken,
         server: ServerName,
@@ -119,14 +109,14 @@ pub trait ServerProtocol {
     ) -> Result<JrpcResponse, ProxyError>;
 
     /// Proxy a request to the directory.
-    async fn v1_proxy_directory(
+    async fn proxy_directory(
         &self,
         auth: AuthToken,
         req: JrpcRequest,
     ) -> Result<JrpcResponse, ProxyError>;
 
     /// Upload a fragment into the content-addressed store.
-    async fn v1_upload_frag(
+    async fn frag_upload(
         &self,
         auth: AuthToken,
         frag: Fragment,
@@ -134,7 +124,7 @@ pub trait ServerProtocol {
     ) -> Result<(), ServerRpcError>;
 
     /// Upload a fragment into the content-addressed store.
-    async fn v1_download_frag(&self, hash: Hash) -> Result<Option<Fragment>, ServerRpcError>;
+    async fn frag_download(&self, hash: Hash) -> Result<Option<Fragment>, ServerRpcError>;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -200,8 +190,8 @@ impl Signable for SignedDeviceAuthRequest {
 /// Arguments for receiving messages from a single mailbox.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MailboxRecvArgs {
-    pub auth: AuthToken,
     pub mailbox: MailboxId,
+    pub mailbox_key: MailboxKey,
     pub after: NanoTimestamp,
 }
 
@@ -285,55 +275,49 @@ pub struct ServerDescriptor {
 pub struct MailboxId(Hash);
 
 impl MailboxId {
-    /// Gets the mailbox ID for DMs to the given username
-    pub fn direct(username: &UserName) -> Self {
-        Self(Hash::keyed_digest(
-            b"direct-mailbox",
-            username.as_str().as_bytes(),
-        ))
-    }
-
-    /// Gets the mailbox ID for a given group
-    pub fn group(group: &GroupId) -> Self {
-        Self::group_messages(group)
-    }
-
-    /// Gets the mailbox ID for group messages
-    pub fn group_messages(group: &GroupId) -> Self {
-        Self(Hash::keyed_digest(b"group-messages", &group.as_bytes()))
-    }
-
-    /// Gets the mailbox ID for group management messages
-    pub fn group_management(group: &GroupId) -> Self {
-        Self(Hash::keyed_digest(b"group-management", &group.as_bytes()))
+    pub fn from_key(key: &MailboxKey) -> Self {
+        Self(Hash::keyed_digest(b"nullspace-mailbox", &key.to_bytes()))
     }
 
     pub fn to_bytes(&self) -> [u8; 32] {
         self.0.to_bytes()
+    }
+
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(Hash::from_bytes(bytes))
     }
 }
 
 /// An entry stored in a mailbox, with metadata added by the server.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MailboxEntry {
-    pub message: Blob,
+    pub body: Blob,
     pub received_at: NanoTimestamp,
-    pub sender_auth_token_hash: Option<Hash>,
 }
 
-/// An ACL for a mailbox.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct MailboxAcl {
-    pub token_hash: Hash,
-    pub can_edit_acl: bool,
-    pub can_send: bool,
-    pub can_recv: bool,
+/// A mailbox read key.
+#[serde_as]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
+pub struct MailboxKey(#[serde_as(as = "IfIsHumanReadable<Hex, SerdeBytes>")] [u8; 20]);
+
+impl MailboxKey {
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+
+    pub fn to_bytes(&self) -> [u8; 20] {
+        self.0
+    }
+
+    pub fn mailbox_id(&self) -> MailboxId {
+        MailboxId::from_key(self)
+    }
 }
 
 /// An opaque authentication token.
 #[serde_as]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
-pub struct AuthToken(#[serde_as(as = "IfIsHumanReadable<Hex, Bytes>")] [u8; 20]);
+pub struct AuthToken(#[serde_as(as = "IfIsHumanReadable<Hex, SerdeBytes>")] [u8; 20]);
 
 impl AuthToken {
     /// Generates a new random authentication token.
@@ -341,7 +325,7 @@ impl AuthToken {
         Self(rand::random())
     }
 
-    /// Returns the all-zero authentication token for implicit ACL matching.
+    /// Returns the all-zero authentication token for anonymous mailbox sends.
     pub fn anonymous() -> Self {
         Self(Default::default())
     }

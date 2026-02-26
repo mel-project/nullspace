@@ -140,7 +140,7 @@ impl RpcTransport for ProxyingTransport {
         let req_direct = req.clone();
         let proxied = proxy_info
             .proxy_client
-            .v1_proxy_server(proxy_info.auth_token, inner.target_name.clone(), req)
+            .proxy_server(proxy_info.auth_token, inner.target_name.clone(), req)
             .await?;
         match proxied {
             Ok(response) => Ok(response),

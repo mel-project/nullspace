@@ -59,7 +59,7 @@ pub async fn rpc_handler(
 
 #[async_trait::async_trait]
 impl DirectoryProtocol for DirectoryServer {
-    async fn v1_get_pow_seed(&self) -> PowSeed {
+    async fn get_pow_seed(&self) -> PowSeed {
         let seed = pow::new_seed();
         if let Err(err) = db::insert_pow_seed(&self.state.pool, &seed, pow::POW_EFFORT).await {
             tracing::warn!(error = ?err, "failed to insert pow seed");
@@ -70,7 +70,7 @@ impl DirectoryProtocol for DirectoryServer {
         seed
     }
 
-    async fn v1_get_anchor(&self) -> Result<DirectoryAnchor, DirectoryErr> {
+    async fn get_anchor(&self) -> Result<DirectoryAnchor, DirectoryErr> {
         if let Some(mirror) = &self.state.mirror {
             let anchor = mirror.anchor.read().await.clone();
             return anchor.ok_or(DirectoryErr::RetryLater);
@@ -97,14 +97,14 @@ impl DirectoryProtocol for DirectoryServer {
         Ok(anchor)
     }
 
-    async fn v1_get_chunk(&self, height: u64) -> Result<DirectoryChunk, DirectoryErr> {
+    async fn get_chunk(&self, height: u64) -> Result<DirectoryChunk, DirectoryErr> {
         db::load_chunk(&self.state.pool, height)
             .await
             .map_err(map_db_err)?
             .ok_or_else(|| DirectoryErr::UpdateRejected("chunk not found".into()))
     }
 
-    async fn v1_get_headers(
+    async fn get_headers(
         &self,
         first: u64,
         last: u64,
@@ -114,7 +114,7 @@ impl DirectoryProtocol for DirectoryServer {
             .map_err(map_db_err)
     }
 
-    async fn v1_get_item(&self, key: String) -> Result<DirectoryResponse, DirectoryErr> {
+    async fn get_item(&self, key: String) -> Result<DirectoryResponse, DirectoryErr> {
         let (height, header) = db::load_last_header(&self.state.pool)
             .await
             .map_err(map_db_err)?
@@ -127,7 +127,7 @@ impl DirectoryProtocol for DirectoryServer {
         })
     }
 
-    async fn v1_insert_update(
+    async fn insert_update(
         &self,
         update: DirectoryUpdate,
         pow_solution: PowSolution,

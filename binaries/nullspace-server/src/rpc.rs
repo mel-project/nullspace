@@ -11,7 +11,7 @@ use moka::future::Cache as FutureCache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
 use nullspace_rpc_pool::PooledTransport;
 use nullspace_structs::server::{
-    AuthToken, ChanDirection, DeviceAuthChallenge, MailboxAcl, MailboxEntry, MailboxId,
+    AuthToken, ChanDirection, DeviceAuthChallenge, MailboxEntry, MailboxId, MailboxKey,
     MailboxRecvArgs, ProxyError, ServerName, ServerProtocol, ServerRpcError, ServerService,
     SignedDeviceAuthRequest, SignedMediumPk,
 };
@@ -44,11 +44,11 @@ pub async fn rpc_handler(body: Bytes) -> impl IntoResponse {
 
 #[async_trait::async_trait]
 impl ServerProtocol for ServerRpc {
-    async fn v1_chan_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError> {
+    async fn chan_allocate(&self, auth: AuthToken) -> Result<u32, ServerRpcError> {
         channel::chan_allocate(auth).await
     }
 
-    async fn v1_chan_send(
+    async fn chan_send(
         &self,
         channel_id: u32,
         direction: ChanDirection,
@@ -57,7 +57,7 @@ impl ServerProtocol for ServerRpc {
         channel::chan_send(channel_id, direction, value).await
     }
 
-    async fn v1_chan_recv(
+    async fn chan_recv(
         &self,
         channel_id: u32,
         direction: ChanDirection,
@@ -65,7 +65,7 @@ impl ServerProtocol for ServerRpc {
         channel::chan_recv(channel_id, direction).await
     }
 
-    async fn v1_device_auth_start(
+    async fn device_auth_start(
         &self,
         username: UserName,
         device_pk: nullspace_crypt::signing::SigningPublic,
@@ -73,35 +73,42 @@ impl ServerProtocol for ServerRpc {
         device::device_auth_start(username, device_pk).await
     }
 
-    async fn v1_device_auth_finish(
+    async fn device_auth_finish(
         &self,
         request: SignedDeviceAuthRequest,
     ) -> Result<AuthToken, ServerRpcError> {
         device::device_auth_finish(request).await
     }
 
-    async fn v1_mailbox_send(
+    async fn mailbox_send(
         &self,
-        auth: AuthToken,
         mailbox_id: MailboxId,
         message: Blob,
         ttl: u32,
     ) -> Result<NanoTimestamp, ServerRpcError> {
-        mailbox::mailbox_send(auth, mailbox_id, message, ttl).await
+        mailbox::mailbox_send(mailbox_id, message, ttl).await
     }
 
-    async fn v1_device_medium_pks(
+    async fn mailbox_create(
+        &self,
+        auth: AuthToken,
+        mailbox_key: MailboxKey,
+    ) -> Result<MailboxId, ServerRpcError> {
+        mailbox::mailbox_create(auth, mailbox_key).await
+    }
+
+    async fn device_medium_pks(
         &self,
         username: UserName,
     ) -> Result<BTreeMap<nullspace_crypt::hash::Hash, SignedMediumPk>, ServerRpcError> {
         device::device_medium_pks(username).await
     }
 
-    async fn v1_profile(&self, username: UserName) -> Result<Option<UserProfile>, ServerRpcError> {
+    async fn profile(&self, username: UserName) -> Result<Option<UserProfile>, ServerRpcError> {
         profile::profile_get(username).await
     }
 
-    async fn v1_profile_set(
+    async fn profile_set(
         &self,
         username: UserName,
         profile_value: UserProfile,
@@ -109,7 +116,7 @@ impl ServerProtocol for ServerRpc {
         profile::profile_set(username, profile_value).await
     }
 
-    async fn v1_device_add_medium_pk(
+    async fn device_add_medium_pk(
         &self,
         auth: AuthToken,
         medium_pk: SignedMediumPk,
@@ -117,7 +124,7 @@ impl ServerProtocol for ServerRpc {
         device::device_add_medium_pk(auth, medium_pk).await
     }
 
-    async fn v1_mailbox_multirecv(
+    async fn mailbox_multirecv(
         &self,
         args: Vec<MailboxRecvArgs>,
         timeout_ms: u64,
@@ -125,40 +132,23 @@ impl ServerProtocol for ServerRpc {
         mailbox::mailbox_multirecv(args, timeout_ms).await
     }
 
-    async fn v1_mailbox_acl_edit(
-        &self,
-        auth: AuthToken,
-        mailbox_id: MailboxId,
-        arg: MailboxAcl,
-    ) -> Result<(), ServerRpcError> {
-        mailbox::mailbox_acl_edit(auth, mailbox_id, arg).await
-    }
-
-    async fn v1_register_group(
-        &self,
-        auth: AuthToken,
-        group: nullspace_structs::group::GroupId,
-    ) -> Result<(), ServerRpcError> {
-        mailbox::register_group(auth, group).await
-    }
-
-    async fn v1_upload_frag(
+    async fn frag_upload(
         &self,
         auth: AuthToken,
         frag: nullspace_structs::fragment::Fragment,
         ttl: u32,
     ) -> Result<(), ServerRpcError> {
-        fragment::upload_frag(auth, frag, ttl).await
+        fragment::frag_upload(auth, frag, ttl).await
     }
 
-    async fn v1_download_frag(
+    async fn frag_download(
         &self,
         hash: nullspace_crypt::hash::Hash,
     ) -> Result<Option<nullspace_structs::fragment::Fragment>, ServerRpcError> {
-        fragment::download_frag(hash).await
+        fragment::frag_download(hash).await
     }
 
-    async fn v1_proxy_server(
+    async fn proxy_server(
         &self,
         auth: AuthToken,
         server: ServerName,
@@ -200,7 +190,7 @@ impl ServerProtocol for ServerRpc {
             .map_err(|err| ProxyError::Upstream(err.to_string()))
     }
 
-    async fn v1_proxy_directory(
+    async fn proxy_directory(
         &self,
         auth: AuthToken,
         req: JrpcRequest,

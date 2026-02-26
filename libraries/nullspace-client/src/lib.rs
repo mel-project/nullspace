@@ -56,7 +56,8 @@ impl Client {
     ///    if necessary and running migrations).
     /// 2. Start serving RPC requests immediately.
     /// 3. Once an identity exists in the database, launch the background
-    ///    workers -- message send/receive loops, DM and group receivers,
+    ///    workers -- message send/receive loops and medium-term key
+    ///    rotation,
     ///    medium-term key rotation, and the database event loop that drives
     ///    push [`Event`](internal::Event)s to the frontend.
     ///

@@ -1,25 +1,23 @@
 use std::time::Duration;
 
 use anyctx::AnyCtx;
-use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::signing::SigningPublic;
-use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
-use nullspace_structs::event::{Event, EventPayload, Recipient};
+use nullspace_structs::event::Event;
 use nullspace_structs::server::{MailboxId, ServerName};
 use nullspace_structs::timestamp::NanoTimestamp;
-use tracing::warn;
 
+use crate::config::Config;
 use crate::database::{
-    DATABASE, DbNotify, ensure_convo_id, ensure_mailbox_state, load_mailbox_after,
+    DATABASE, DbNotify, ensure_mailbox_state, ensure_thread_id, load_mailbox_after,
     update_mailbox_after,
 };
 use crate::identity::Identity;
 use crate::long_poll::LONG_POLLER;
 use crate::server::get_server_client;
-use crate::{attachments::store_attachment_root, config::Config};
 
 use super::dm_common::{device_auth, refresh_own_server_name};
+use super::send::store_message_attachments;
 
 pub(super) async fn dm_recv_loop(ctx: &AnyCtx<Config>) {
     loop {
@@ -45,12 +43,21 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     };
     let server = get_server_client(ctx, &server_name).await?;
     let auth = device_auth(ctx).await?;
-    let mailbox = MailboxId::direct(&identity.username);
+    let mailbox = identity.dm_mailbox_id();
+
+    server
+        .mailbox_create(auth, identity.dm_mailbox_key)
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
     ensure_mailbox_state(db, &server_name, mailbox, NanoTimestamp(0)).await?;
     let mut after = load_mailbox_after(db, &server_name, mailbox).await?;
     let poller = ctx.get(LONG_POLLER);
     loop {
-        let entry = match poller.recv(server.clone(), auth, mailbox, after).await {
+        let entry = match poller
+            .recv(server.clone(), identity.dm_mailbox_key, mailbox, after)
+            .await
+        {
             Ok(entry) => entry,
             Err(err) => {
                 tracing::warn!(error = %err, "mailbox recv error");
@@ -61,7 +68,6 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         if let Err(err) = process_mailbox_entry(ctx, &server_name, mailbox, entry).await {
             tracing::warn!(error = %err, "failed to process mailbox entry");
         }
-        // notify once to prevent thrashing
         DbNotify::touch();
     }
 }
@@ -75,111 +81,102 @@ async fn process_mailbox_entry(
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;
     update_mailbox_after(db, server_name, mailbox, entry.received_at).await?;
-    let message = entry.message;
-    if message.kind != Blob::V1_DIRECT_MESSAGE {
-        warn!(kind = %message.kind, "ignoring non-dm mailbox entry");
-        return Ok(());
-    }
-    let encrypted: HeaderEncrypted = bcs::from_bytes(&message.inner)?;
-    let header_count = encrypted.headers.len();
-    let current_mpk = identity.medium_sk_current.public_key();
-    let current_mpk_hash = current_mpk.bcs_hash().to_bytes();
-    let current_mpk_short = [current_mpk_hash[0], current_mpk_hash[1]];
-    let has_header = encrypted
-        .headers
-        .iter()
-        .any(|header| header.receiver_mpk_short == current_mpk_short);
-    tracing::debug!(
-        received_at = entry.received_at.0,
-        header_count,
-        has_header,
-        "dm header-encrypted message received",
-    );
+
+    let encrypted: HeaderEncrypted = bcs::from_bytes(&entry.body.0)?;
     let decrypted = match encrypted.decrypt_bytes(&identity.medium_sk_current) {
-        Ok(decrypted) => {
-            tracing::debug!("dm decrypt with current medium key ok");
-            decrypted
-        }
+        Ok(decrypted) => decrypted,
         Err(err) => {
             tracing::debug!(error = %err, "dm decrypt with current medium key failed");
-            match encrypted.decrypt_bytes(&identity.medium_sk_prev) {
-                Ok(decrypted) => {
-                    tracing::debug!("dm decrypt with previous medium key ok");
-                    decrypted
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "dm decrypt with previous medium key failed");
-                    return Err(anyhow::anyhow!(
-                        "failed to decrypt header-encrypted message"
-                    ));
-                }
-            }
+            encrypted.decrypt_bytes(&identity.medium_sk_prev)?
         }
     };
+
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender_username = signed.sender().clone();
     let sender_descriptor = crate::user_info::get_user_descriptor(ctx, &sender_username).await?;
     ensure_sender_device_allowed(&sender_descriptor, signed.sender_device_pk())?;
-    let message = signed
-        .verify_blob()
+    let payload = signed
+        .verify_bytes()
         .map_err(|_| anyhow::anyhow!("failed to verify device-signed message"))?;
-    if message.kind != Blob::V1_MESSAGE_CONTENT {
-        warn!(kind = %message.kind, "ignoring non-message-content dm");
-        return Ok(());
-    }
-    let content: Event = bcs::from_bytes(&message.inner)?;
-    let recipient = match content.recipient {
-        Recipient::User(username) => username,
-        Recipient::Group(group_id) => {
-            warn!(
-                sender = %sender_username,
-                group = %group_id,
-                "ignoring dm with group recipient",
-            );
-            return Ok(());
-        }
-    };
-    if recipient != identity.username && sender_username != identity.username {
-        warn!(
+    let event: Event = bcs::from_bytes(&payload)?;
+
+    if event.recipient != identity.username && sender_username != identity.username {
+        tracing::warn!(
             sender = %sender_username,
-            recipient = %recipient,
+            recipient = %event.recipient,
             "ignoring dm with mismatched recipient",
         );
         return Ok(());
     }
+
     let peer_username = if sender_username == identity.username {
-        recipient.clone()
+        event.recipient.clone()
     } else {
         sender_username.clone()
     };
+
     let mut conn = db.acquire().await?;
-    if content.mime == nullspace_structs::fragment::Attachment::mime()
-        && let Ok(root) =
-            serde_json::from_slice::<nullspace_structs::fragment::Attachment>(&content.body)
-    {
-        let _ = store_attachment_root(&mut conn, &sender_username, &root).await;
+    let thread_id = ensure_thread_id(&mut *conn, "direct", peer_username.as_str()).await?;
+    let is_valid_link = validate_event_link(&mut conn, thread_id, event.after).await?;
+    if !is_valid_link {
+        tracing::warn!(
+            sender = %sender_username,
+            event_after = ?event.after,
+            "rejecting out-of-thread event",
+        );
+        return Ok(());
     }
-    if content.mime == nullspace_structs::fragment::ImageAttachment::mime()
-        && let Ok(root) =
-            serde_json::from_slice::<nullspace_structs::fragment::ImageAttachment>(&content.body)
-    {
-        let _ = store_attachment_root(&mut conn, &sender_username, &root.inner).await;
-    }
-    let convo_id = ensure_convo_id(&mut *conn, "direct", peer_username.as_str()).await?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO convo_messages \
-         (convo_id, sender_username, mime, body, sent_at, received_at) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+
+    let event_hash = event.hash();
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO thread_events \
+         (thread_id, sender_username, event_tag, event_body, event_after, event_hash, sent_at, received_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(convo_id)
+    .bind(thread_id)
     .bind(sender_username.as_str())
-    .bind(content.mime.as_str())
-    .bind(content.body.to_vec())
-    .bind(content.sent_at.0 as i64)
+    .bind(i64::from(event.tag))
+    .bind(event.body.to_vec())
+    .bind(event.after.map(|hash| hash.to_bytes().to_vec()))
+    .bind(event_hash.to_bytes().to_vec())
+    .bind(event.sent_at.0 as i64)
     .bind(entry.received_at.0 as i64)
     .execute(&mut *conn)
-    .await?;
+    .await?
+    .rows_affected();
+
+    if inserted > 0 {
+        store_message_attachments(&mut conn, &sender_username, event.tag, &event.body).await?;
+    }
     Ok(())
+}
+
+async fn validate_event_link(
+    conn: &mut sqlx::SqliteConnection,
+    thread_id: i64,
+    event_after: Option<nullspace_crypt::hash::Hash>,
+) -> anyhow::Result<bool> {
+    match event_after {
+        Some(prev_hash) => {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM thread_events WHERE thread_id = ? AND event_hash = ? LIMIT 1",
+            )
+            .bind(thread_id)
+            .bind(prev_hash.to_bytes().to_vec())
+            .fetch_optional(&mut *conn)
+            .await?;
+            Ok(exists.is_some())
+        }
+        None => {
+            let has_any = sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM thread_events WHERE thread_id = ? LIMIT 1",
+            )
+            .bind(thread_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            Ok(has_any.is_none())
+        }
+    }
 }
 
 fn ensure_sender_device_allowed(

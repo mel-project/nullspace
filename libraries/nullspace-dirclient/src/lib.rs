@@ -264,7 +264,7 @@ impl DirClient {
     async fn fetch_verified_response(&self, key: &str) -> anyhow::Result<DirectoryResponse> {
         let response = self
             .raw
-            .v1_get_item(key.to_string())
+            .get_item(key.to_string())
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         let cache_key = response.proof_height;
@@ -273,7 +273,7 @@ impl DirClient {
             .try_get_with(cache_key, async {
                 let mut anchor = self
                     .raw
-                    .v1_get_anchor()
+                    .get_anchor()
                     .await?
                     .map_err(|err| anyhow::anyhow!(err.to_string()))?;
                 anchor.verify(self.anchor_pk)?;
@@ -281,7 +281,7 @@ impl DirClient {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     anchor = self
                         .raw
-                        .v1_get_anchor()
+                        .get_anchor()
                         .await?
                         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
                     anchor.verify(self.anchor_pk)?;
@@ -347,7 +347,7 @@ impl DirClient {
         let key = update.key.clone();
         let pow = self.solve_pow().await?;
         self.raw
-            .v1_insert_update(update.clone(), pow)
+            .insert_update(update.clone(), pow)
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         self.push_local_pending(key, update).await;
@@ -361,7 +361,7 @@ impl DirClient {
             .unwrap_or_default();
         let anchor = self
             .raw
-            .v1_get_anchor()
+            .get_anchor()
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?
             .last_header_height;
@@ -369,7 +369,7 @@ impl DirClient {
     }
 
     async fn solve_pow(&self) -> anyhow::Result<PowSolution> {
-        let seed = self.raw.v1_get_pow_seed().await?;
+        let seed = self.raw.get_pow_seed().await?;
         pow::solve_pow(&seed)
     }
 

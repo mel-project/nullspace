@@ -16,7 +16,6 @@ enum MessageKind {
     Text,
     Attachment,
     ImageAttachment,
-    GroupInvite,
 }
 
 fn message_kind(message: &ConvoMessage) -> MessageKind {
@@ -24,7 +23,6 @@ fn message_kind(message: &ConvoMessage) -> MessageKind {
         MessageContent::PlainText(_) => MessageKind::Text,
         MessageContent::Attachment { .. } => MessageKind::Attachment,
         MessageContent::ImageAttachment { .. } => MessageKind::ImageAttachment,
-        MessageContent::GroupInvite { .. } => MessageKind::GroupInvite,
     }
 }
 

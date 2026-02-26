@@ -52,7 +52,7 @@ async fn rotate_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     .execute(db)
     .await?;
     server
-        .v1_device_add_medium_pk(auth, signed)
+        .device_add_medium_pk(auth, signed)
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     tracing::debug!("medium-term key successfully rotated!");

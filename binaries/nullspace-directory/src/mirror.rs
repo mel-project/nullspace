@@ -43,7 +43,7 @@ pub async fn forward_insert(
     update: DirectoryUpdate,
     pow_solution: PowSolution,
 ) -> Result<(), DirectoryErr> {
-    match mirror.client.v1_insert_update(update, pow_solution).await {
+    match mirror.client.insert_update(update, pow_solution).await {
         Ok(res) => res,
         Err(err) => {
             tracing::warn!(error = ?err, "mirror insert upstream failed");
@@ -67,7 +67,7 @@ pub async fn run_mirror_sync(state: Arc<DirectoryState>) {
 async fn sync_once(state: &DirectoryState, mirror: &MirrorState) -> anyhow::Result<()> {
     let anchor = mirror
         .client
-        .v1_get_anchor()
+        .get_anchor()
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
@@ -97,7 +97,7 @@ async fn sync_once(state: &DirectoryState, mirror: &MirrorState) -> anyhow::Resu
     while next <= anchor.last_header_height {
         let chunk = mirror
             .client
-            .v1_get_chunk(next)
+            .get_chunk(next)
             .await?
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         apply_chunk(state, next, &chunk).await?;

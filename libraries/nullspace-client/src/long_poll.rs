@@ -7,7 +7,7 @@ use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
 use futures_concurrency::future::Race;
 use nullspace_structs::server::{
-    AuthToken, MailboxEntry, MailboxId, MailboxRecvArgs, ServerClient, ServerRpcError,
+    MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs, ServerClient, ServerRpcError,
 };
 use nullspace_structs::timestamp::NanoTimestamp;
 use tokio::sync::oneshot;
@@ -35,14 +35,14 @@ impl LongPoller {
     pub async fn recv(
         &self,
         server: Arc<ServerClient>,
-        auth: AuthToken,
+        mailbox_key: MailboxKey,
         mailbox: MailboxId,
         after: NanoTimestamp,
     ) -> anyhow::Result<MailboxEntry> {
         let worker = self.worker_for_server(server);
         let (tx, rx) = oneshot::channel();
         let request = PollRequest {
-            auth,
+            mailbox_key,
             mailbox,
             after,
             respond_to: tx,
@@ -75,7 +75,7 @@ struct ServerWorker {
 }
 
 struct PollRequest {
-    auth: AuthToken,
+    mailbox_key: MailboxKey,
     mailbox: MailboxId,
     after: NanoTimestamp,
     respond_to: oneshot::Sender<anyhow::Result<MailboxEntry>>,
@@ -103,7 +103,7 @@ async fn run_server_worker(server: Arc<ServerClient>, receiver: Receiver<PollReq
         };
         let poll_fut = async {
             let response = server
-                .v1_mailbox_multirecv(args, timeout_ms)
+                .mailbox_multirecv(args, timeout_ms)
                 .await
                 .map_err(|err| anyhow::anyhow!(err.to_string()));
             WorkerEvent::PollResponse(response)
@@ -155,12 +155,12 @@ fn build_args(
     pending: &[PollRequest],
 ) -> (
     Vec<MailboxRecvArgs>,
-    HashMap<(MailboxId, AuthToken), Vec<usize>>,
+    HashMap<(MailboxId, MailboxKey), Vec<usize>>,
 ) {
-    let mut min_after: HashMap<(MailboxId, AuthToken), NanoTimestamp> = HashMap::new();
-    let mut indices: HashMap<(MailboxId, AuthToken), Vec<usize>> = HashMap::new();
+    let mut min_after: HashMap<(MailboxId, MailboxKey), NanoTimestamp> = HashMap::new();
+    let mut indices: HashMap<(MailboxId, MailboxKey), Vec<usize>> = HashMap::new();
     for (idx, req) in pending.iter().enumerate() {
-        let key = (req.mailbox, req.auth);
+        let key = (req.mailbox, req.mailbox_key);
         indices.entry(key).or_default().push(idx);
         min_after
             .entry(key)
@@ -173,9 +173,9 @@ fn build_args(
     }
     let args = min_after
         .into_iter()
-        .map(|((mailbox, auth), after)| MailboxRecvArgs {
-            auth,
+        .map(|((mailbox, mailbox_key), after)| MailboxRecvArgs {
             mailbox,
+            mailbox_key,
             after,
         })
         .collect();
@@ -184,7 +184,7 @@ fn build_args(
 
 async fn username_poll_response(
     response: Result<Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerRpcError>, anyhow::Error>,
-    mailbox_keys: &HashMap<(MailboxId, AuthToken), Vec<usize>>,
+    mailbox_keys: &HashMap<(MailboxId, MailboxKey), Vec<usize>>,
     pending: &mut Vec<PollRequest>,
 ) -> anyhow::Result<()> {
     let response = match response {
@@ -208,7 +208,7 @@ async fn username_poll_response(
     }
     let mut still_pending = Vec::new();
     for (idx, request) in pending.drain(..).enumerate() {
-        let key = (request.mailbox, request.auth);
+        let key = (request.mailbox, request.mailbox_key);
         let Some(indices) = mailbox_keys.get(&key) else {
             still_pending.push(request);
             continue;

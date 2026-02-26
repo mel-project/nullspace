@@ -6,7 +6,7 @@ use nullspace_crypt::spake::{SpakeKey, SpakeMessage, SpakeSession};
 use nullspace_structs::Blob;
 use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::directory::DirectoryUpdate;
-use nullspace_structs::server::{AuthToken, ChanDirection, ServerClient, ServerName};
+use nullspace_structs::server::{AuthToken, ChanDirection, MailboxKey, ServerClient, ServerName};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::{UserDescriptor, UserName};
 use parking_lot::Mutex as ParkingMutex;
@@ -128,7 +128,7 @@ pub(crate) async fn register_add_device_by_code(
         &server,
         channel,
         ChanDirection::Forward,
-        Blob::V1_PROVISION_HELO,
+        ProvisionSpakePhase::Helo,
         PROVISION_GUEST_WAIT_TIMEOUT,
     )
     .await?;
@@ -136,7 +136,7 @@ pub(crate) async fn register_add_device_by_code(
         &server,
         channel,
         ChanDirection::Backward,
-        Blob::V1_PROVISION_EHLO,
+        ProvisionSpakePhase::Ehlo,
         &ehlo_msg,
     )
     .await?;
@@ -267,7 +267,7 @@ async fn run_host_attempt(
         server,
         attempt.channel,
         ChanDirection::Forward,
-        Blob::V1_PROVISION_HELO,
+        ProvisionSpakePhase::Helo,
         &helo_msg,
     )
     .await
@@ -287,7 +287,7 @@ async fn run_host_attempt(
                 server,
                 attempt.channel,
                 ChanDirection::Forward,
-                Blob::V1_PROVISION_HELO,
+                ProvisionSpakePhase::Helo,
                 &helo_msg,
             )
             .await
@@ -305,15 +305,15 @@ async fn run_host_attempt(
             tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
             continue;
         };
-        if blob.kind != Blob::V1_PROVISION_EHLO {
-            tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
-            continue;
-        }
-        let Ok(peer_msg) = serde_json::from_slice::<ProvisionSpakeMessage>(&blob.inner) else {
+        let Ok(wire) = serde_json::from_slice::<ProvisionWireMessage>(&blob.0) else {
             tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
             continue;
         };
-        let Ok(spake_key) = spake_session.finish(&peer_msg.spake_msg) else {
+        let ProvisionWireMessage::Ehlo { spake_msg } = wire else {
+            tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
+            continue;
+        };
+        let Ok(spake_key) = spake_session.finish(&spake_msg) else {
             return Ok(false);
         };
         let payload = build_provisioning_payload(ctx, username).await?;
@@ -385,6 +385,7 @@ async fn build_provisioning_payload(
     Ok(ProvisioningPayload {
         device_secret,
         add_device_update,
+        dm_mailbox_key: identity.dm_mailbox_key,
     })
 }
 
@@ -442,12 +443,18 @@ async fn register_add_device_payload(
     let server = server_from_name(&ctx, &server_name).await?;
     let auth = authenticate_device(&server, &expected_username, &payload.device_secret).await?;
     let medium_sk = register_medium_key(&server, auth, &payload.device_secret).await?;
+    server
+        .mailbox_create(auth, payload.dm_mailbox_key)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
     persist_identity(
         ctx.get(DATABASE),
         expected_username,
         server_name,
         payload.device_secret,
         medium_sk,
+        payload.dm_mailbox_key,
     )
     .await?;
     DbNotify::touch();
@@ -491,23 +498,19 @@ async fn post_spake_message(
     server: &ServerClient,
     channel: u32,
     direction: ChanDirection,
-    kind: &str,
+    phase: ProvisionSpakePhase,
     message: &SpakeMessage,
 ) -> Result<(), InternalRpcError> {
-    let body = serde_json::to_vec(&ProvisionSpakeMessage {
-        spake_msg: *message,
-    })
-    .map_err(internal_err)?;
-    server_channel_send(
-        server,
-        channel,
-        direction,
-        Blob {
-            kind: kind.into(),
-            inner: Bytes::from(body),
+    let payload = match phase {
+        ProvisionSpakePhase::Helo => ProvisionWireMessage::Helo {
+            spake_msg: *message,
         },
-    )
-    .await
+        ProvisionSpakePhase::Ehlo => ProvisionWireMessage::Ehlo {
+            spake_msg: *message,
+        },
+    };
+    let body = serde_json::to_vec(&payload).map_err(internal_err)?;
+    server_channel_send(server, channel, direction, Blob(Bytes::from(body))).await
 }
 
 async fn post_finish_envelope(
@@ -516,33 +519,34 @@ async fn post_finish_envelope(
     direction: ChanDirection,
     envelope: &ProvisionFinishEnvelope,
 ) -> Result<(), InternalRpcError> {
-    let body = serde_json::to_vec(envelope).map_err(internal_err)?;
-    server_channel_send(
-        server,
-        channel,
-        direction,
-        Blob {
-            kind: Blob::V1_PROVISION_FINISH.into(),
-            inner: Bytes::from(body),
-        },
-    )
-    .await
+    let body = serde_json::to_vec(&ProvisionWireMessage::Finish {
+        envelope: envelope.clone(),
+    })
+    .map_err(internal_err)?;
+    server_channel_send(server, channel, direction, Blob(Bytes::from(body))).await
 }
 
 async fn wait_for_spake_message(
     server: &ServerClient,
     channel: u32,
     direction: ChanDirection,
-    expected_kind: &str,
+    expected_phase: ProvisionSpakePhase,
     timeout: Duration,
 ) -> Result<SpakeMessage, InternalRpcError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if let Some(blob) = server_channel_recv(server, channel, direction).await?
-            && blob.kind == expected_kind
-            && let Ok(msg) = serde_json::from_slice::<ProvisionSpakeMessage>(&blob.inner)
+            && let Ok(msg) = serde_json::from_slice::<ProvisionWireMessage>(&blob.0)
         {
-            return Ok(msg.spake_msg);
+            match (expected_phase, msg) {
+                (ProvisionSpakePhase::Helo, ProvisionWireMessage::Helo { spake_msg }) => {
+                    return Ok(spake_msg);
+                }
+                (ProvisionSpakePhase::Ehlo, ProvisionWireMessage::Ehlo { spake_msg }) => {
+                    return Ok(spake_msg);
+                }
+                _ => {}
+            }
         }
         tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
     }
@@ -560,10 +564,10 @@ async fn wait_for_finish_envelope(
     let start = Instant::now();
     while start.elapsed() < timeout {
         if let Some(blob) = server_channel_recv(server, channel, direction).await?
-            && blob.kind == Blob::V1_PROVISION_FINISH
-            && let Ok(msg) = serde_json::from_slice::<ProvisionFinishEnvelope>(&blob.inner)
+            && let Ok(ProvisionWireMessage::Finish { envelope }) =
+                serde_json::from_slice::<ProvisionWireMessage>(&blob.0)
         {
-            return Ok(msg);
+            return Ok(envelope);
         }
         tokio::time::sleep(PROVISION_HOST_POLL_INTERVAL).await;
     }
@@ -577,7 +581,7 @@ async fn server_channel_allocate(
     auth: AuthToken,
 ) -> Result<u32, InternalRpcError> {
     server
-        .v1_chan_allocate(auth)
+        .chan_allocate(auth)
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))
@@ -590,7 +594,7 @@ async fn server_channel_send(
     value: Blob,
 ) -> Result<(), InternalRpcError> {
     server
-        .v1_chan_send(channel, direction, value)
+        .chan_send(channel, direction, value)
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))
@@ -602,7 +606,7 @@ async fn server_channel_recv(
     direction: ChanDirection,
 ) -> Result<Option<Blob>, InternalRpcError> {
     server
-        .v1_chan_recv(channel, direction)
+        .chan_recv(channel, direction)
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))
@@ -636,20 +640,30 @@ fn ensure_issuer_device(
 struct ProvisioningPayload {
     device_secret: DeviceSecret,
     add_device_update: DirectoryUpdate,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ProvisionSpakeMessage {
-    spake_msg: SpakeMessage,
+    dm_mailbox_key: MailboxKey,
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct ProvisionFinishEnvelope {
     #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
     nonce: Bytes,
     #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, FromInto<Vec<u8>>>")]
     ciphertext: Bytes,
+}
+
+#[derive(Clone, Copy)]
+enum ProvisionSpakePhase {
+    Helo,
+    Ehlo,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProvisionWireMessage {
+    Helo { spake_msg: SpakeMessage },
+    Ehlo { spake_msg: SpakeMessage },
+    Finish { envelope: ProvisionFinishEnvelope },
 }
 
 fn format_pairing_code(code: u64) -> String {

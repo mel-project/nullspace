@@ -12,7 +12,6 @@ use smol::lock::Semaphore;
 
 use crate::utils::hooks::{CustomHooksExt, SlotState};
 
-
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
     filename: PathBuf,

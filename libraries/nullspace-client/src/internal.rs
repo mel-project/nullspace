@@ -7,12 +7,15 @@ use nullspace_crypt::dh::DhSecret;
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature};
 use nullspace_structs::certificate::DeviceSecret;
-use nullspace_structs::event::EventPayload;
+use nullspace_structs::event::{
+    MessageAttachment, MessageAttachmentData, MessagePayload, MessageText, TAG_MESSAGE,
+};
 use nullspace_structs::fragment::{Attachment, ImageAttachment};
-use nullspace_structs::group::{GroupId, GroupInviteMsg};
+use nullspace_structs::group::GroupId;
 use nullspace_structs::profile::UserProfile;
 use nullspace_structs::server::{
-    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest, SignedMediumPk,
+    AuthToken, DeviceAuthRequest, MailboxKey, ServerClient, ServerName, SignedDeviceAuthRequest,
+    SignedMediumPk,
 };
 use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
 use nullspace_structs::username::UserName;
@@ -26,9 +29,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::attachments::{self, AttachmentStatus, store_attachment_root};
 use crate::config::Config;
 pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary, MessageContent, OutgoingMessage};
-use crate::convo::{
-    GroupRoster, accept_invite, create_group, invite, load_group, parse_convo_id, queue_message,
-};
+use crate::convo::{parse_convo_id, queue_message};
 use crate::database::{DATABASE, DbNotify, identity_exists};
 use crate::directory::DIR_CLIENT;
 use crate::identity::Identity;
@@ -214,7 +215,10 @@ pub trait InternalProtocol {
     /// Progress is reported through [`Event::UploadProgress`], and completion
     /// is reported through [`Event::UploadDone`] with an
     /// [`UploadedRoot::ImageAttachment`] payload.
-    async fn image_attachment_upload(&self, absolute_path: PathBuf) -> Result<i64, InternalRpcError>;
+    async fn image_attachment_upload(
+        &self,
+        absolute_path: PathBuf,
+    ) -> Result<i64, InternalRpcError>;
 
     /// Starts an asynchronous attachment download.
     ///
@@ -300,12 +304,6 @@ pub enum Event {
         convo_id: ConvoId,
     },
 
-    /// A group's membership roster changed.
-    GroupUpdated {
-        /// The group whose roster was updated.
-        group: GroupId,
-    },
-
     /// Progress update for an in-flight file upload.
     UploadProgress {
         /// The upload ID returned by
@@ -325,10 +323,7 @@ pub enum Event {
     },
 
     /// A file upload failed.
-    UploadFailed {
-        id: i64,
-        error: String,
-    },
+    UploadFailed { id: i64, error: String },
 
     /// Progress update for an in-flight file download.
     DownloadProgress {
@@ -345,10 +340,7 @@ pub enum Event {
     },
 
     /// A file download failed.
-    DownloadFailed {
-        attachment_id: Hash,
-        error: String,
-    },
+    DownloadFailed { attachment_id: Hash, error: String },
 }
 
 /// Typed upload completion payload.
@@ -603,23 +595,46 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         message: OutgoingMessage,
     ) -> Result<i64, InternalRpcError> {
+        if matches!(convo_id, ConvoId::Group { .. }) {
+            return Err(groups_disabled_error());
+        }
         let db = self.ctx.get(DATABASE);
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let (mime, body) = match message {
-            OutgoingMessage::PlainText(text) => ("text/plain".into(), Bytes::from(text)),
-            OutgoingMessage::Attachment(root) => (
-                SmolStr::new(Attachment::mime()),
-                Bytes::from(serde_json::to_vec(&root).map_err(internal_err)?),
-            ),
-            OutgoingMessage::ImageAttachment(root) => (
-                SmolStr::new(ImageAttachment::mime()),
-                Bytes::from(serde_json::to_vec(&root).map_err(internal_err)?),
-            ),
+        let own_server = identity
+            .server_name
+            .clone()
+            .ok_or_else(|| InternalRpcError::Other("server name not available".into()))?;
+        let payload = match message {
+            OutgoingMessage::PlainText(text) => MessagePayload {
+                payload: MessageText::Plain(text),
+                attachments: Vec::new(),
+                replies_to: None,
+                metadata: Default::default(),
+            },
+            OutgoingMessage::Attachment(root) => MessagePayload {
+                payload: MessageText::Plain(String::new()),
+                attachments: vec![MessageAttachment {
+                    server_name: own_server.clone(),
+                    data: MessageAttachmentData::Attachment(root),
+                }],
+                replies_to: None,
+                metadata: Default::default(),
+            },
+            OutgoingMessage::ImageAttachment(root) => MessagePayload {
+                payload: MessageText::Plain(String::new()),
+                attachments: vec![MessageAttachment {
+                    server_name: own_server.clone(),
+                    data: MessageAttachmentData::ImageAttachment(root),
+                }],
+                replies_to: None,
+                metadata: Default::default(),
+            },
         };
+        let body = Bytes::from(bcs::to_bytes(&payload).map_err(internal_err)?);
         let mut conn = db.acquire().await.map_err(internal_err)?;
-        let id = queue_message(&mut conn, &convo_id, &identity.username, &mime, &body)
+        let id = queue_message(&mut conn, &convo_id, &identity.username, TAG_MESSAGE, &body)
             .await
             .map_err(internal_err)?;
         DbNotify::touch();
@@ -642,14 +657,8 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn convo_create_group(&self, server: ServerName) -> Result<ConvoId, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if !identity_exists(db).await.map_err(internal_err)? {
-            return Err(InternalRpcError::NotReady);
-        }
-        let group_id = create_group(&self.ctx, server)
-            .await
-            .map_err(internal_err)?;
-        Ok(ConvoId::Group { group_id })
+        let _ = server;
+        Err(groups_disabled_error())
     }
 
     async fn own_server(&self) -> Result<ServerName, InternalRpcError> {
@@ -665,57 +674,18 @@ impl InternalProtocol for InternalImpl {
         group: GroupId,
         username: UserName,
     ) -> Result<(), InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if !identity_exists(db).await.map_err(internal_err)? {
-            return Err(InternalRpcError::NotReady);
-        }
-        invite(&self.ctx, group, username)
-            .await
-            .map_err(internal_err)
+        let _ = (group, username);
+        Err(groups_disabled_error())
     }
 
     async fn group_members(&self, group: GroupId) -> Result<Vec<GroupMember>, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if !identity_exists(db).await.map_err(internal_err)? {
-            return Err(InternalRpcError::NotReady);
-        }
-        let group_record = load_group(db, group)
-            .await
-            .map_err(internal_err)?
-            .ok_or_else(|| InternalRpcError::Other("group not found".into()))?;
-        let mut conn = db.acquire().await.map_err(internal_err)?;
-        let roster =
-            GroupRoster::load(&mut conn, group, group_record.descriptor.init_admin.clone())
-                .await
-                .map_err(internal_err)?;
-        let members = roster.list(&mut conn).await.map_err(internal_err)?;
-        let out = members
-            .into_iter()
-            .map(|member| GroupMember {
-                username: member.username,
-                is_admin: member.is_admin,
-                status: member.status,
-            })
-            .collect();
-        Ok(out)
+        let _ = group;
+        Err(groups_disabled_error())
     }
 
     async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if !identity_exists(db).await.map_err(internal_err)? {
-            return Err(InternalRpcError::NotReady);
-        }
-        tracing::debug!(invite_id = dm_id, "group_accept_invite called");
-        let result = accept_invite(&self.ctx, dm_id).await;
-        match &result {
-            Ok(group_id) => {
-                tracing::debug!(invite_id = dm_id, group_id = %group_id, "group_accept_invite ok");
-            }
-            Err(err) => {
-                tracing::warn!(invite_id = dm_id, error = %err, "group_accept_invite failed");
-            }
-        }
-        result.map_err(internal_err)
+        let _ = dm_id;
+        Err(groups_disabled_error())
     }
 
     async fn attachment_upload(
@@ -728,7 +698,10 @@ impl InternalProtocol for InternalImpl {
             .map_err(map_anyhow_err)
     }
 
-    async fn image_attachment_upload(&self, absolute_path: PathBuf) -> Result<i64, InternalRpcError> {
+    async fn image_attachment_upload(
+        &self,
+        absolute_path: PathBuf,
+    ) -> Result<i64, InternalRpcError> {
         attachments::image_attachment_upload(&self.ctx, absolute_path)
             .await
             .map_err(map_anyhow_err)
@@ -790,9 +763,7 @@ impl InternalProtocol for InternalImpl {
             None => (None, None),
         };
 
-        let common_groups = common_groups(db, &identity.username, &username)
-            .await
-            .map_err(internal_err)?;
+        let common_groups = Vec::new();
         let last_dm_message = last_dm_message_summary(db, &identity.username, &username)
             .await
             .map_err(internal_err)?;
@@ -832,13 +803,14 @@ impl InternalProtocol for InternalImpl {
         let mut profile = UserProfile {
             display_name,
             avatar,
+            dm_mailbox: identity.dm_mailbox_id(),
             created,
             signature: Signature::from_bytes([0u8; 64]),
         };
         profile.sign(&identity.device_secret);
 
         server
-            .v1_profile_set(identity.username, profile)
+            .profile_set(identity.username, profile)
             .await
             .map_err(internal_err)?
             .map_err(|err| InternalRpcError::Other(err.to_string()))?;
@@ -868,6 +840,27 @@ async fn register_bootstrap(
         .map_err(internal_err)?;
     let auth = authenticate_device(&server, &username, &device_secret).await?;
     let medium_sk = register_medium_key(&server, auth, &device_secret).await?;
+    let dm_mailbox_key = MailboxKey::random();
+    let dm_mailbox = server
+        .mailbox_create(auth, dm_mailbox_key)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+
+    let created = Timestamp::now();
+    let mut profile = UserProfile {
+        display_name: None,
+        avatar: None,
+        dm_mailbox,
+        created,
+        signature: Signature::from_bytes([0u8; 64]),
+    };
+    profile.sign(&device_secret);
+    server
+        .profile_set(username.clone(), profile)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
 
     persist_identity(
         ctx.get(DATABASE),
@@ -875,6 +868,7 @@ async fn register_bootstrap(
         server_name,
         device_secret,
         medium_sk,
+        dm_mailbox_key,
     )
     .await?;
     DbNotify::touch();
@@ -910,7 +904,7 @@ pub(crate) async fn register_medium_key(
     };
     signed.sign(device_secret);
     server
-        .v1_device_add_medium_pk(auth, signed)
+        .device_add_medium_pk(auth, signed)
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))?;
@@ -923,17 +917,19 @@ pub(crate) async fn persist_identity(
     server_name: ServerName,
     device_secret: DeviceSecret,
     medium_sk: DhSecret,
+    dm_mailbox_key: MailboxKey,
 ) -> Result<(), InternalRpcError> {
     sqlx::query(
         "INSERT INTO client_identity \
-         (id, username, server_name, device_secret, medium_sk_current, medium_sk_prev) \
-         VALUES (1, ?, ?, ?, ?, ?)",
+         (id, username, server_name, device_secret, medium_sk_current, medium_sk_prev, dm_mailbox_key) \
+         VALUES (1, ?, ?, ?, ?, ?, ?)",
     )
     .bind(username.as_str())
     .bind(server_name.as_str())
     .bind(bcs::to_bytes(&device_secret).map_err(internal_err)?)
     .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
     .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
+    .bind(bcs::to_bytes(&dm_mailbox_key).map_err(internal_err)?)
     .execute(db)
     .await
     .map_err(internal_err)?;
@@ -947,7 +943,7 @@ pub(crate) async fn authenticate_device(
 ) -> Result<AuthToken, InternalRpcError> {
     let device_pk = device_secret.public().signing_public();
     let challenge = server
-        .v1_device_auth_start(username.clone(), device_pk)
+        .device_auth_start(username.clone(), device_pk)
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))?;
@@ -961,7 +957,7 @@ pub(crate) async fn authenticate_device(
     };
     request.sign(device_secret);
     server
-        .v1_device_auth_finish(request)
+        .device_auth_finish(request)
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))
@@ -979,6 +975,10 @@ fn map_anyhow_err(err: anyhow::Error) -> InternalRpcError {
     }
 }
 
+fn groups_disabled_error() -> InternalRpcError {
+    InternalRpcError::Other("groups are disabled".into())
+}
+
 async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> {
     let rows = sqlx::query_as::<
         _,
@@ -989,51 +989,53 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
             i64,
             Option<i64>,
             Option<String>,
-            Option<String>,
+            Option<i64>,
             Option<Vec<u8>>,
             Option<i64>,
             Option<i64>,
             Option<String>,
         ),
     >(
-        "SELECT c.convo_type, c.convo_counterparty, c.created_at, \
-                (SELECT COUNT(*) FROM convo_messages um \
+        "SELECT t.thread_kind, t.thread_counterparty, t.created_at, \
+                (SELECT COUNT(*) FROM thread_events ue \
                  JOIN client_identity ci ON ci.id = 1 \
-                 LEFT JOIN message_reads mr ON mr.message_id = um.id \
-                 WHERE um.convo_id = c.id \
-                   AND um.received_at IS NOT NULL \
-                   AND um.sender_username != ci.username \
+                 LEFT JOIN message_reads mr ON mr.message_id = ue.id \
+                 WHERE ue.thread_id = t.id \
+                   AND ue.received_at IS NOT NULL \
+                   AND ue.sender_username != ci.username \
                    AND mr.message_id IS NULL) AS unread_count, \
-                m.id, m.sender_username, m.mime, m.body, m.received_at, mr.read_at, m.send_error \
-         FROM convos c \
-         LEFT JOIN convo_messages m \
-           ON m.id = (SELECT MAX(id) FROM convo_messages WHERE convo_id = c.id) \
-         LEFT JOIN message_reads mr ON mr.message_id = m.id \
-         ORDER BY (m.received_at IS NULL) DESC, m.received_at DESC, c.created_at DESC, c.id DESC",
+                e.id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
+         FROM event_threads t \
+         LEFT JOIN thread_events e \
+           ON e.id = (SELECT MAX(id) FROM thread_events WHERE thread_id = t.id) \
+         LEFT JOIN message_reads mr ON mr.message_id = e.id \
+         ORDER BY (e.received_at IS NULL) DESC, e.received_at DESC, t.created_at DESC, t.id DESC",
     )
     .fetch_all(db)
     .await?;
     let mut out = Vec::with_capacity(rows.len());
     for (
-        convo_type,
+        thread_kind,
         counterparty,
         _created_at,
         unread_count,
         msg_id,
         sender_username,
-        mime,
-        body,
+        event_tag,
+        event_body,
         received_at,
         read_at,
         send_error,
     ) in rows
     {
-        let convo_id = parse_convo_id(&convo_type, &counterparty)
+        let convo_id = parse_convo_id(&thread_kind, &counterparty)
             .ok_or_else(|| anyhow::anyhow!("invalid convo row"))?;
-        let last_message = match (msg_id, sender_username, mime, body) {
-            (Some(id), Some(sender_username), Some(mime), Some(body)) => {
+        let last_message = match (msg_id, sender_username, event_tag, event_body) {
+            (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
-                let body = (decode_message_content(db, id, &sender, &mime, &body).await).ok();
+                let body = (decode_message_content(db, &sender, u16::try_from(event_tag)?, &body)
+                    .await)
+                    .ok();
                 body.map(|body| ConvoMessage {
                     id,
                     convo_id: convo_id.clone(),
@@ -1064,29 +1066,29 @@ async fn convo_history(
 ) -> anyhow::Result<Vec<ConvoMessage>> {
     let before = before.unwrap_or(i64::MAX);
     let after = after.unwrap_or(i64::MIN);
-    let convo_type = convo_id.convo_type();
+    let thread_kind = convo_id.convo_type();
     let counterparty = convo_id.counterparty();
     let mut rows = sqlx::query_as::<
         _,
         (
             i64,
             String,
-            String,
+            i64,
             Vec<u8>,
             Option<i64>,
             Option<i64>,
             Option<String>,
         ),
     >(
-        "SELECT m.id, m.sender_username, m.mime, m.body, m.received_at, mr.read_at, m.send_error \
-         FROM convo_messages m \
-         JOIN convos c ON m.convo_id = c.id \
-         LEFT JOIN message_reads mr ON mr.message_id = m.id \
-         WHERE c.convo_type = ? AND c.convo_counterparty = ? AND m.id <= ? AND m.id >= ? \
-         ORDER BY m.id DESC \
+        "SELECT e.id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         LEFT JOIN message_reads mr ON mr.message_id = e.id \
+         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.id <= ? AND e.id >= ? \
+         ORDER BY e.id DESC \
          LIMIT ?",
     )
-    .bind(convo_type)
+    .bind(thread_kind)
     .bind(counterparty)
     .bind(before)
     .bind(after)
@@ -1095,9 +1097,10 @@ async fn convo_history(
     .await?;
     rows.reverse();
     let mut out = Vec::with_capacity(rows.len());
-    for (id, sender_username, mime, body, received_at, read_at, send_error) in rows {
+    for (id, sender_username, event_tag, body, received_at, read_at, send_error) in rows {
         let sender = UserName::parse(sender_username)?;
-        let body = match decode_message_content(db, id, &sender, &mime, &body).await {
+        let body = match decode_message_content(db, &sender, u16::try_from(event_tag)?, &body).await
+        {
             Ok(body) => body,
             Err(_) => {
                 continue;
@@ -1124,15 +1127,15 @@ async fn mark_convo_read(
     let read_at = NanoTimestamp::now().0 as i64;
     let affected = sqlx::query(
         "INSERT OR IGNORE INTO message_reads (message_id, read_at) \
-         SELECT m.id, ? \
-         FROM convo_messages m \
-         JOIN convos c ON m.convo_id = c.id \
+         SELECT e.id, ? \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
          JOIN client_identity ci ON ci.id = 1 \
-         WHERE c.convo_type = ? \
-           AND c.convo_counterparty = ? \
-           AND m.id <= ? \
-           AND m.received_at IS NOT NULL \
-           AND m.sender_username != ci.username",
+         WHERE t.thread_kind = ? \
+           AND t.thread_counterparty = ? \
+           AND e.id <= ? \
+           AND e.received_at IS NOT NULL \
+           AND e.sender_username != ci.username",
     )
     .bind(read_at)
     .bind(convo_id.convo_type())
@@ -1144,38 +1147,6 @@ async fn mark_convo_read(
     Ok(affected)
 }
 
-async fn common_groups(
-    db: &sqlx::SqlitePool,
-    local_username: &UserName,
-    other_username: &UserName,
-) -> anyhow::Result<Vec<GroupId>> {
-    let rows = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT DISTINCT gm_other.group_id \
-         FROM group_members gm_other \
-         JOIN group_members gm_self ON gm_self.group_id = gm_other.group_id \
-         WHERE gm_other.username = ? AND gm_self.username = ? \
-           AND gm_other.status IN ('pending', 'accepted') \
-           AND gm_self.status IN ('pending', 'accepted') \
-         ORDER BY gm_other.group_id",
-    )
-    .bind(other_username.as_str())
-    .bind(local_username.as_str())
-    .fetch_all(db)
-    .await?;
-
-    let mut out = Vec::new();
-    for bytes in rows {
-        if bytes.len() != 32 {
-            tracing::warn!(len = bytes.len(), "invalid group id bytes");
-            continue;
-        }
-        let mut buf = [0u8; 32];
-        buf.copy_from_slice(&bytes);
-        out.push(GroupId::from_bytes(buf));
-    }
-    Ok(out)
-}
-
 async fn last_dm_message_summary(
     db: &sqlx::SqlitePool,
     local_username: &UserName,
@@ -1184,17 +1155,17 @@ async fn last_dm_message_summary(
     let convo_id = ConvoId::Direct {
         peer: other_username.clone(),
     };
-    let convo_type = convo_id.convo_type();
+    let thread_kind = convo_id.convo_type();
     let counterparty = convo_id.counterparty();
     let received_at = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT m.received_at \
-         FROM convo_messages m \
-         JOIN convos c ON m.convo_id = c.id \
-         WHERE c.convo_type = ? AND c.convo_counterparty = ? AND m.sender_username != ? \
-         ORDER BY m.id DESC \
+        "SELECT e.received_at \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.sender_username != ? \
+         ORDER BY e.id DESC \
          LIMIT 1",
     )
-    .bind(convo_type)
+    .bind(thread_kind)
     .bind(counterparty)
     .bind(local_username.as_str())
     .fetch_optional(db)
@@ -1213,66 +1184,62 @@ async fn last_dm_message_summary(
 
 async fn decode_message_content(
     db: &sqlx::SqlitePool,
-    message_id: i64,
     sender: &UserName,
-    mime: &str,
+    event_tag: u16,
     body: &[u8],
 ) -> anyhow::Result<MessageContent> {
-    match mime {
-        "text/plain" => Ok(MessageContent::PlainText(
-            String::from_utf8_lossy(body).to_string(),
-        )),
-        // Keep older stored/server markdown messages readable as plain text.
-        "text/markdown" => Ok(MessageContent::PlainText(
-            String::from_utf8_lossy(body).to_string(),
-        )),
-        mime if mime == GroupInviteMsg::mime() => Ok(MessageContent::GroupInvite {
-            invite_id: message_id,
-        }),
-        mime if mime == Attachment::mime() => {
-            let root = match serde_json::from_slice::<Attachment>(body) {
-                Ok(root) => root,
-                Err(err) => {
-                    tracing::warn!(
-                        message_id,
-                        error = %err,
-                        "failed to decode attachment root"
-                    );
-                    return Err(anyhow::anyhow!("invalid attachment root"));
-                }
-            };
-            let id = store_attachment_root(&mut *db.acquire().await?, sender, &root).await?;
-            Ok(MessageContent::Attachment {
-                id,
-                size: root.total_size(),
-                mime: root.mime,
-                filename: root.filename.clone(),
-            })
-        }
-        mime if mime == ImageAttachment::mime() => {
-            let image_root = match serde_json::from_slice::<ImageAttachment>(body) {
-                Ok(root) => root,
-                Err(err) => {
-                    tracing::warn!(
-                        message_id,
-                        error = %err,
-                        "failed to decode image attachment root"
-                    );
-                    return Err(anyhow::anyhow!("invalid image attachment root"));
-                }
-            };
-            let id =
-                store_attachment_root(&mut *db.acquire().await?, sender, &image_root.inner).await?;
-            Ok(MessageContent::ImageAttachment {
-                id,
-                size: image_root.inner.total_size(),
-                mime: image_root.inner.mime.clone(),
-                filename: image_root.inner.filename.clone(),
-                width: image_root.width,
-                height: image_root.height,
-                thumbhash: image_root.thumbhash,
-            })
-        }
-        _ => Ok(MessageContent::PlainText("Unsupported message".to_string())),
+    if event_tag != TAG_MESSAGE {
+        return Ok(MessageContent::PlainText("Unsupported message".to_string()));
     }
+
+    let payload: MessagePayload = bcs::from_bytes(body)?;
+    let text = match payload.payload {
+        MessageText::Plain(text) | MessageText::Rich(text) => text,
+    };
+
+    if payload.attachments.len() == 1 && text.is_empty() {
+        let attachment = payload
+            .attachments
+            .into_iter()
+            .next()
+            .expect("len checked above");
+        match attachment.data {
+            MessageAttachmentData::Attachment(root) => {
+                let id = store_attachment_root(&mut *db.acquire().await?, sender, &root).await?;
+                return Ok(MessageContent::Attachment {
+                    id,
+                    size: root.total_size(),
+                    mime: root.mime,
+                    filename: root.filename.clone(),
+                });
+            }
+            MessageAttachmentData::ImageAttachment(image_root) => {
+                let id =
+                    store_attachment_root(&mut *db.acquire().await?, sender, &image_root.inner)
+                        .await?;
+                return Ok(MessageContent::ImageAttachment {
+                    id,
+                    size: image_root.inner.total_size(),
+                    mime: image_root.inner.mime.clone(),
+                    filename: image_root.inner.filename.clone(),
+                    width: image_root.width,
+                    height: image_root.height,
+                    thumbhash: image_root.thumbhash,
+                });
+            }
+        }
+    }
+
+    if payload.attachments.is_empty() {
+        return Ok(MessageContent::PlainText(text));
+    }
+
+    if text.is_empty() {
+        return Ok(MessageContent::PlainText(format!(
+            "{} attachment(s)",
+            payload.attachments.len()
+        )));
+    }
+
+    Ok(MessageContent::PlainText(text))
 }

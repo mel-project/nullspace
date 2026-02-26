@@ -167,7 +167,7 @@ async fn upload_inner(
                     data: Bytes::from(ciphertext),
                 };
                 let hash = Fragment::Leaf(leaf.clone()).bcs_hash();
-                let response = client.v1_upload_frag(auth, Fragment::Leaf(leaf), 0).await?;
+                let response = client.frag_upload(auth, Fragment::Leaf(leaf), 0).await?;
                 if let Err(err) = response {
                     return Err(anyhow::anyhow!(err.to_string()));
                 }
@@ -210,7 +210,7 @@ async fn upload_inner(
     }
 
     for node in nodes {
-        let response = client.v1_upload_frag(auth, Fragment::Node(node), 0).await?;
+        let response = client.frag_upload(auth, Fragment::Node(node), 0).await?;
         if let Err(err) = response {
             return Err(anyhow::anyhow!(err.to_string()));
         }
@@ -370,13 +370,9 @@ fn make_thumbhash_b91(
     } else {
         // Re-linearize the (already sRGB) resized image for a second resize.
         let srgb_mapper = fr::create_srgb_mapper();
-        let mut src = fr::images::Image::from_vec_u8(
-            width,
-            height,
-            image.buffer().to_vec(),
-            pixel_type,
-        )
-        .map_err(|err| anyhow::anyhow!("failed to prepare thumbhash source: {err}"))?;
+        let mut src =
+            fr::images::Image::from_vec_u8(width, height, image.buffer().to_vec(), pixel_type)
+                .map_err(|err| anyhow::anyhow!("failed to prepare thumbhash source: {err}"))?;
         srgb_mapper.forward_map_inplace(&mut src).ok();
         let preview = resize_linear(&src, &srgb_mapper, thumb_w, thumb_h)?;
         to_rgba_buf(pixel_type, preview.buffer())
@@ -632,7 +628,7 @@ fn download_fragment<'a>(
     emitter: Option<&'a ProgressEmitter<'a>>,
 ) -> BoxFuture<'a, anyhow::Result<()>> {
     Box::pin(async move {
-        let response = client.v1_download_frag(hash).await?;
+        let response = client.frag_download(hash).await?;
         let frag = response
             .map_err(|err| anyhow::anyhow!(err.to_string()))?
             .ok_or_else(|| anyhow::anyhow!("missing fragment"))?;
@@ -773,4 +769,3 @@ fn file_basename(path: &Path) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("filename is not valid utf-8"))?;
     Ok(name.to_string())
 }
-

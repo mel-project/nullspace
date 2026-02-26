@@ -16,7 +16,6 @@ use crate::config::CONFIG;
 use crate::database::DATABASE;
 use crate::dir_client::DIR_CLIENT;
 use crate::fatal_retry_later;
-use crate::mailbox;
 
 const CHALLENGE_TTL_SECS: u64 = 60;
 
@@ -140,7 +139,6 @@ pub async fn device_auth_finish(
         Some(data) => Some(bcs::from_bytes(&data).map_err(fatal_retry_later)?),
         None => None,
     };
-    let mut newly_created: Option<AuthToken> = None;
 
     sqlx::query(
         "INSERT OR REPLACE INTO device_identities (device_hash, username, device_pk) \
@@ -167,10 +165,8 @@ pub async fn device_auth_finish(
         .await
         .map_err(fatal_retry_later)?;
         auth_token = Some(new_token);
-        newly_created = Some(new_token);
     }
 
-    mailbox::update_dm_mailbox(&mut tx, &username, newly_created).await?;
     tx.commit().await.map_err(fatal_retry_later)?;
 
     let auth_token = auth_token.expect("auth token is set");

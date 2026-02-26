@@ -220,29 +220,31 @@ fn header_aad(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Event;
+    use crate::event::{Event, MessagePayload, MessageText, TAG_MESSAGE};
     use crate::timestamp::NanoTimestamp;
+    use std::collections::BTreeMap;
 
     #[test]
     fn encrypt_decrypt_multiple_recipients() {
         let medium_a = DhSecret::random();
         let medium_b = DhSecret::random();
 
-        let content = Event {
-            recipient: UserName::parse("@recipient01")
-                .expect("recipient username")
-                .into(),
-            sent_at: NanoTimestamp(0),
-            mime: smol_str::SmolStr::new("text/plain"),
-            body: Bytes::from_static(b"hello recipients"),
+        let payload = MessagePayload {
+            payload: MessageText::Plain("hello recipients".to_string()),
+            attachments: Vec::new(),
+            replies_to: None,
+            metadata: BTreeMap::new(),
         };
-        let message = Blob {
-            kind: Blob::V1_MESSAGE_CONTENT.into(),
-            inner: Bytes::from(bcs::to_bytes(&content).expect("content")),
+        let event = Event {
+            recipient: UserName::parse("@recipient01").expect("recipient username"),
+            sent_at: NanoTimestamp(0),
+            after: None,
+            tag: TAG_MESSAGE,
+            body: Bytes::from(bcs::to_bytes(&payload).expect("payload")),
         };
 
         let encrypted = HeaderEncrypted::encrypt_bytes(
-            &bcs::to_bytes(&message).expect("encode message"),
+            &bcs::to_bytes(&event).expect("encode event"),
             [medium_a.public_key(), medium_b.public_key()],
         )
         .expect("encrypt");
@@ -250,12 +252,12 @@ mod tests {
         let decrypted_a = encrypted.decrypt_bytes(&medium_a).expect("decrypt a");
         let decrypted_b = encrypted.decrypt_bytes(&medium_b).expect("decrypt b");
 
-        let message_a: Blob = bcs::from_bytes(&decrypted_a).expect("decode a");
-        let message_b: Blob = bcs::from_bytes(&decrypted_b).expect("decode b");
+        let event_a: Event = bcs::from_bytes(&decrypted_a).expect("decode a");
+        let event_b: Event = bcs::from_bytes(&decrypted_b).expect("decode b");
 
-        assert_eq!(message_a.kind, message.kind);
-        assert_eq!(message_a.inner, message.inner);
-        assert_eq!(message_b.kind, message.kind);
-        assert_eq!(message_b.inner, message.inner);
+        assert_eq!(event_a.tag, TAG_MESSAGE);
+        assert_eq!(event_a.body, event.body);
+        assert_eq!(event_b.tag, TAG_MESSAGE);
+        assert_eq!(event_b.body, event.body);
     }
 }

@@ -4,62 +4,46 @@ CREATE TABLE client_identity (
     server_name TEXT,
     device_secret BLOB NOT NULL,
     medium_sk_current BLOB NOT NULL,
-    medium_sk_prev BLOB NOT NULL
+    medium_sk_prev BLOB NOT NULL,
+    dm_mailbox_key BLOB NOT NULL
 );
 
-CREATE TABLE convos (
+CREATE TABLE event_threads (
     id INTEGER PRIMARY KEY,
-    convo_type TEXT NOT NULL CHECK (convo_type IN ('direct', 'group')),
-    convo_counterparty TEXT NOT NULL,
+    thread_kind TEXT NOT NULL CHECK (thread_kind IN ('direct')),
+    thread_counterparty TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
 
-CREATE UNIQUE INDEX convos_unique_idx
-    ON convos (convo_type, convo_counterparty);
+CREATE UNIQUE INDEX event_threads_unique_idx
+    ON event_threads (thread_kind, thread_counterparty);
 
-CREATE TABLE convo_messages (
+CREATE TABLE thread_events (
     id INTEGER PRIMARY KEY,
-    convo_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL,
     sender_username TEXT NOT NULL,
-    mime TEXT NOT NULL,
-    body BLOB NOT NULL,
+    event_tag INTEGER NOT NULL,
+    event_body BLOB NOT NULL,
+    event_after BLOB,
+    event_hash BLOB NOT NULL,
     sent_at INTEGER NOT NULL,
     send_error TEXT,
     received_at INTEGER,
     CHECK (send_error IS NULL OR received_at IS NOT NULL),
-    FOREIGN KEY (convo_id) REFERENCES convos(id) ON DELETE CASCADE
+    FOREIGN KEY (thread_id) REFERENCES event_threads(id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX convo_messages_sent_idx
-    ON convo_messages (convo_id, sent_at);
+CREATE UNIQUE INDEX thread_events_hash_idx
+    ON thread_events (thread_id, event_hash);
 
-CREATE INDEX convo_messages_idx
-    ON convo_messages (convo_id, sender_username, received_at);
+CREATE UNIQUE INDEX thread_events_sent_idx
+    ON thread_events (thread_id, sent_at);
 
-CREATE INDEX convo_messages_convo_received_idx
-    ON convo_messages (convo_id, received_at);
+CREATE INDEX thread_events_idx
+    ON thread_events (thread_id, sender_username, received_at);
 
-CREATE TABLE groups (
-    group_id BLOB PRIMARY KEY,
-    descriptor BLOB NOT NULL,
-    server_name TEXT NOT NULL,
-    token BLOB NOT NULL,
-    group_key_current BLOB NOT NULL,
-    group_key_prev BLOB NOT NULL,
-    roster_version INTEGER NOT NULL
-);
-
-CREATE TABLE group_members (
-    group_id BLOB NOT NULL,
-    username TEXT NOT NULL,
-    is_admin INTEGER NOT NULL CHECK (is_admin IN (0, 1)),
-    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'banned')),
-    PRIMARY KEY (group_id, username),
-    FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE
-);
-
-CREATE INDEX group_members_by_group
-    ON group_members (group_id);
+CREATE INDEX thread_events_thread_received_idx
+    ON thread_events (thread_id, received_at);
 
 CREATE TABLE mailbox_state (
     server_name TEXT NOT NULL,

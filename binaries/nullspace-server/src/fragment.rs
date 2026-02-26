@@ -66,7 +66,7 @@ impl FragmentDb {
     }
 }
 
-pub async fn upload_frag(auth: AuthToken, frag: Fragment, ttl: u32) -> Result<(), ServerRpcError> {
+pub async fn frag_upload(auth: AuthToken, frag: Fragment, ttl: u32) -> Result<(), ServerRpcError> {
     if !device::auth_token_exists(auth).await? {
         return Err(ServerRpcError::AccessDenied);
     }
@@ -86,7 +86,7 @@ pub async fn upload_frag(auth: AuthToken, frag: Fragment, ttl: u32) -> Result<()
     Ok(())
 }
 
-pub async fn download_frag(hash: Hash) -> Result<Option<Fragment>, ServerRpcError> {
+pub async fn frag_download(hash: Hash) -> Result<Option<Fragment>, ServerRpcError> {
     // Intentionally avoids hitting SQLite; the janitor is responsible for deleting expired items.
     FRAGMENTS.load(hash).await
 }

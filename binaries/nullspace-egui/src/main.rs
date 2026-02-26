@@ -251,10 +251,6 @@ impl eframe::App for NullspaceApp {
                     let _ = convo_id;
                     self.state.msg_updates = self.state.msg_updates.saturating_add(1);
                 }
-                Event::GroupUpdated { group } => {
-                    let _ = group;
-                    self.state.msg_updates = self.state.msg_updates.saturating_add(1);
-                }
                 Event::UploadProgress {
                     id,
                     uploaded_size,

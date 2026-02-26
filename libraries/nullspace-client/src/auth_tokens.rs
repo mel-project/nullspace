@@ -33,7 +33,7 @@ pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
             let server = server_client_direct(ctx, &server_name).await?;
             let device_pk = device_secret.public().signing_public();
             let challenge = server
-                .v1_device_auth_start(username.clone(), device_pk)
+                .device_auth_start(username.clone(), device_pk)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             let mut request = SignedDeviceAuthRequest {
@@ -46,7 +46,7 @@ pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
             };
             request.sign(&device_secret);
             let auth = server
-                .v1_device_auth_finish(request)
+                .device_auth_finish(request)
                 .await?
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             Ok(auth)

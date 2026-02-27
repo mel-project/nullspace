@@ -122,9 +122,8 @@ async fn process_mailbox_entry(
         tracing::warn!(
             sender = %sender_username,
             event_after = ?event.after,
-            "rejecting out-of-thread event",
+            "could not find the event this event is supposed to be after, but accepting regardless",
         );
-        return Ok(());
     }
 
     let event_hash = event.hash();

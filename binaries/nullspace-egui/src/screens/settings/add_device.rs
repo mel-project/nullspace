@@ -75,7 +75,11 @@ pub(super) fn render(ui: &mut Ui) {
             ui.colored_label(Color32::RED, fatal_error);
         }
         if let Some(pairing_code) = pairing_code.deref() {
-            ui.label(RichText::new(pairing_code).size(20.0));
+            let mut text = RichText::new(pairing_code.as_str()).size(20.0);
+            if *pairing_done {
+                text = text.strikethrough();
+            }
+            ui.label(text);
         } else {
             ui.spinner();
         }

@@ -29,7 +29,7 @@ use std::{
 mod cluster;
 mod image_clip;
 
-const INITIAL_HISTORY_LIMIT: u16 = 100;
+const INITIAL_HISTORY_LIMIT: u16 = 20;
 const PAGE_HISTORY_LIMIT: u16 = 10;
 const MESSAGE_PREFETCH: usize = 10;
 
@@ -61,7 +61,8 @@ impl Widget for Convo<'_> {
             let mut last_update_seen: Var<u64> =
                 ui.use_state(|| app.state.msg_updates, ()).into_var();
             let mut scroller = scroller.write();
-
+            scroller.virtual_list.hide_on_resize(None);
+            scroller.virtual_list.over_scan(0.0);
             if *last_update_seen != app.state.msg_updates {
                 refresh_newer(convo_id.get(), &mut scroller);
                 *last_update_seen = app.state.msg_updates;
@@ -257,6 +258,7 @@ fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: 
     ScrollArea::vertical()
         .id_salt("scroll")
         .stick_to_bottom(true)
+        .animated(false)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
@@ -312,9 +314,15 @@ fn start_upload(attachment: &mut Var<Option<i64>>, path: PathBuf) {
 fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId) {
     ui.add_space(8.0);
     let mut attachment: Var<Option<i64>> = ui.use_state(|| None, ()).into_var();
+    let mut pending_attachments: Var<Vec<PathBuf>> = ui.use_state(Vec::new, ()).into_var();
 
     let mut draft: Var<String> = ui.use_state(String::new, ()).into_var();
     let mut pasted_image: Var<Option<PasteImage>> = ui.use_state(|| None, ()).into_var();
+
+    if attachment.is_none() && !pending_attachments.is_empty() {
+        let next = pending_attachments.remove(0);
+        start_upload(&mut attachment, next);
+    }
 
     // attachment part
     if let Some(in_progress) = attachment.as_ref() {
@@ -372,10 +380,14 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
         } else {
             ui.add(ProgressBar::new(0.0));
         }
+
+        if !pending_attachments.is_empty() {
+            ui.small(format!("Queued: {}", pending_attachments.len()));
+        }
     } else {
         ui.horizontal(|ui| {
             if ui.button("\u{ea7f} Attach").clicked() {
-                app.file_dialog.pick_file();
+                app.file_dialog.pick_multiple();
             }
             if ui.button("\u{ed7a} Clipboard image").clicked() && pasted_image.is_none() {
                 match read_clipboard_image() {
@@ -389,8 +401,20 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
             }
         });
         app.file_dialog.update(ui.ctx());
-        if let Some(path) = app.file_dialog.take_picked() {
-            start_upload(&mut attachment, path);
+        if let Some(paths) = app.file_dialog.take_picked_multiple() {
+            for path in paths {
+                if path.is_file() {
+                    pending_attachments.push(path);
+                }
+            }
+        } else if let Some(path) = app.file_dialog.take_picked() {
+            if path.is_file() {
+                pending_attachments.push(path);
+            }
+        }
+
+        if !pending_attachments.is_empty() {
+            ui.small(format!("Queued: {}", pending_attachments.len()));
         }
     }
 

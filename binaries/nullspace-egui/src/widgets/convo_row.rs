@@ -5,8 +5,10 @@ use eframe::egui::{Response, RichText, Widget};
 use egui::{Color32, ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use fast_thumbhash::thumb_hash_from_b91;
-use nullspace_client::internal::{ConvoMessage, MessageContent};
+use nullspace_client::internal::ConvoMessage;
+use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::hash::Hash;
+use nullspace_structs::event::MessageText;
 use nullspace_structs::timestamp::NanoTimestamp;
 use pollster::FutureExt;
 
@@ -128,51 +130,42 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
         base_text_format.strikethrough = egui::Stroke::new(1.0, Color32::BLACK);
     }
     ui.vertical(|ui| {
-        match &message.body {
-            MessageContent::Attachment {
-                id,
-                size,
-                filename,
-                mime,
-                ..
-            } => {
-                ui.push_id(id, |ui| {
-                    ui.add(AttachmentContent {
-                        app,
-                        id: *id,
-                        size: *size,
-                        filename,
-                        mime,
-                    });
-                });
-            }
-            MessageContent::ImageAttachment {
-                id,
-                size,
-                width,
-                height,
-                thumbhash,
-                filename,
-                ..
-            } => {
-                ui.push_id(id, |ui| {
-                    ui.add(ImageAttachmentContent {
-                        app,
-                        id: *id,
-                        size: *size,
-                        width: *width,
-                        height: *height,
-                        thumbhash,
-                        filename,
-                    });
-                });
-            }
-            MessageContent::PlainText(text) => {
-                let mut job = LayoutJob::default();
-                job.append(text, 0.0, base_text_format.clone());
-                ui.label(job);
-            }
+        let text = match &message.body.payload {
+            MessageText::Plain(text) | MessageText::Rich(text) => text,
         };
+        if !text.is_empty() {
+            let mut job = LayoutJob::default();
+            job.append(text, 0.0, base_text_format.clone());
+            ui.label(job);
+        }
+
+        for attachment in &message.body.attachments {
+            let id = attachment.bcs_hash();
+            ui.push_id(id, |ui| {
+                ui.add(AttachmentContent {
+                    app,
+                    id,
+                    size: attachment.total_size(),
+                    filename: &attachment.filename,
+                    mime: &attachment.mime,
+                });
+            });
+        }
+
+        for image in &message.body.images {
+            let id = image.inner.bcs_hash();
+            ui.push_id(id, |ui| {
+                ui.add(ImageAttachmentContent {
+                    app,
+                    id,
+                    size: image.inner.total_size(),
+                    width: image.width,
+                    height: image.height,
+                    thumbhash: &image.thumbhash,
+                    filename: &image.inner.filename,
+                });
+            });
+        }
 
         if let Some(err) = &message.send_error {
             ui.label(

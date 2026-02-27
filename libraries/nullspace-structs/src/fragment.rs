@@ -1,3 +1,4 @@
+use crate::server::ServerName;
 use bytes::Bytes;
 use derivative::Derivative;
 use nullspace_crypt::aead::AeadKey;
@@ -20,6 +21,7 @@ pub struct ImageAttachment {
 /// An attachment, which assigns a filename and mime to a series of encrypted fragments. This is something that can be sent in messages to represent attachments, for example.
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Attachment {
+    pub server_name: ServerName,
     pub filename: SmolStr,
     pub mime: SmolStr,
     pub children: Vec<(Hash, u64)>,

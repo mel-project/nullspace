@@ -28,7 +28,6 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use crate::Config;
 use crate::auth_tokens::get_auth_token;
 use crate::database::{DATABASE, identity_exists};
-use crate::directory::DIR_CLIENT;
 use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::internal::{Event, InternalRpcError, UploadedRoot};
@@ -217,6 +216,7 @@ async fn upload_inner(
     }
 
     Ok(Attachment {
+        server_name,
         filename: SmolStr::new(filename),
         mime,
         children: current_level,
@@ -423,7 +423,7 @@ pub async fn attachment_download(
 
 pub async fn attachment_download_oneshot(
     ctx: &AnyCtx<Config>,
-    sender: UserName,
+    _sender: UserName,
     attachment: Attachment,
     save_to: PathBuf,
 ) -> anyhow::Result<()> {
@@ -440,13 +440,7 @@ pub async fn attachment_download_oneshot(
         .ok_or_else(|| anyhow::anyhow!("save path must have a parent directory"))?;
     tokio::fs::create_dir_all(parent).await?;
 
-    let server_name = ctx
-        .get(DIR_CLIENT)
-        .get_user_descriptor(&sender)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
-        .server_name;
-    let client = get_server_client(ctx, &server_name).await?;
+    let client = get_server_client(ctx, &attachment.server_name).await?;
     download_attachment_to_path(ctx, client, &attachment, None, &save_to).await
 }
 
@@ -470,16 +464,9 @@ async fn download_inner(
     if !identity_exists(db).await? {
         return Err(InternalRpcError::NotReady.into());
     }
-    let (sender_username, root) =
+    let (_sender_username, root) =
         load_attachment_root(&mut *db.acquire().await?, attachment_id).await?;
-    let sender = UserName::parse(&sender_username)?;
-    let server_name = ctx
-        .get(DIR_CLIENT)
-        .get_user_descriptor(&sender)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("sender not in directory"))?
-        .server_name;
-    let client = get_server_client(ctx, &server_name).await?;
+    let client = get_server_client(ctx, &root.server_name).await?;
 
     if let Some(parent) = save_path.parent() {
         tokio::fs::create_dir_all(parent).await?;

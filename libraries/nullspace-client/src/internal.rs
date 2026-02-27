@@ -7,9 +7,7 @@ use nullspace_crypt::dh::DhSecret;
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature};
 use nullspace_structs::certificate::DeviceSecret;
-use nullspace_structs::event::{
-    MessageAttachment, MessageAttachmentData, MessagePayload, MessageText, TAG_MESSAGE,
-};
+use nullspace_structs::event::{MessagePayload, MessageText, TAG_MESSAGE};
 use nullspace_structs::fragment::{Attachment, ImageAttachment};
 use nullspace_structs::group::GroupId;
 use nullspace_structs::profile::UserProfile;
@@ -28,7 +26,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::attachments::{self, AttachmentStatus, store_attachment_root};
 use crate::config::Config;
-pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary, MessageContent, OutgoingMessage};
+pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary};
 use crate::convo::{parse_convo_id, queue_message};
 use crate::database::{DATABASE, DbNotify, identity_exists};
 use crate::directory::DIR_CLIENT;
@@ -161,7 +159,7 @@ pub trait InternalProtocol {
     async fn convo_send(
         &self,
         convo_id: ConvoId,
-        message: OutgoingMessage,
+        message: MessagePayload,
     ) -> Result<i64, InternalRpcError>;
 
     /// Creates a new group on the given server and returns its
@@ -593,7 +591,7 @@ impl InternalProtocol for InternalImpl {
     async fn convo_send(
         &self,
         convo_id: ConvoId,
-        message: OutgoingMessage,
+        message: MessagePayload,
     ) -> Result<i64, InternalRpcError> {
         if matches!(convo_id, ConvoId::Group { .. }) {
             return Err(groups_disabled_error());
@@ -602,37 +600,7 @@ impl InternalProtocol for InternalImpl {
         let identity = Identity::load(db)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
-        let own_server = identity
-            .server_name
-            .clone()
-            .ok_or_else(|| InternalRpcError::Other("server name not available".into()))?;
-        let payload = match message {
-            OutgoingMessage::PlainText(text) => MessagePayload {
-                payload: MessageText::Plain(text),
-                attachments: Vec::new(),
-                replies_to: None,
-                metadata: Default::default(),
-            },
-            OutgoingMessage::Attachment(root) => MessagePayload {
-                payload: MessageText::Plain(String::new()),
-                attachments: vec![MessageAttachment {
-                    server_name: own_server.clone(),
-                    data: MessageAttachmentData::Attachment(root),
-                }],
-                replies_to: None,
-                metadata: Default::default(),
-            },
-            OutgoingMessage::ImageAttachment(root) => MessagePayload {
-                payload: MessageText::Plain(String::new()),
-                attachments: vec![MessageAttachment {
-                    server_name: own_server.clone(),
-                    data: MessageAttachmentData::ImageAttachment(root),
-                }],
-                replies_to: None,
-                metadata: Default::default(),
-            },
-        };
-        let body = Bytes::from(bcs::to_bytes(&payload).map_err(internal_err)?);
+        let body = Bytes::from(bcs::to_bytes(&message).map_err(internal_err)?);
         let mut conn = db.acquire().await.map_err(internal_err)?;
         let id = queue_message(&mut conn, &convo_id, &identity.username, TAG_MESSAGE, &body)
             .await
@@ -1033,7 +1001,7 @@ async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> 
         let last_message = match (msg_id, sender_username, event_tag, event_body) {
             (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
-                let body = (decode_message_content(db, &sender, u16::try_from(event_tag)?, &body)
+                let body = (decode_message_payload(db, &sender, u16::try_from(event_tag)?, &body)
                     .await)
                     .ok();
                 body.map(|body| ConvoMessage {
@@ -1099,7 +1067,7 @@ async fn convo_history(
     let mut out = Vec::with_capacity(rows.len());
     for (id, sender_username, event_tag, body, received_at, read_at, send_error) in rows {
         let sender = UserName::parse(sender_username)?;
-        let body = match decode_message_content(db, &sender, u16::try_from(event_tag)?, &body).await
+        let body = match decode_message_payload(db, &sender, u16::try_from(event_tag)?, &body).await
         {
             Ok(body) => body,
             Err(_) => {
@@ -1182,64 +1150,28 @@ async fn last_dm_message_summary(
     }))
 }
 
-async fn decode_message_content(
+async fn decode_message_payload(
     db: &sqlx::SqlitePool,
     sender: &UserName,
     event_tag: u16,
     body: &[u8],
-) -> anyhow::Result<MessageContent> {
+) -> anyhow::Result<MessagePayload> {
     if event_tag != TAG_MESSAGE {
-        return Ok(MessageContent::PlainText("Unsupported message".to_string()));
+        return Ok(MessagePayload {
+            payload: MessageText::Plain("Unsupported message".to_string()),
+            attachments: Vec::new(),
+            images: Vec::new(),
+            replies_to: None,
+            metadata: Default::default(),
+        });
     }
 
     let payload: MessagePayload = bcs::from_bytes(body)?;
-    let text = match payload.payload {
-        MessageText::Plain(text) | MessageText::Rich(text) => text,
-    };
-
-    if payload.attachments.len() == 1 && text.is_empty() {
-        let attachment = payload
-            .attachments
-            .into_iter()
-            .next()
-            .expect("len checked above");
-        match attachment.data {
-            MessageAttachmentData::Attachment(root) => {
-                let id = store_attachment_root(&mut *db.acquire().await?, sender, &root).await?;
-                return Ok(MessageContent::Attachment {
-                    id,
-                    size: root.total_size(),
-                    mime: root.mime,
-                    filename: root.filename.clone(),
-                });
-            }
-            MessageAttachmentData::ImageAttachment(image_root) => {
-                let id =
-                    store_attachment_root(&mut *db.acquire().await?, sender, &image_root.inner)
-                        .await?;
-                return Ok(MessageContent::ImageAttachment {
-                    id,
-                    size: image_root.inner.total_size(),
-                    mime: image_root.inner.mime.clone(),
-                    filename: image_root.inner.filename.clone(),
-                    width: image_root.width,
-                    height: image_root.height,
-                    thumbhash: image_root.thumbhash,
-                });
-            }
-        }
+    for root in &payload.attachments {
+        let _ = store_attachment_root(&mut *db.acquire().await?, sender, &root).await?;
     }
-
-    if payload.attachments.is_empty() {
-        return Ok(MessageContent::PlainText(text));
+    for image in &payload.images {
+        let _ = store_attachment_root(&mut *db.acquire().await?, sender, &image.inner).await?;
     }
-
-    if text.is_empty() {
-        return Ok(MessageContent::PlainText(format!(
-            "{} attachment(s)",
-            payload.attachments.len()
-        )));
-    }
-
-    Ok(MessageContent::PlainText(text))
+    Ok(payload)
 }

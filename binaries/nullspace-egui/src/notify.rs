@@ -5,7 +5,8 @@ use std::sync::mpsc::Sender as StdSender;
 #[cfg(not(target_os = "linux"))]
 use notify_rust::Notification;
 
-use nullspace_client::internal::{ConvoId, Event, MessageContent};
+use nullspace_client::internal::{ConvoId, Event};
+use nullspace_structs::event::MessageText;
 
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
@@ -47,10 +48,20 @@ pub async fn show_notification(
                     && message.received_at.unwrap_or_default().0 > *max_notified
                 {
                     *max_notified = message.received_at.unwrap_or_default().0;
-                    let body = match &message.body {
-                        MessageContent::PlainText(text) => text.clone(),
-                        MessageContent::Attachment { .. } => "Attachment".to_string(),
-                        MessageContent::ImageAttachment { .. } => "Image".to_string(),
+                    let text = match &message.body.payload {
+                        MessageText::Plain(text) | MessageText::Rich(text) => text,
+                    };
+                    let body = if !text.is_empty() {
+                        text.clone()
+                    } else {
+                        let count = message.body.attachments.len() + message.body.images.len();
+                        if count == 1 && !message.body.images.is_empty() {
+                            "Image".to_string()
+                        } else if count == 1 {
+                            "Attachment".to_string()
+                        } else {
+                            format!("{count} attachments")
+                        }
                     };
                     let title = format!("Message from {}", message.sender);
                     #[cfg(target_os = "linux")]

@@ -3,7 +3,8 @@ use egui::{Button, Color32, Image, Label, Modal, ProgressBar, ScrollArea, TextEd
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use egui_infinite_scroll::InfiniteScroll;
-use nullspace_client::internal::{ConvoId, ConvoMessage, OutgoingMessage, UploadedRoot};
+use nullspace_client::internal::{ConvoId, ConvoMessage, UploadedRoot};
+use nullspace_structs::event::{MessagePayload, MessageText};
 use nullspace_structs::username::UserName;
 use pollster::block_on;
 use smol_str::SmolStr;
@@ -332,11 +333,23 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
             let root = done.clone();
             let convo_id = convo_id.clone();
             smol::spawn(async move {
-                let message = match root {
-                    UploadedRoot::Attachment(root) => OutgoingMessage::Attachment(root),
-                    UploadedRoot::ImageAttachment(root) => OutgoingMessage::ImageAttachment(root),
+                let payload = match root {
+                    UploadedRoot::Attachment(root) => MessagePayload {
+                        payload: MessageText::Plain(String::new()),
+                        attachments: vec![root],
+                        images: Vec::new(),
+                        replies_to: None,
+                        metadata: Default::default(),
+                    },
+                    UploadedRoot::ImageAttachment(root) => MessagePayload {
+                        payload: MessageText::Plain(String::new()),
+                        attachments: Vec::new(),
+                        images: vec![root],
+                        replies_to: None,
+                        metadata: Default::default(),
+                    },
                 };
-                let _ = flatten_rpc(get_rpc().convo_send(convo_id, message).await);
+                let _ = flatten_rpc(get_rpc().convo_send(convo_id, payload).await);
             })
             .detach();
             *attachment = None;
@@ -448,11 +461,14 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
 fn send_message(convo_id: &ConvoId, message: String) {
     let convo_id = convo_id.clone();
     smol::spawn(async move {
-        let _ = flatten_rpc(
-            get_rpc()
-                .convo_send(convo_id, OutgoingMessage::PlainText(message))
-                .await,
-        );
+        let payload = MessagePayload {
+            payload: MessageText::Plain(message),
+            attachments: Vec::new(),
+            images: Vec::new(),
+            replies_to: None,
+            metadata: Default::default(),
+        };
+        let _ = flatten_rpc(get_rpc().convo_send(convo_id, payload).await);
     })
     .detach();
 }

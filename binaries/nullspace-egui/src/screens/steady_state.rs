@@ -8,10 +8,8 @@ use crate::NullspaceApp;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::add_contact::AddContact;
-use crate::screens::add_device::AddDevice;
 use crate::screens::add_group::AddGroup;
-use crate::screens::preferences::Preferences;
-use crate::screens::profile::Profile;
+use crate::screens::settings::Settings;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::convo::Convo;
 use crate::widgets::convo_select::ConvoSelect;
@@ -23,9 +21,7 @@ struct SsState {
     selected_chat: Option<ConvoId>,
     show_add_contact: bool,
     show_add_group: bool,
-    show_add_device: bool,
-    show_preferences: bool,
-    show_profile: bool,
+    show_settings: bool,
 }
 
 impl Widget for SteadyState<'_> {
@@ -46,14 +42,10 @@ impl Widget for SteadyState<'_> {
         eframe::egui::TopBottomPanel::top("steady_menu")
             .exact_height(30.0)
             .show_inside(ui, |ui| {
-                ui.horizontal_centered(|ui| {
+                ui.horizontal(|ui| {
                     ui.menu_button("File", |ui| {
-                        if ui.button("Preferences").clicked() {
-                            state.show_preferences = true;
-                            ui.close();
-                        }
-                        if ui.button("Add device").clicked() {
-                            state.show_add_device = true;
+                        if ui.button("Settings").clicked() {
+                            state.show_settings = true;
                             ui.close();
                         }
                         if ui.button("Exit").clicked() {
@@ -77,7 +69,7 @@ impl Widget for SteadyState<'_> {
                             )
                             .clicked()
                         {
-                            state.show_profile = true;
+                            state.show_settings = true;
                         }
                     });
                 });
@@ -89,11 +81,9 @@ impl Widget for SteadyState<'_> {
             .default_width(200.0)
             .frame(frame)
             .show_inside(ui, |ui| self.render_left(ui, &convos, &mut state));
-        eframe::egui::CentralPanel::default()
-            .frame(frame.fill(ui.ctx().style().visuals.faint_bg_color))
-            .show_inside(ui, |ui| {
-                self.render_right(ui, &state);
-            });
+        eframe::egui::CentralPanel::default().show_inside(ui, |ui| {
+            self.render_right(ui, &state);
+        });
         ui.add(AddContact {
             app: self.0,
             open: &mut state.show_add_contact,
@@ -102,16 +92,9 @@ impl Widget for SteadyState<'_> {
             app: self.0,
             open: &mut state.show_add_group,
         });
-        ui.add(AddDevice {
-            open: &mut state.show_add_device,
-        });
-        ui.add(Preferences {
+        ui.add(Settings {
             app: self.0,
-            open: &mut state.show_preferences,
-        });
-        ui.add(Profile {
-            app: self.0,
-            open: &mut state.show_profile,
+            open: &mut state.show_settings,
         });
         ui.response()
     }

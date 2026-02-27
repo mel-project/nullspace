@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::fragment::{Attachment, ImageAttachment};
-use crate::server::ServerName;
 use crate::timestamp::NanoTimestamp;
 use crate::username::UserName;
 
@@ -18,22 +17,10 @@ pub enum MessageText {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageAttachmentData {
-    Attachment(Attachment),
-    ImageAttachment(ImageAttachment),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MessageAttachment {
-    pub server_name: ServerName,
-    pub data: MessageAttachmentData,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessagePayload {
     pub payload: MessageText,
-    pub attachments: Vec<MessageAttachment>,
+    pub attachments: Vec<Attachment>,
+    pub images: Vec<ImageAttachment>,
     pub replies_to: Option<Hash>,
     pub metadata: std::collections::BTreeMap<SmolStr, String>,
 }

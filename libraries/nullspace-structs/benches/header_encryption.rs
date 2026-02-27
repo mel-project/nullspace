@@ -23,6 +23,7 @@ fn dm_benchmarks(c: &mut Criterion) {
             bcs::to_bytes(&MessagePayload {
                 payload: MessageText::Plain("benchmark dm payload".to_string()),
                 attachments: Vec::new(),
+                images: Vec::new(),
                 replies_to: None,
                 metadata: BTreeMap::new(),
             })

@@ -5,13 +5,11 @@
 
 use anyctx::AnyCtx;
 use futures_concurrency::future::Race;
-use nullspace_crypt::hash::Hash;
-use nullspace_structs::fragment::{Attachment, ImageAttachment};
+use nullspace_structs::event::MessagePayload;
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::str::FromStr;
 
 use crate::config::Config;
@@ -76,7 +74,7 @@ pub struct ConvoMessage {
     /// Who sent the message.
     pub sender: UserName,
     /// The decoded message payload.
-    pub body: MessageContent,
+    pub body: MessagePayload,
     /// If the send loop failed to deliver this message, the error
     /// description.  `None` for incoming messages and successfully
     /// delivered outgoing messages.
@@ -86,71 +84,6 @@ pub struct ConvoMessage {
     pub received_at: Option<NanoTimestamp>,
     /// Timestamp at which the local user marked this message as read.
     pub read_at: Option<NanoTimestamp>,
-}
-
-/// The decoded content of a message.
-///
-/// The client handles all decryption and deserialization internally;
-/// frontends receive this fully-decoded representation.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageContent {
-    /// A plain-text (or Markdown) message.
-    PlainText(String),
-    /// A file attachment.
-    ///
-    /// The `id` is the hash of the attachment root -- use it with
-    /// [`attachment_download`](crate::internal::InternalProtocol::attachment_download)
-    /// and
-    /// [`attachment_status`](crate::internal::InternalProtocol::attachment_status).
-    Attachment {
-        id: Hash,
-        /// Total size of the decrypted file in bytes.
-        size: u64,
-        /// MIME type (e.g. `"image/png"`).
-        mime: SmolStr,
-        /// Original filename.
-        filename: SmolStr,
-    },
-    /// A compressed image attachment with an embedded ThumbHash preview.
-    ///
-    /// The `id` is the hash of the inner attachment root -- use it with
-    /// [`attachment_download`](crate::internal::InternalProtocol::attachment_download)
-    /// and
-    /// [`attachment_status`](crate::internal::InternalProtocol::attachment_status).
-    ImageAttachment {
-        id: Hash,
-        /// Total size of the decrypted file in bytes.
-        size: u64,
-        /// MIME type (currently `"image/webp"`).
-        mime: SmolStr,
-        /// Randomized filename (`nullspace-<blake3>.webp`).
-        filename: SmolStr,
-        /// Original image width in pixels.
-        width: u32,
-        /// Original image height in pixels.
-        height: u32,
-        /// Base91-encoded ThumbHash string.
-        thumbhash: String,
-    },
-}
-
-/// A message the frontend wishes to send.
-///
-/// Passed to
-/// [`convo_send`](crate::internal::InternalProtocol::convo_send).
-/// The client handles encryption, chunking (for attachments), and
-/// reliable delivery.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutgoingMessage {
-    /// A plain-text message.
-    PlainText(String),
-    /// A previously-uploaded attachment root (obtained from
-    /// [`Event::UploadDone`](crate::internal::Event::UploadDone)).
-    Attachment(Attachment),
-    /// A previously-uploaded compressed image attachment.
-    ImageAttachment(ImageAttachment),
 }
 
 /// Summary of a conversation for list views.

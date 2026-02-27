@@ -8,7 +8,7 @@ use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::Signable;
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
-use nullspace_structs::event::{Event, MessageAttachmentData, MessagePayload, TAG_MESSAGE};
+use nullspace_structs::event::{Event, MessagePayload, TAG_MESSAGE};
 use nullspace_structs::server::{MailboxId, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
@@ -327,14 +327,10 @@ pub(super) async fn store_message_attachments(
     }
     let payload: MessagePayload = bcs::from_bytes(event_body)?;
     for attachment in payload.attachments {
-        match attachment.data {
-            MessageAttachmentData::Attachment(root) => {
-                let _ = store_attachment_root(&mut *tx, sender, &root).await;
-            }
-            MessageAttachmentData::ImageAttachment(root) => {
-                let _ = store_attachment_root(&mut *tx, sender, &root.inner).await;
-            }
-        }
+        let _ = store_attachment_root(&mut *tx, sender, &attachment).await;
+    }
+    for image in payload.images {
+        let _ = store_attachment_root(&mut *tx, sender, &image.inner).await;
     }
     Ok(())
 }

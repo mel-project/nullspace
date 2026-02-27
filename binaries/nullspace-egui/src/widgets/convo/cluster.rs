@@ -1,5 +1,6 @@
 use chrono::NaiveDate;
-use nullspace_client::internal::{ConvoMessage, MessageContent};
+use nullspace_client::internal::ConvoMessage;
+use nullspace_structs::event::MessageText;
 use nullspace_structs::timestamp::NanoTimestamp;
 
 const CLUSTER_WINDOW_NANOS: u64 = 3 * 60 * 1_000_000_000;
@@ -16,13 +17,20 @@ enum MessageKind {
     Text,
     Attachment,
     ImageAttachment,
+    Mixed,
 }
 
 fn message_kind(message: &ConvoMessage) -> MessageKind {
-    match message.body {
-        MessageContent::PlainText(_) => MessageKind::Text,
-        MessageContent::Attachment { .. } => MessageKind::Attachment,
-        MessageContent::ImageAttachment { .. } => MessageKind::ImageAttachment,
+    let has_text = match &message.body.payload {
+        MessageText::Plain(text) | MessageText::Rich(text) => !text.is_empty(),
+    };
+    let has_attachments = !message.body.attachments.is_empty();
+    let has_images = !message.body.images.is_empty();
+    match (has_text, has_attachments, has_images) {
+        (true, false, false) => MessageKind::Text,
+        (false, true, false) => MessageKind::Attachment,
+        (false, false, true) => MessageKind::ImageAttachment,
+        _ => MessageKind::Mixed,
     }
 }
 

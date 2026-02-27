@@ -232,6 +232,7 @@ mod tests {
         let payload = MessagePayload {
             payload: MessageText::Plain("hello recipients".to_string()),
             attachments: Vec::new(),
+            images: Vec::new(),
             replies_to: None,
             metadata: BTreeMap::new(),
         };

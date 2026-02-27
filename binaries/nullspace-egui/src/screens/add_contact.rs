@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use eframe::egui::{Button, Grid, Response, TextEdit, Widget, Window};
-use nullspace_client::internal::{ConvoId, OutgoingMessage};
+use nullspace_client::internal::ConvoId;
+use nullspace_structs::event::{MessagePayload, MessageText};
 use nullspace_structs::username::UserName;
 
 use crate::NullspaceApp;
@@ -70,7 +71,13 @@ impl Widget for AddContact<'_> {
                                 }
                             };
                             let convo_id = ConvoId::Direct { peer: username };
-                            let message = OutgoingMessage::PlainText(message_str.get());
+                            let message = MessagePayload {
+                                payload: MessageText::Plain(message_str.get()),
+                                attachments: Vec::new(),
+                                images: Vec::new(),
+                                replies_to: None,
+                                metadata: Default::default(),
+                            };
                             smol::spawn(async move {
                                 flatten_rpc(get_rpc().convo_send(convo_id, message).await)
                                     .map(|_| ())

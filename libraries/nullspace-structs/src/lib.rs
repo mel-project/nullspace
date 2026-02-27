@@ -4,6 +4,7 @@ pub mod e2ee;
 pub mod event;
 pub mod fragment;
 pub mod group;
+pub mod mailbox;
 pub mod profile;
 pub mod server;
 pub mod timestamp;

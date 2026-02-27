@@ -6,10 +6,9 @@ use std::sync::LazyLock;
 use bytes::Bytes;
 use futures_concurrency::future::Race;
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::server::{
-    AuthToken, MailboxId, MailboxKey, MailboxRecvArgs, ServerRpcError,
-};
-use nullspace_structs::{Blob, server::MailboxEntry, timestamp::NanoTimestamp};
+use nullspace_structs::mailbox::{MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs};
+use nullspace_structs::server::{AuthToken, ServerRpcError};
+use nullspace_structs::{Blob, timestamp::NanoTimestamp};
 use sqlx::{Sqlite, Transaction};
 use tokio::time::{Duration, timeout};
 

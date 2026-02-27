@@ -16,6 +16,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::fragment::Fragment;
+use crate::mailbox::{MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs};
 use crate::profile::UserProfile;
 use crate::timestamp::Timestamp;
 use crate::{Blob, timestamp::NanoTimestamp, username::UserName};
@@ -187,14 +188,6 @@ impl Signable for SignedDeviceAuthRequest {
     }
 }
 
-/// Arguments for receiving messages from a single mailbox.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct MailboxRecvArgs {
-    pub mailbox: MailboxId,
-    pub mailbox_key: MailboxKey,
-    pub after: NanoTimestamp,
-}
-
 /// A server name that matches the rules for server names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord)]
 #[serde(transparent)]
@@ -267,51 +260,6 @@ pub struct ServerDescriptor {
     pub public_urls: Vec<Url>,
     /// The public key of the server, used for authentication.
     pub server_pk: SigningPublic,
-}
-
-/// A mailbox ID at a server, wrapping a hash value.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct MailboxId(Hash);
-
-impl MailboxId {
-    pub fn from_key(key: &MailboxKey) -> Self {
-        Self(Hash::keyed_digest(b"nullspace-mailbox", &key.to_bytes()))
-    }
-
-    pub fn to_bytes(&self) -> [u8; 32] {
-        self.0.to_bytes()
-    }
-
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(Hash::from_bytes(bytes))
-    }
-}
-
-/// An entry stored in a mailbox, with metadata added by the server.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct MailboxEntry {
-    pub body: Blob,
-    pub received_at: NanoTimestamp,
-}
-
-/// A mailbox read key.
-#[serde_as]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord)]
-pub struct MailboxKey(#[serde_as(as = "IfIsHumanReadable<Hex, SerdeBytes>")] [u8; 20]);
-
-impl MailboxKey {
-    pub fn random() -> Self {
-        Self(rand::random())
-    }
-
-    pub fn to_bytes(&self) -> [u8; 20] {
-        self.0
-    }
-
-    pub fn mailbox_id(&self) -> MailboxId {
-        MailboxId::from_key(self)
-    }
 }
 
 /// An opaque authentication token.

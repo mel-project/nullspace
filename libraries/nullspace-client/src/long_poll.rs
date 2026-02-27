@@ -2,44 +2,48 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyctx::AnyCtx;
 use anyhow::Context;
 use async_channel::{Receiver, Sender};
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use futures_concurrency::future::Race;
-use nullspace_structs::server::{
-    MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs, ServerClient, ServerRpcError,
-};
+use nullspace_structs::mailbox::{MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs};
+use nullspace_structs::server::{ServerName, ServerRpcError};
 use nullspace_structs::timestamp::NanoTimestamp;
 use tokio::sync::oneshot;
 
-use crate::config::Ctx;
+use crate::config::{Config, Ctx};
+use crate::server::get_server_client;
 
 const LONG_POLL_MIN_MS: u64 = 15_000;
 const LONG_POLL_MAX_MS: u64 = 30 * 60 * 1000;
 const LONG_POLL_INC_MS: u64 = 5_000;
 const LONG_POLL_DEC_FACTOR: f64 = 0.5;
 
-pub static LONG_POLLER: Ctx<Arc<LongPoller>> = |_ctx| Arc::new(LongPoller::new());
+pub static LONG_POLLER: Ctx<Arc<LongPoller>> = |ctx| Arc::new(LongPoller::new(ctx.clone()));
 
 pub struct LongPoller {
-    workers: DashMap<usize, ServerWorker>,
+    ctx: AnyCtx<Config>,
+    workers: DashMap<ServerName, ServerWorker>,
 }
 
 impl LongPoller {
-    pub fn new() -> Self {
+    fn new(ctx: AnyCtx<Config>) -> Self {
         Self {
+            ctx,
             workers: DashMap::new(),
         }
     }
 
     pub async fn recv(
         &self,
-        server: Arc<ServerClient>,
+        server_name: ServerName,
         mailbox_key: MailboxKey,
         mailbox: MailboxId,
         after: NanoTimestamp,
     ) -> anyhow::Result<MailboxEntry> {
-        let worker = self.worker_for_server(server);
+        let worker = self.worker_for_server(server_name);
         let (tx, rx) = oneshot::channel();
         let request = PollRequest {
             mailbox_key,
@@ -55,17 +59,18 @@ impl LongPoller {
         rx.await.context("long poller worker closed")?
     }
 
-    fn worker_for_server(&self, server: Arc<ServerClient>) -> ServerWorker {
-        let key = Arc::as_ptr(&server) as usize;
-        if let Some(existing) = self.workers.get(&key) {
-            return existing.clone();
+    fn worker_for_server(&self, server_name: ServerName) -> ServerWorker {
+        match self.workers.entry(server_name.clone()) {
+            Entry::Occupied(existing) => existing.get().clone(),
+            Entry::Vacant(vacant) => {
+                let (sender, receiver) = async_channel::unbounded();
+                let worker = ServerWorker { sender };
+                let task = run_server_worker(self.ctx.clone(), server_name, receiver);
+                tokio::spawn(task);
+                vacant.insert(worker.clone());
+                worker
+            }
         }
-        let (sender, receiver) = async_channel::unbounded();
-        let worker = ServerWorker { sender };
-        let task = run_server_worker(server, receiver);
-        tokio::spawn(task);
-        self.workers.insert(key, worker.clone());
-        worker
     }
 }
 
@@ -81,9 +86,14 @@ struct PollRequest {
     respond_to: oneshot::Sender<anyhow::Result<MailboxEntry>>,
 }
 
-async fn run_server_worker(server: Arc<ServerClient>, receiver: Receiver<PollRequest>) {
+async fn run_server_worker(
+    ctx: AnyCtx<Config>,
+    server_name: ServerName,
+    receiver: Receiver<PollRequest>,
+) {
     let mut pending: Vec<PollRequest> = Vec::new();
     let mut timeout_ms = LONG_POLL_MIN_MS;
+    let mut server_client = None;
     loop {
         if pending.is_empty() {
             match receiver.recv().await {
@@ -102,7 +112,17 @@ async fn run_server_worker(server: Arc<ServerClient>, receiver: Receiver<PollReq
             }
         };
         let poll_fut = async {
-            let response = server
+            if server_client.is_none() {
+                let client = match get_server_client(&ctx, &server_name).await {
+                    Ok(client) => client,
+                    Err(err) => {
+                        return WorkerEvent::PollResponse(Err(err));
+                    }
+                };
+                server_client = Some(client);
+            }
+            let client = server_client.clone().expect("server client set");
+            let response = client
                 .mailbox_multirecv(args, timeout_ms)
                 .await
                 .map_err(|err| anyhow::anyhow!(err.to_string()));
@@ -123,6 +143,7 @@ async fn run_server_worker(server: Arc<ServerClient>, receiver: Receiver<PollReq
             WorkerEvent::PollResponse(response) => {
                 match &response {
                     Err(_) => {
+                        server_client = None;
                         timeout_ms = aimd_decrease(timeout_ms);
                     }
                     Ok(Ok(map)) => {

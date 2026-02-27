@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyctx::AnyCtx;
 use futures_concurrency::future::Race;
-use nullspace_structs::server::MailboxId;
+use nullspace_structs::mailbox::MailboxId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Sqlite, SqlitePool};
@@ -53,6 +53,7 @@ pub static DATABASE: Ctx<SqlitePool> = |ctx| {
         .create_if_missing(true)
         .busy_timeout(Duration::from_secs(1))
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .pragma("secure_delete", "ON")
         .foreign_keys(true)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
     pollster::block_on(async {

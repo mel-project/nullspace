@@ -7,10 +7,8 @@ use nullspace_rpc_pool::RpcPool;
 use nullspace_structs::{
     Blob,
     certificate::DeviceSecret,
-    server::{
-        AuthToken, DeviceAuthRequest, MailboxKey, MailboxRecvArgs, ServerClient,
-        SignedDeviceAuthRequest,
-    },
+    mailbox::{MailboxId, MailboxKey, MailboxRecvArgs},
+    server::{AuthToken, DeviceAuthRequest, ServerClient, SignedDeviceAuthRequest},
     timestamp::NanoTimestamp,
     username::UserName,
 };
@@ -155,7 +153,7 @@ async fn authenticate(
 async fn mailbox_id_from_profile(
     client: &ServerClient,
     username: &UserName,
-) -> anyhow::Result<nullspace_structs::server::MailboxId> {
+) -> anyhow::Result<MailboxId> {
     let profile = client
         .profile(username.clone())
         .await?

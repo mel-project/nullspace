@@ -8,7 +8,7 @@ use std::{
 
 use async_event::Event;
 use moka::sync::{Cache, CacheBuilder};
-use nullspace_structs::server::MailboxId;
+use nullspace_structs::mailbox::MailboxId;
 
 pub struct PubSub {
     inner: Cache<MailboxId, Arc<(AtomicU64, Event)>>,

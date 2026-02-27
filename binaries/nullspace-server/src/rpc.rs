@@ -10,10 +10,10 @@ use bytes::Bytes;
 use moka::future::Cache as FutureCache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
 use nullspace_rpc_pool::PooledTransport;
+use nullspace_structs::mailbox::{MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs};
 use nullspace_structs::server::{
-    AuthToken, ChanDirection, DeviceAuthChallenge, MailboxEntry, MailboxId, MailboxKey,
-    MailboxRecvArgs, ProxyError, ServerName, ServerProtocol, ServerRpcError, ServerService,
-    SignedDeviceAuthRequest, SignedMediumPk,
+    AuthToken, ChanDirection, DeviceAuthChallenge, ProxyError, ServerName, ServerProtocol,
+    ServerRpcError, ServerService, SignedDeviceAuthRequest, SignedMediumPk,
 };
 use nullspace_structs::{Blob, profile::UserProfile, timestamp::NanoTimestamp, username::UserName};
 

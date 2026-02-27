@@ -10,10 +10,10 @@ use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::event::{MessagePayload, MessageText, TAG_MESSAGE};
 use nullspace_structs::fragment::{Attachment, ImageAttachment};
 use nullspace_structs::group::GroupId;
+use nullspace_structs::mailbox::MailboxKey;
 use nullspace_structs::profile::UserProfile;
 use nullspace_structs::server::{
-    AuthToken, DeviceAuthRequest, MailboxKey, ServerClient, ServerName, SignedDeviceAuthRequest,
-    SignedMediumPk,
+    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest, SignedMediumPk,
 };
 use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
 use nullspace_structs::username::UserName;

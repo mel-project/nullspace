@@ -4,7 +4,8 @@ use anyctx::AnyCtx;
 use nullspace_crypt::signing::SigningPublic;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::Event;
-use nullspace_structs::server::{MailboxId, ServerName};
+use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
+use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
 use crate::config::Config;
@@ -55,7 +56,7 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let poller = ctx.get(LONG_POLLER);
     loop {
         let entry = match poller
-            .recv(server.clone(), identity.dm_mailbox_key, mailbox, after)
+            .recv(server_name.clone(), identity.dm_mailbox_key, mailbox, after)
             .await
         {
             Ok(entry) => entry,
@@ -76,7 +77,7 @@ async fn process_mailbox_entry(
     ctx: &AnyCtx<Config>,
     server_name: &ServerName,
     mailbox: MailboxId,
-    entry: nullspace_structs::server::MailboxEntry,
+    entry: MailboxEntry,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(db).await?;

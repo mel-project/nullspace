@@ -4,7 +4,7 @@ use nullspace_crypt::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{fragment::ImageAttachment, server::MailboxId, timestamp::Timestamp};
+use crate::{fragment::ImageAttachment, mailbox::MailboxId, timestamp::Timestamp};
 
 /// A signed user profile, containing the profile picture and various other objects.
 #[derive(Serialize, Deserialize, Clone, Debug)]

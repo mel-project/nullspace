@@ -35,6 +35,7 @@ pub async fn build_dir_client(global: &GlobalArgs) -> anyhow::Result<DirClient> 
         .context("missing --public-key for directory access")?;
     let opts = SqliteConnectOptions::from_str(&global.db_path)?
         .create_if_missing(true)
+        .pragma("secure_delete", "ON")
         .shared_cache(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)

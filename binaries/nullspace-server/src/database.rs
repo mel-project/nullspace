@@ -13,8 +13,9 @@ pub static DATABASE: LazyLock<SqlitePool> = LazyLock::new(|| {
         .create_if_missing(true)
         .busy_timeout(Duration::from_secs(5))
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .pragma("secure_delete", "ON")
         .foreign_keys(true)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Extra); // durability *is* a concern for mailboxes!
     pollster::block_on(async {
         let pool = SqlitePoolOptions::new()
             .max_connections(500)

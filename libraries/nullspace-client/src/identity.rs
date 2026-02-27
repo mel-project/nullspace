@@ -3,7 +3,8 @@ use sqlx::SqlitePool;
 
 use nullspace_crypt::dh::DhSecret;
 use nullspace_structs::certificate::DeviceSecret;
-use nullspace_structs::server::{MailboxId, MailboxKey, ServerName};
+use nullspace_structs::mailbox::{MailboxId, MailboxKey};
+use nullspace_structs::server::ServerName;
 use nullspace_structs::username::UserName;
 
 #[derive(Clone)]

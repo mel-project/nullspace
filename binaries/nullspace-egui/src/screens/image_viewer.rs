@@ -18,7 +18,7 @@ impl Widget for ImageViewer<'_> {
             .collapsible(false)
             .open(&mut open)
             .default_pos(center)
-            .default_size([600.0, 500.0])
+            .default_size([300.0, 200.0])
             .show(ui.ctx(), |ui| {
                 // Layout bottom-up so the button claims space at the bottom
                 // and the image gets exactly the remainder — no margin

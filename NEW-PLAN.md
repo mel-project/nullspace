@@ -27,38 +27,70 @@ Note that `Attachment` should have a server name indicating where it's hosted, a
 DMs are sent to a mailbox advertised in the user's **user profile**. The mailbox key to this mailbox is distributed through device provisioning to each new device the user creates, so this mailbox MUST never change (and thus cache coherence is a non-issue).
 
 The underlying events are also copied to our own mailbox, encrypted for our own devices. This allows us to sync outgoing messages across devices.
+
 # Groups
 
-Servers are no longer "group-aware" in any way. We continue to use the same dumb mailbox primitive.
+Groups use two server primitives: **mailboxes** for message delivery and a **group registry** for access control state.
+
 ## Group bearer key
 
-At the client-to-client level, we introduce a new concept, a **group bearer key**, containing:
+At the client-to-client level, we introduce a new concept, a **group bearer key (GBK)**, containing:
 - an opaque 20-byte Group ID
-- (if this is not the first GBK) a previous GBK hash
 - the server that the group is hosted on
+- the group registry nonce (see below)
 - a random nonce
 
 Then, we derive the **group mailbox key** (and thus its ID) as well as the **group symmetric key** using a KDF on the GBK.
 
 Thus, the GBK is truly a *bearer credential for read/write access to the group*, that bundles server and cryptographic enforcement in one object.
 
-The entire history of a group is a single event thread for the purposes of the `after` field. Group events are signed then encrypted with the GBK.
+The entire history of a group under a single GBK is a single event thread for the purposes of the `after` field. Group events are signed then encrypted with the GBK.
 
-Of course, only using GBKs doesn't allow people to be kicked from groups. We also don't have any forward secrecy. Both of these problems are solved by **GBK rotation**. But before we talk about that, we need to talk about administrative actions in general.
-## Admin actions
+Of course, only using GBKs doesn't allow people to be kicked from groups. We also don't have any forward secrecy. Both of these problems are solved by **GBK rotation**, which is managed through the group registry.
 
-Admin actions in groups are events of tag `GROUP_ADMIN_ACTION`. They have two main purposes: 
-- Transitioning the **group roster**, which contains the permissions for everybody in the group. These permissions are "soft" permissions that control client behavior; for example, only admins' admin actions actually take effect, and muted/absent users' messages are entirely ignored. The group roster is not stored at the server, but rather *reconstructed by everybody in the group as they process admin actions*.
-- GBK rotation. This is a message instructing all group members to move to a different GBK for the group. The actual GBK itself is wrapped in device encryption so that only non-banned members of the group are notified of the new GBK.
+## Group registry
 
-All admin actions contain a one-by-one increasing counter to prevent races. Ties are broken by earlier received_at.
+The server maintains a **group registry**: a key-value store where keys are arbitrary nonces (chosen at group creation time) and values are append-only logs of **rotation entries**.
 
-When an admin bans a user, it must also send a GBK rotation. Otherwise, it periodically sends GBK rotations for forward secrecy purposes.
+The server-side state for each group registry entry is:
+- `admin_set: Set<SigningPublic>` — the current set of admin device keys, mutable (replaced on each append)
+- `log: Vec<RotationEntry>` — append-only, indexed by position (starting at 0)
 
-When we receive a GBK rotation, we continue polling the old mailbox to catch any out of order messages from people who haven't seen the GBK rotation yet. 
-## Inviting people to groups 
+Each `RotationEntry` contains:
+1. `new_admin_set: Set<SigningPublic>` — replaces the current admin set upon acceptance
+2. `gbk_rotation_message: Bytes` — an opaque encrypted blob (not verified by the server)
 
-Anybody with an up to date GBK can join a group by starting to poll the mailbox. This is "lurking" and does not reveal membership until the user sends something.
+**Server behavior on append:** verify that the signature on the entry comes from a key in the current `admin_set`. If valid, accept the entry, append it to the log, and replace `admin_set` with `new_admin_set`. The server must reject appends where `new_admin_set` is empty (to prevent permanently freezing the group).
+
+**Server behavior on read:** expose an endpoint that, given the registry nonce and a rotation index `i`, returns the `i`th rotation entry. This is stateless and cacheable.
+
+Concurrent admin appends are resolved by natural optimistic concurrency: the server accepts whichever arrives first, which updates the `admin_set`, potentially invalidating the second append's signature. The rejected admin retries against the new state.
+
+## GBK rotation
+
+GBK rotation is managed entirely through the group registry, not through the group mailbox. 
+
+When an admin rotates the GBK:
+1. They construct a new GBK (with a fresh random nonce, same Group ID, same server, same registry nonce).
+2. They construct the `gbk_rotation_message`: encrypted per-member blobs containing the new GBK, wrapped in device encryption so that only non-banned members receive it. This message also includes the **full group roster**, which allows any member to fully reconstruct group state from a single rotation entry.
+3. They construct the `new_admin_set` reflecting any admin changes.
+4. They sign and submit the rotation entry to the group registry.
+
+**Client polling:** each client tracks the latest rotation index it has processed for each group. To check for rotations, it requests `get_rotation(nonce, last_index + 1)`. If a new entry exists, the client decrypts the GBK rotation message, derives the new mailbox key, and starts polling the new mailbox. This is simple, reliable, and gap-free — just a monotonic integer.
+
+After processing a GBK rotation, clients should briefly (for a few hours) continue polling the old mailbox to catch messages from members who sent under the old GBK before they processed the rotation.
+
+When an admin bans a user, they must also rotate the GBK (the banned user is simply excluded from the encrypted rotation message). Admins should also periodically rotate GBKs for forward secrecy purposes.
+
+## Inline admin actions
+
+Administrative actions that do **not** affect read access (muting, group name/description changes, role changes that don't modify the admin set) are sent inline as group events with the `GROUP_ADMIN_ACTION` tag. These are "soft" permissions that control client behavior — muted users' messages are ignored, only admins' inline actions take effect, etc.
+
+The group roster for these soft permissions is reconstructed by processing inline admin actions. Since loss of a soft action is non-catastrophic (someone isn't muted when they should be), this is acceptable. Any drift is corrected at the next GBK rotation, which includes the full roster.
+
+## Inviting people to groups
+
+Anybody with an up-to-date GBK can join a group by starting to poll the mailbox. This is "lurking" and does not reveal membership until the user sends something.
 
 When the user sends something, then the roster on every device changes to include that user and the message, unless the roster contains the "new users are muted" flag.
 

@@ -14,6 +14,7 @@ use nullspace_structs::fragment::{
 use rand::RngCore;
 use smol_str::SmolStr;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use uuid::Uuid;
 
 use crate::Config;
 use crate::auth_tokens::get_auth_token;
@@ -26,15 +27,15 @@ use crate::server::get_server_client;
 use super::images;
 
 const MAX_CHUNK_SIZE: usize = 512 * 1024;
-const MAX_FANOUT: usize = 16;
+const MAX_FANOUT: usize = 256;
 const TRANSFER_CONCURRENCY: usize = 16;
 
 pub async fn attachment_upload(
     ctx: &AnyCtx<Config>,
     absolute_path: PathBuf,
     mime: SmolStr,
-) -> anyhow::Result<i64> {
-    let upload_id = rand::random();
+) -> anyhow::Result<Uuid> {
+    let upload_id = Uuid::new_v4();
     let ctx = ctx.clone();
     tokio::spawn(async move {
         match upload_file(&ctx, absolute_path, mime, upload_id).await {
@@ -60,8 +61,8 @@ pub async fn attachment_upload(
 pub async fn image_attachment_upload(
     ctx: &AnyCtx<Config>,
     absolute_path: PathBuf,
-) -> anyhow::Result<i64> {
-    let upload_id = rand::random();
+) -> anyhow::Result<Uuid> {
+    let upload_id = Uuid::new_v4();
     let ctx = ctx.clone();
     tokio::spawn(async move {
         match upload_image_attachment(&ctx, absolute_path, upload_id).await {
@@ -87,7 +88,7 @@ pub async fn image_attachment_upload(
 async fn upload_image_attachment(
     ctx: &AnyCtx<Config>,
     absolute_path: PathBuf,
-    upload_id: i64,
+    upload_id: Uuid,
 ) -> anyhow::Result<ImageAttachment> {
     let source_bytes = tokio::fs::read(&absolute_path).await?;
     let prepared =
@@ -125,7 +126,7 @@ async fn upload_file(
     ctx: &AnyCtx<Config>,
     absolute_path: PathBuf,
     mime: SmolStr,
-    upload_id: i64,
+    upload_id: Uuid,
 ) -> anyhow::Result<Attachment> {
     let db = ctx.get(DATABASE);
     let mut conn = db.acquire().await?;

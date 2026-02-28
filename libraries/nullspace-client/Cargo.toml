@@ -49,6 +49,7 @@ nullspace-structs = { version = "0.0.1", path = "../nullspace-structs" }
 scopeguard = "1.2.0"
 memmap2 = "0.9.9"
 webp = "0.3.1"
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [build-dependencies]
 readme-rustdocifier = "0.1.1"

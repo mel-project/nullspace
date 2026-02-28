@@ -5,6 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::utils::folders;
+
 #[derive(Clone, Debug)]
 pub struct PasteImage {
     pub png_bytes: Vec<u8>,
@@ -42,6 +44,10 @@ pub fn read_clipboard_image() -> Result<PasteImage, String> {
 
 pub fn persist_paste_image(image: &PasteImage) -> Result<PathBuf, String> {
     let path = temp_paste_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create pasted image dir: {err}"))?;
+    }
     fs::write(&path, &image.png_bytes)
         .map_err(|err| format!("failed to write pasted image: {err}"))?;
     Ok(path)
@@ -49,7 +55,7 @@ pub fn persist_paste_image(image: &PasteImage) -> Result<PathBuf, String> {
 
 fn temp_paste_path() -> PathBuf {
     let name = format!("nullspace-paste-{}.png", unix_nanos());
-    std::env::temp_dir().join(name)
+    folders::pasted_images_dir().join(name)
 }
 
 fn unix_nanos() -> u128 {

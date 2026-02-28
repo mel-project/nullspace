@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
+use fs2::FileExt;
 
 use egui::style::ScrollStyle;
 use egui::{Color32, Modal};
@@ -18,6 +21,7 @@ use nullspace_structs::username::UserName;
 use pollster::FutureExt;
 use smol::channel::Receiver;
 use url::Url;
+use uuid::Uuid;
 
 use crate::events::{event_loop, spawn_audio_thread};
 use crate::fonts::load_fonts;
@@ -44,14 +48,15 @@ mod widgets;
 
 const DEFAULT_DIR_ENDPOINT: &str = "https://xirtam-test-directory.nullfruit.net/";
 const DEFAULT_DIR_ANCHOR_PK: &str = "bpOJ5ga-oQjb0njgBV5CtEZIVU6wjvltXjsQ_10BNlM";
+const INSTANCE_LOCK_FILE: &str = "instance.lock";
+#[cfg(unix)]
+const INSTANCE_SIGNAL_SOCKET: &str = "instance.sock";
 
 #[derive(Debug, Parser)]
 #[command(name = "nullspace-egui", about = "Minimal nullspace GUI client")]
 struct Cli {
     #[arg(long)]
-    db_path: Option<PathBuf>,
-    #[arg(long)]
-    prefs_path: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     #[arg(long, default_value = DEFAULT_DIR_ENDPOINT)]
     dir_endpoint: String,
     #[arg(long, default_value = DEFAULT_DIR_ANCHOR_PK)]
@@ -59,9 +64,11 @@ struct Cli {
 }
 
 struct NullspaceApp {
+    _single_instance: SingleInstanceGuard,
+    #[cfg(unix)]
+    activation_listener: Option<ActivationListener>,
     recv_event: Receiver<Event>,
     focused: Arc<AtomicBool>,
-    prefs_path: PathBuf,
     file_dialog: EguiFileDialog,
     profile_file_dialog: EguiFileDialog,
     tray: Option<tray::Tray>,
@@ -84,9 +91,9 @@ struct AppState {
 
     attach_updates: u64,
 
-    upload_progress: BTreeMap<i64, (u64, u64)>,
-    upload_done: BTreeMap<i64, UploadedRoot>,
-    upload_error: BTreeMap<i64, String>,
+    upload_progress: BTreeMap<Uuid, (u64, u64)>,
+    upload_done: BTreeMap<Uuid, UploadedRoot>,
+    upload_error: BTreeMap<Uuid, String>,
     download_progress: BTreeMap<Hash, (u64, u64)>,
     download_error: BTreeMap<Hash, String>,
 
@@ -96,8 +103,8 @@ struct AppState {
 impl NullspaceApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
+        single_instance: SingleInstanceGuard,
         client: Client,
-        prefs_path: PathBuf,
         prefs: PrefData,
     ) -> Self {
         crate::rpc::init_rpc(client.rpc());
@@ -158,14 +165,14 @@ impl NullspaceApp {
             None
         };
         let supports_hide = supports_hide_window();
-        let cache_dir = prefs_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("profile-cache");
+        #[cfg(unix)]
+        let activation_listener = activation_listener();
         Self {
+            _single_instance: single_instance,
+            #[cfg(unix)]
+            activation_listener,
             recv_event,
             focused,
-            prefs_path,
             file_dialog: EguiFileDialog::new(),
             profile_file_dialog: EguiFileDialog::new(),
             tray,
@@ -179,7 +186,7 @@ impl NullspaceApp {
                 error_dialog: None,
                 prefs: prefs.clone(),
                 last_saved_prefs: prefs,
-                profile_loader: ProfileLoader::new(cache_dir),
+                profile_loader: ProfileLoader::new(crate::utils::folders::profile_cache_dir()),
                 attach_updates: 0,
                 upload_progress: BTreeMap::new(),
                 upload_done: BTreeMap::new(),
@@ -197,6 +204,16 @@ impl eframe::App for NullspaceApp {
         // hack to speed up touchpad scroll while not speeding up mouse scroll too much
         ctx.options_mut(|opt| opt.input_options.line_scroll_speed = 18.0);
         ctx.input_mut(|input| input.smooth_scroll_delta *= 4.0);
+
+        #[cfg(unix)]
+        if let Some(listener) = self.activation_listener.as_mut()
+            && listener.poll_activation()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.tray_hidden = false;
+        }
 
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
@@ -255,21 +272,21 @@ impl eframe::App for NullspaceApp {
                     uploaded_size,
                     total_size,
                 } => {
-                    tracing::debug!(id, uploaded_size, total_size, "upload progress event");
+                    tracing::debug!(id = %id, uploaded_size, total_size, "upload progress event");
 
                     self.state
                         .upload_progress
                         .insert(id, (uploaded_size, total_size));
                 }
                 Event::UploadDone { id, root } => {
-                    tracing::debug!(id, root = ?root, "upload done event");
+                    tracing::debug!(id = %id, root = ?root, "upload done event");
                     self.state.upload_progress.remove(&id);
                     self.state.upload_done.insert(id, root);
                     self.state.upload_error.remove(&id);
                     self.state.attach_updates += 1;
                 }
                 Event::UploadFailed { id, error } => {
-                    tracing::warn!(id, error = %error, "upload failed event");
+                    tracing::warn!(id = %id, error = %error, "upload failed event");
                     self.state.upload_progress.remove(&id);
                     self.state.upload_error.insert(id, error.to_string());
                     self.state.attach_updates += 1;
@@ -347,7 +364,7 @@ impl eframe::App for NullspaceApp {
             }
         });
         if self.state.prefs != self.state.last_saved_prefs {
-            if let Err(err) = save_prefs(&self.prefs_path, &self.state.prefs) {
+            if let Err(err) = save_prefs(&crate::utils::folders::prefs_path(), &self.state.prefs) {
                 tracing::warn!(error = %err, "failed to save prefs");
             } else {
                 self.state.last_saved_prefs = self.state.prefs.clone();
@@ -380,10 +397,22 @@ fn main() -> eframe::Result<()> {
         "window backend environment"
     );
 
-    let prefs_path = cli.prefs_path.unwrap_or_else(default_prefs_path);
+    if let Err(err) = crate::utils::folders::init(cli.data_dir) {
+        tracing::warn!(error = %err, "failed to initialize folders");
+        return Ok(());
+    }
+    let single_instance = match init_single_instance() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return Ok(()),
+        Err(err) => {
+            tracing::warn!(error = %err, "single-instance setup failed");
+            return Ok(());
+        }
+    };
+    let prefs_path = crate::utils::folders::prefs_path();
     let prefs = load_prefs(&prefs_path).unwrap_or_default();
     let config = Config {
-        db_path: cli.db_path.unwrap_or_else(default_db_path),
+        db_path: crate::utils::folders::db_path(),
         dir_endpoint: Url::parse(&cli.dir_endpoint).expect("dir endpoint"),
         dir_anchor_pk: cli
             .dir_anchor_pk
@@ -396,30 +425,15 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "nullspace-egui",
         options,
-        Box::new(move |cc| Ok(Box::new(NullspaceApp::new(cc, client, prefs_path, prefs)))),
+        Box::new(move |cc| {
+            Ok(Box::new(NullspaceApp::new(
+                cc,
+                single_instance,
+                client,
+                prefs,
+            )))
+        }),
     )
-}
-
-fn default_db_path() -> PathBuf {
-    let base_dir = dirs::config_dir()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let dir = base_dir.join("nullspace-egui");
-    if let Err(err) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(error = %err, "failed to create config dir");
-    }
-    dir.join("nullspace-client.db")
-}
-
-fn default_prefs_path() -> PathBuf {
-    let base_dir = dirs::config_dir()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let dir = base_dir.join("nullspace-egui");
-    if let Err(err) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(error = %err, "failed to create config dir");
-    }
-    dir.join("nullspace-egui.json")
 }
 
 fn supports_hide_window() -> bool {
@@ -452,4 +466,115 @@ fn save_prefs(path: &PathBuf, prefs: &PrefData) -> Result<(), anyhow::Error> {
     let data = serde_json::to_string_pretty(prefs)?;
     std::fs::write(path, data)?;
     Ok(())
+}
+
+struct SingleInstanceGuard {
+    _lock_file: std::fs::File,
+}
+
+fn init_single_instance() -> anyhow::Result<Option<SingleInstanceGuard>> {
+    let dir = crate::utils::folders::root_dir();
+    let lock_path = dir.join(INSTANCE_LOCK_FILE);
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(SingleInstanceGuard {
+            _lock_file: lock_file,
+        })),
+        Err(err) if matches!(err.kind(), ErrorKind::WouldBlock) => {
+            if let Err(signal_err) = signal_existing_instance() {
+                tracing::warn!(error = %signal_err, "failed to notify existing instance");
+            }
+            Ok(None)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(unix)]
+fn signal_existing_instance() -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let socket_path = crate::utils::folders::root_dir().join(INSTANCE_SIGNAL_SOCKET);
+    let mut last_err = None;
+    for _ in 0..20 {
+        match UnixStream::connect(&socket_path) {
+            Ok(mut stream) => {
+                stream.write_all(&[1])?;
+                return Ok(());
+            }
+            Err(err) => {
+                last_err = Some(err);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("failed to notify instance")))
+}
+
+#[cfg(not(unix))]
+fn signal_existing_instance() -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+struct ActivationListener {
+    listener: std::os::unix::net::UnixListener,
+    socket_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl ActivationListener {
+    fn bind(dir: &std::path::Path) -> std::io::Result<Self> {
+        let socket_path = dir.join(INSTANCE_SIGNAL_SOCKET);
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            socket_path,
+        })
+    }
+
+    fn poll_activation(&mut self) -> bool {
+        let mut activated = false;
+        loop {
+            match self.listener.accept() {
+                Ok((_stream, _addr)) => {
+                    activated = true;
+                }
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock) => break,
+                Err(err) => {
+                    tracing::warn!(error = %err, "activation listener failed");
+                    break;
+                }
+            }
+        }
+        activated
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ActivationListener {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+#[cfg(unix)]
+fn activation_listener() -> Option<ActivationListener> {
+    match ActivationListener::bind(crate::utils::folders::root_dir()) {
+        Ok(listener) => Some(listener),
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to start activation listener");
+            None
+        }
+    }
 }

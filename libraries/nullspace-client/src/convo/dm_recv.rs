@@ -139,7 +139,7 @@ async fn process_mailbox_entry(
     .rows_affected();
 
     if inserted > 0 {
-        store_message_attachments(&mut conn, &sender_username, event.tag, &event.body).await?;
+        store_message_attachments(&mut conn, event.tag, &event.body).await?;
     }
     Ok(())
 }

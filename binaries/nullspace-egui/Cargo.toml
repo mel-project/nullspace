@@ -61,6 +61,8 @@ futures-util = "0.3.32"
 egui_infinite_scroll = "0.9.0"
 generational-box = "0.7.3"
 scopeguard = "1.2.0"
+uuid = { version = "1", features = ["serde"] }
+fs2 = "0.4.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.3", default-features = false, features = [

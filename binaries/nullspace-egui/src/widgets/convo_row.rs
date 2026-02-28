@@ -15,6 +15,7 @@ use pollster::FutureExt;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
+use crate::utils::folders;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::utils::units::{format_filesize, unit_for_bytes};
@@ -400,14 +401,7 @@ fn default_download_dir() -> PathBuf {
 }
 
 fn image_cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .map(|base| base.join("nullspace").join("images"))
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join(".cache").join("images"))
-        })
-        .unwrap_or_else(|| PathBuf::from("."))
+    folders::image_cache_dir()
 }
 
 fn sanitize_filename(name: &str) -> String {

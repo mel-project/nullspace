@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
+use uuid::Uuid;
 
 use crate::attachments::{self, AttachmentStatus};
 use crate::config::Config;
@@ -196,7 +197,7 @@ pub trait InternalProtocol {
         &self,
         absolute_path: PathBuf,
         mime: SmolStr,
-    ) -> Result<i64, InternalRpcError>;
+    ) -> Result<Uuid, InternalRpcError>;
 
     /// Starts an asynchronous image upload.
     ///
@@ -208,7 +209,7 @@ pub trait InternalProtocol {
     async fn image_attachment_upload(
         &self,
         absolute_path: PathBuf,
-    ) -> Result<i64, InternalRpcError>;
+    ) -> Result<Uuid, InternalRpcError>;
 
     /// Starts an asynchronous attachment download.
     ///
@@ -298,7 +299,7 @@ pub enum Event {
     UploadProgress {
         /// The upload ID returned by
         /// [`attachment_upload`](InternalProtocol::attachment_upload).
-        id: i64,
+        id: Uuid,
         uploaded_size: u64,
         total_size: u64,
     },
@@ -306,14 +307,14 @@ pub enum Event {
     /// A file upload completed successfully.
     UploadDone {
         /// The upload ID.
-        id: i64,
+        id: Uuid,
         /// The uploaded payload root that can be sent in a message or used as
         /// a profile avatar.
         root: UploadedRoot,
     },
 
     /// A file upload failed.
-    UploadFailed { id: i64, error: String },
+    UploadFailed { id: Uuid, error: String },
 
     /// Progress update for an in-flight file download.
     DownloadProgress {
@@ -639,7 +640,7 @@ impl InternalProtocol for InternalImpl {
         &self,
         absolute_path: PathBuf,
         mime: SmolStr,
-    ) -> Result<i64, InternalRpcError> {
+    ) -> Result<Uuid, InternalRpcError> {
         attachments::attachment_upload(&self.ctx, absolute_path, mime)
             .await
             .map_err(map_anyhow_err)
@@ -648,7 +649,7 @@ impl InternalProtocol for InternalImpl {
     async fn image_attachment_upload(
         &self,
         absolute_path: PathBuf,
-    ) -> Result<i64, InternalRpcError> {
+    ) -> Result<Uuid, InternalRpcError> {
         attachments::image_attachment_upload(&self.ctx, absolute_path)
             .await
             .map_err(map_anyhow_err)

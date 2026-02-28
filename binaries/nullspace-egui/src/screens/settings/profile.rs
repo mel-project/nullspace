@@ -10,6 +10,7 @@ use nullspace_structs::fragment::ImageAttachment;
 use pollster::FutureExt;
 use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Dimension, Display, FlexDirection, Size as TaffySize, Style};
+use uuid::Uuid;
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
@@ -55,7 +56,7 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
         )
         .into_var();
     let avatar_choice: State<AvatarChoice> = ui.use_state(|| AvatarChoice::Keep, ());
-    let avatar_upload_id: State<Option<i64>> = ui.use_state(|| None, ());
+    let avatar_upload_id: State<Option<Uuid>> = ui.use_state(|| None, ());
     let save_error: GBox<Option<String>> = ui.use_gbox(|| None, ());
     let save_busy: GBox<bool> = ui.use_gbox(|| false, ());
     let save_succeeded: GBox<bool> = ui.use_gbox(|| false, ());
@@ -254,7 +255,7 @@ fn profile_row(tui: &mut Tui, label: &str, content: impl FnOnce(&mut Tui)) {
     });
 }
 
-fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &State<Option<i64>>, path: PathBuf) {
+fn start_avatar_upload(app: &mut NullspaceApp, upload_id: &State<Option<Uuid>>, path: PathBuf) {
     let mime = infer_mime(&path);
     if !mime.starts_with("image/") {
         app.state.error_dialog = Some("avatar must be an image".to_string());

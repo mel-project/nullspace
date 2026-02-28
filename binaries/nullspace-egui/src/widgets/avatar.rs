@@ -9,6 +9,7 @@ use nullspace_structs::username::UserName;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
+use crate::utils::folders;
 use crate::widgets::smooth::SmoothImage;
 
 pub struct Avatar {
@@ -100,7 +101,7 @@ fn paint_avatar_placeholder(ui: &eframe::egui::Ui, rect: eframe::egui::Rect, use
 }
 
 fn avatar_cache_path(attachment: &ImageAttachment) -> Option<PathBuf> {
-    let base = dirs::cache_dir()?;
+    let base = folders::avatar_cache_dir();
     let filename = attachment.inner.bcs_hash().to_string();
-    Some(base.join("nullspace").join("avatars").join(filename))
+    Some(base.join(filename))
 }

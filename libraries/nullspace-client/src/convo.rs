@@ -11,6 +11,7 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use tracing::warn;
 
 use crate::attachments::store_attachment_root;
 use crate::config::Config;
@@ -181,7 +182,7 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
         let last_message = match (msg_id, sender_username, event_tag, event_body) {
             (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
-                let body = decode_message_payload(&mut *db, &sender, u16::try_from(event_tag)?, &body)
+                let body = decode_message_payload(&mut *db, u16::try_from(event_tag)?, &body)
                     .await
                     .ok();
                 body.map(|body| ConvoMessage {
@@ -247,9 +248,7 @@ pub async fn convo_history(
     let mut out = Vec::with_capacity(rows.len());
     for (id, sender_username, event_tag, body, received_at, read_at, send_error) in rows {
         let sender = UserName::parse(sender_username)?;
-        let body =
-            match decode_message_payload(&mut *db, &sender, u16::try_from(event_tag)?, &body).await
-            {
+        let body = match decode_message_payload(&mut *db, u16::try_from(event_tag)?, &body).await {
                 Ok(body) => body,
                 Err(_) => {
                     continue;
@@ -325,7 +324,6 @@ pub async fn last_dm_received_at(
 
 async fn decode_message_payload(
     db: &mut sqlx::SqliteConnection,
-    sender: &UserName,
     event_tag: u16,
     body: &[u8],
 ) -> anyhow::Result<MessagePayload> {
@@ -341,10 +339,14 @@ async fn decode_message_payload(
 
     let payload: MessagePayload = bcs::from_bytes(body)?;
     for root in &payload.attachments {
-        let _ = store_attachment_root(&mut *db, sender, root).await?;
+        if let Err(err) = store_attachment_root(&mut *db, root).await {
+            warn!(error = %err, "failed to store decoded attachment root");
+        }
     }
     for image in &payload.images {
-        let _ = store_attachment_root(&mut *db, sender, &image.inner).await?;
+        if let Err(err) = store_attachment_root(&mut *db, &image.inner).await {
+            warn!(error = %err, "failed to store decoded image attachment root");
+        }
     }
     Ok(payload)
 }

@@ -66,7 +66,7 @@ pub async fn queue_message(
     .fetch_one(&mut *tx)
     .await?;
 
-    store_message_attachments(tx, sender, event_tag, event_body).await?;
+    store_message_attachments(tx, event_tag, event_body).await?;
     Ok(row.0)
 }
 
@@ -322,7 +322,6 @@ async fn mark_message_failed(
 
 pub(super) async fn store_message_attachments(
     tx: &mut sqlx::SqliteConnection,
-    sender: &UserName,
     event_tag: u16,
     event_body: &Bytes,
 ) -> anyhow::Result<()> {
@@ -331,10 +330,14 @@ pub(super) async fn store_message_attachments(
     }
     let payload: MessagePayload = bcs::from_bytes(event_body)?;
     for attachment in payload.attachments {
-        let _ = store_attachment_root(&mut *tx, sender, &attachment).await;
+        if let Err(err) = store_attachment_root(&mut *tx, &attachment).await {
+            warn!(error = %err, "failed to store outgoing attachment root");
+        }
     }
     for image in payload.images {
-        let _ = store_attachment_root(&mut *tx, sender, &image.inner).await;
+        if let Err(err) = store_attachment_root(&mut *tx, &image.inner).await {
+            warn!(error = %err, "failed to store outgoing image attachment root");
+        }
     }
     Ok(())
 }

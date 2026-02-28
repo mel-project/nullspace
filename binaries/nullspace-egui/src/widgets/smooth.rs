@@ -166,7 +166,6 @@ impl Widget for SmoothImage<'_> {
                     .paint_at(ui, rect);
                 debounce = true;
             } else {
-                tracing::debug!(th = debug(&self.thumbhash), "printing loading state!");
                 paint_loading(ui, rect, self.corner_radius, self.thumbhash);
                 debounce = false;
             }
@@ -324,7 +323,7 @@ fn make_texture(
     } else {
         eframe::egui::ColorImage::from_rgb(size, dst_image.buffer())
     };
-    tracing::trace!(texel_size=?texel_size, elapsed=debug(start.elapsed()), "finished processing image");
+    tracing::debug!(texel_size=?texel_size, elapsed=debug(start.elapsed()), "finished processing image");
 
     Ok(ctx.load_texture(
         format!("smooth_image_{:?}_{}x{}", id, texel_size[0], texel_size[1]),

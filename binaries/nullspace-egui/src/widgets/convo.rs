@@ -8,6 +8,7 @@ use nullspace_structs::event::{MessagePayload, MessageText};
 use nullspace_structs::username::UserName;
 use pollster::block_on;
 use smol_str::SmolStr;
+use uuid::Uuid;
 
 use crate::NullspaceApp;
 use crate::rpc::flatten_rpc;
@@ -295,7 +296,7 @@ fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: 
         });
 }
 
-fn start_upload(attachment: &mut Var<Option<i64>>, path: PathBuf) {
+fn start_upload(attachment: &mut Var<Option<Uuid>>, path: PathBuf) {
     tracing::debug!(
         path = debug(&path),
         "picked an attachment, starting upload..."
@@ -314,7 +315,7 @@ fn start_upload(attachment: &mut Var<Option<i64>>, path: PathBuf) {
 
 fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId) {
     ui.add_space(8.0);
-    let mut attachment: Var<Option<i64>> = ui.use_state(|| None, ()).into_var();
+    let mut attachment: Var<Option<Uuid>> = ui.use_state(|| None, ()).into_var();
     let pending_attachments: GBox<Vec<PathBuf>> = ui.use_gbox(Vec::new, ());
     let upload_files_done: State<usize> = ui.use_state(|| 0, ());
     let upload_files_total: State<usize> = ui.use_state(|| 0, ());

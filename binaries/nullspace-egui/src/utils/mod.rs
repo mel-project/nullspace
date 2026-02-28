@@ -1,4 +1,5 @@
 pub mod color;
+pub mod folders;
 pub mod generational;
 pub mod hooks;
 pub mod prefs;

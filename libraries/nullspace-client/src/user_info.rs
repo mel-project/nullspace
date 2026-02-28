@@ -135,7 +135,7 @@ pub async fn user_details_data(
         && let Some(avatar) = profile.avatar.as_ref()
     {
         let mut conn = db.acquire().await?;
-        store_attachment_root(&mut conn, username, &avatar.inner).await?;
+        store_attachment_root(&mut conn, &avatar.inner).await?;
     }
     let user_info = get_user_info(ctx, username).await?;
     let (display_name, avatar) = match profile {

@@ -141,7 +141,7 @@ impl NullspaceApp {
             // style.debug.show_expand_height = true; // highlight height expanders
             // style.debug.show_resize = true; // show resize handles
         });
-        // cc.egui_ctx.set_zoom_factor(1.25);
+
         let fonts = egui::FontDefinitions::default();
         cc.egui_ctx.set_fonts(load_fonts(fonts));
         cc.egui_ctx
@@ -194,6 +194,7 @@ impl NullspaceApp {
 
 impl eframe::App for NullspaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.input_mut(|input| input.smooth_scroll_delta *= 4.0); // hack to speed up touchpad scroll
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);

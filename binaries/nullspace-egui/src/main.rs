@@ -194,7 +194,10 @@ impl NullspaceApp {
 
 impl eframe::App for NullspaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.input_mut(|input| input.smooth_scroll_delta *= 4.0); // hack to speed up touchpad scroll
+        // hack to speed up touchpad scroll while not speeding up mouse scroll too much
+        ctx.options_mut(|opt| opt.input_options.line_scroll_speed = 18.0);
+        ctx.input_mut(|input| input.smooth_scroll_delta *= 4.0);
+
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);

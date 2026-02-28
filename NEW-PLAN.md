@@ -35,7 +35,7 @@ Groups use two server primitives: **mailboxes** for message delivery and a **gro
 ## Group bearer key
 
 At the client-to-client level, we introduce a new concept, a **group bearer key (GBK)**, containing:
-- an opaque 20-byte Group ID
+- an opaque Group ID
 - the server that the group is hosted on
 - the group registry nonce (see below)
 - a random nonce
@@ -50,7 +50,7 @@ Of course, only using GBKs doesn't allow people to be kicked from groups. We als
 
 ## Group registry
 
-The server maintains a **group registry**: a key-value store where keys are arbitrary nonces (chosen at group creation time) and values are append-only logs of **rotation entries**.
+The server maintains a **group registry**: a key-value store where keys are arbitrary Group IDs (chosen at group creation time) and values are append-only logs of **rotation entries**.
 
 The server-side state for each group registry entry is:
 - `admin_set: Set<SigningPublic>` — the current set of admin device keys, mutable (replaced on each append)
@@ -58,7 +58,7 @@ The server-side state for each group registry entry is:
 
 Each `RotationEntry` contains:
 1. `new_admin_set: Set<SigningPublic>` — replaces the current admin set upon acceptance
-2. `gbk_rotation_message: Bytes` — an opaque encrypted blob (not verified by the server)
+2. `gbk_rotation: HeaderEncrypted` — an opaque encrypted blob (not verified by the server)
 
 **Server behavior on append:** verify that the signature on the entry comes from a key in the current `admin_set`. If valid, accept the entry, append it to the log, and replace `admin_set` with `new_admin_set`. The server must reject appends where `new_admin_set` is empty (to prevent permanently freezing the group).
 
@@ -66,13 +66,14 @@ Each `RotationEntry` contains:
 
 Concurrent admin appends are resolved by natural optimistic concurrency: the server accepts whichever arrives first, which updates the `admin_set`, potentially invalidating the second append's signature. The rejected admin retries against the new state.
 
+
 ## GBK rotation
 
 GBK rotation is managed entirely through the group registry, not through the group mailbox. 
 
 When an admin rotates the GBK:
 1. They construct a new GBK (with a fresh random nonce, same Group ID, same server, same registry nonce).
-2. They construct the `gbk_rotation_message`: encrypted per-member blobs containing the new GBK, wrapped in device encryption so that only non-banned members receive it. This message also includes the **full group roster**, which allows any member to fully reconstruct group state from a single rotation entry.
+2. They construct the `gbk_rotation`: a header-encrypted blob, encrypted to all members of the group, containing the new GBK, as well as the entire roster (sorted map from username to bitflag)
 3. They construct the `new_admin_set` reflecting any admin changes.
 4. They sign and submit the rotation entry to the group registry.
 

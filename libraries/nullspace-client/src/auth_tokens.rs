@@ -11,9 +11,10 @@ use nullspace_structs::server::{
 
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
-use crate::directory::DIR_CLIENT;
-use crate::identity::{Identity, store_server_name};
-use crate::rpc_pool::RPC_POOL;
+use crate::DIR_CLIENT;
+use crate::identity::Identity;
+use crate::RPC_POOL;
+use crate::server::own_server_name;
 
 const AUTH_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
 
@@ -22,8 +23,9 @@ static AUTH_TOKEN_CACHE: Ctx<Cache<ServerName, AuthToken>> =
 
 pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(db).await?;
-    let server_name = own_server_name(ctx, db, &identity).await?;
+    let mut conn = db.acquire().await?;
+    let identity = Identity::load(&mut conn).await?;
+    let server_name = own_server_name(ctx, &identity).await?;
     let cache = ctx.get(AUTH_TOKEN_CACHE);
     let cache_key = server_name.clone();
     let username = identity.username.clone();
@@ -53,24 +55,6 @@ pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
         })
         .await
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
-}
-
-async fn own_server_name(
-    ctx: &AnyCtx<Config>,
-    db: &sqlx::SqlitePool,
-    identity: &Identity,
-) -> anyhow::Result<ServerName> {
-    if let Some(server_name) = identity.server_name.clone() {
-        return Ok(server_name);
-    }
-    let dir = ctx.get(DIR_CLIENT);
-    let descriptor = dir
-        .get_user_descriptor(&identity.username)
-        .await?
-        .context("identity username not in directory")?;
-    let server_name = descriptor.server_name.clone();
-    store_server_name(db, &server_name).await?;
-    Ok(server_name)
 }
 
 async fn server_client_direct(

@@ -13,8 +13,9 @@ use nullspace_structs::server::{AuthToken, ProxyError, ServerClient, ServerName}
 use crate::auth_tokens::get_auth_token;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
+use crate::DIR_CLIENT;
 use crate::identity::Identity;
-use crate::rpc_pool::RPC_POOL;
+use crate::RPC_POOL;
 
 pub static SERVER_CACHE: Ctx<Cache<ServerName, Arc<ServerClient>>> =
     |_ctx: &anyctx::AnyCtx<Config>| {
@@ -38,7 +39,10 @@ pub async fn get_server_client(
                 ctx.get(DATABASE).clone(),
             )
             .await?;
-            let identity = Identity::load(ctx.get(DATABASE)).await.ok();
+            let identity = match ctx.get(DATABASE).acquire().await {
+                Ok(mut conn) => Identity::load(&mut conn).await.ok(),
+                Err(_) => None,
+            };
             let own_server_name = identity
                 .as_ref()
                 .and_then(|identity| identity.server_name.clone());
@@ -84,6 +88,26 @@ pub async fn get_server_client(
         })
         .await
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
+}
+
+pub async fn own_server_name(
+    ctx: &anyctx::AnyCtx<Config>,
+    identity: &Identity,
+) -> anyhow::Result<ServerName> {
+    if let Some(server_name) = identity.server_name.clone() {
+        return Ok(server_name);
+    }
+    let dir = ctx.get(DIR_CLIENT);
+    let descriptor = dir
+        .get_user_descriptor(&identity.username)
+        .await?
+        .context("identity username not in directory")?;
+    let server_name = descriptor.server_name.clone();
+    sqlx::query("UPDATE client_identity SET server_name = ? WHERE id = 1")
+        .bind(server_name.as_str())
+        .execute(ctx.get(DATABASE))
+        .await?;
+    Ok(server_name)
 }
 
 #[derive(Clone)]

@@ -1,14 +1,19 @@
 use anyctx::AnyCtx;
 use bytes::Bytes;
 use nullspace_crypt::aead::AeadKey;
+use nullspace_crypt::dh::DhSecret;
 use nullspace_crypt::signing::Signable;
 use nullspace_crypt::spake::{SpakeKey, SpakeMessage, SpakeSession};
 use nullspace_structs::Blob;
 use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::directory::DirectoryUpdate;
 use nullspace_structs::mailbox::MailboxKey;
-use nullspace_structs::server::{AuthToken, ChanDirection, ServerClient, ServerName};
-use nullspace_structs::timestamp::NanoTimestamp;
+use nullspace_structs::profile::UserProfile;
+use nullspace_structs::server::{
+    AuthToken, ChanDirection, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest,
+    SignedMediumPk,
+};
+use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
 use nullspace_structs::username::{UserDescriptor, UserName};
 use parking_lot::Mutex as ParkingMutex;
 use rand::RngCore;
@@ -24,12 +29,13 @@ use std::time::{Duration, Instant};
 use crate::auth_tokens::get_auth_token;
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
-use crate::directory::DIR_CLIENT;
+use crate::DIR_CLIENT;
 use crate::identity::Identity;
 use crate::internal::{
-    InternalRpcError, ProvisionHostPhase, ProvisionHostStart, ProvisionHostStatus,
-    authenticate_device, internal_err, persist_identity, register_medium_key, server_from_name,
+    InternalRpcError, ProvisionHostPhase, ProvisionHostStart, ProvisionHostStatus, RegisterFinish,
+    RegisterStartInfo, internal_err,
 };
+use crate::server::get_server_client;
 
 const PROVISION_HOST_POLL_INTERVAL: Duration = Duration::from_millis(1500);
 const PROVISION_HOST_REPOST_INTERVAL: Duration = Duration::from_secs(5);
@@ -53,7 +59,9 @@ impl HostProvisioning {
         ctx: AnyCtx<Config>,
     ) -> Result<ProvisionHostStart, InternalRpcError> {
         let db = ctx.get(DATABASE);
-        let identity = Identity::load(db).await.map_err(internal_err)?;
+        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+            .await
+            .map_err(internal_err)?;
         let server_name = resolve_user_server_name(&ctx, &identity.username).await?;
         let server = server_from_name(&ctx, &server_name).await?;
         let dir = ctx.get(DIR_CLIENT);
@@ -156,9 +164,200 @@ pub(crate) async fn register_add_device_by_code(
     register_add_device_payload(ctx, username, payload).await
 }
 
+pub(crate) async fn register_start(
+    ctx: &AnyCtx<Config>,
+    username: UserName,
+) -> Result<Option<RegisterStartInfo>, InternalRpcError> {
+    tracing::debug!(username = %username, "register_start begin");
+    let dir = ctx.get(DIR_CLIENT);
+    let descriptor = dir
+        .get_user_descriptor(&username)
+        .await
+        .map_err(internal_err)?;
+    let Some(descriptor) = descriptor else {
+        tracing::debug!(username = %username, "register_start not found");
+        return Ok(None);
+    };
+    let server_name = descriptor.server_name.clone();
+    tracing::debug!(username = %username, server = %server_name, "register_start found");
+    Ok(Some(RegisterStartInfo {
+        username,
+        server_name,
+    }))
+}
+
+pub(crate) async fn register_finish(
+    ctx: AnyCtx<Config>,
+    request: RegisterFinish,
+) -> Result<(), InternalRpcError> {
+    let db = ctx.get(DATABASE);
+    let mut conn = db.acquire().await.map_err(internal_err)?;
+    if crate::identity::identity_exists(&mut conn)
+        .await
+        .map_err(internal_err)?
+    {
+        return Err(InternalRpcError::NotReady);
+    }
+    match request {
+        RegisterFinish::BootstrapNewUser {
+            username,
+            server_name,
+        } => register_bootstrap(ctx, username, server_name).await,
+        RegisterFinish::AddDeviceByCode { username, code } => {
+            register_add_device_by_code(ctx, username, code).await
+        }
+    }
+}
+
 pub(crate) fn next_nonce(previous: u64) -> u64 {
     let now = NanoTimestamp::now().0;
     now.max(previous.saturating_add(1))
+}
+
+pub(crate) async fn register_bootstrap(
+    ctx: AnyCtx<Config>,
+    username: UserName,
+    server_name: ServerName,
+) -> Result<(), InternalRpcError> {
+    let dir = ctx.get(DIR_CLIENT);
+    if dir
+        .get_user_descriptor(&username)
+        .await
+        .map_err(internal_err)?
+        .is_some()
+    {
+        return Err(InternalRpcError::Other("username already exists".into()));
+    }
+    let server = server_from_name(&ctx, &server_name).await?;
+    let device_secret = DeviceSecret::random();
+    let nonce_bind = next_nonce(0);
+    dir.bind_server(&username, &server_name, nonce_bind, &device_secret)
+        .await
+        .map_err(internal_err)?;
+    let auth = authenticate_device(&server, &username, &device_secret).await?;
+    let medium_sk = register_medium_key(&server, auth, &device_secret).await?;
+    let dm_mailbox_key = MailboxKey::random();
+    let dm_mailbox = server
+        .mailbox_create(auth, dm_mailbox_key)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+
+    let created = Timestamp::now();
+    let mut profile = UserProfile {
+        display_name: None,
+        avatar: None,
+        dm_mailbox,
+        created,
+        signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+    };
+    profile.sign(&device_secret);
+    server
+        .profile_set(username.clone(), profile)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+
+    let db = ctx.get(DATABASE);
+    persist_identity(
+        &mut *db.acquire().await.map_err(internal_err)?,
+        username,
+        server_name,
+        device_secret,
+        medium_sk,
+        dm_mailbox_key,
+    )
+    .await?;
+    DbNotify::touch();
+    Ok(())
+}
+
+pub(crate) async fn server_from_name(
+    ctx: &AnyCtx<Config>,
+    server_name: &ServerName,
+) -> Result<Arc<ServerClient>, InternalRpcError> {
+    let dir = ctx.get(DIR_CLIENT);
+    let descriptor = dir
+        .get_server_descriptor(server_name)
+        .await
+        .map_err(internal_err)?
+        .ok_or_else(|| InternalRpcError::Other("server not found".into()))?;
+    let _ = descriptor;
+    get_server_client(ctx, server_name)
+        .await
+        .map_err(internal_err)
+}
+
+pub(crate) async fn register_medium_key(
+    server: &ServerClient,
+    auth: AuthToken,
+    device_secret: &DeviceSecret,
+) -> Result<DhSecret, InternalRpcError> {
+    let medium_sk = DhSecret::random();
+    let mut signed = SignedMediumPk {
+        medium_pk: medium_sk.public_key(),
+        created: Timestamp::now(),
+        signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+    };
+    signed.sign(device_secret);
+    server
+        .device_add_medium_pk(auth, signed)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    Ok(medium_sk)
+}
+
+pub(crate) async fn persist_identity(
+    db: &mut sqlx::SqliteConnection,
+    username: UserName,
+    server_name: ServerName,
+    device_secret: DeviceSecret,
+    medium_sk: DhSecret,
+    dm_mailbox_key: MailboxKey,
+) -> Result<(), InternalRpcError> {
+    sqlx::query(
+        "INSERT INTO client_identity \
+         (id, username, server_name, device_secret, medium_sk_current, medium_sk_prev, dm_mailbox_key) \
+         VALUES (1, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(username.as_str())
+    .bind(server_name.as_str())
+    .bind(bcs::to_bytes(&device_secret).map_err(internal_err)?)
+    .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
+    .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
+    .bind(bcs::to_bytes(&dm_mailbox_key).map_err(internal_err)?)
+    .execute(&mut *db)
+    .await
+    .map_err(internal_err)?;
+    Ok(())
+}
+
+pub(crate) async fn authenticate_device(
+    server: &ServerClient,
+    username: &UserName,
+    device_secret: &DeviceSecret,
+) -> Result<AuthToken, InternalRpcError> {
+    let device_pk = device_secret.public().signing_public();
+    let challenge = server
+        .device_auth_start(username.clone(), device_pk)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    let mut request = SignedDeviceAuthRequest {
+        request: DeviceAuthRequest {
+            username: username.clone(),
+            device_pk,
+            challenge: challenge.challenge,
+        },
+        signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
+    };
+    request.sign(device_secret);
+    server
+        .device_auth_finish(request)
+        .await
+        .map_err(internal_err)?
+        .map_err(|err| InternalRpcError::Other(err.to_string()))
 }
 
 struct ProvisionHostSession {
@@ -348,7 +547,9 @@ async fn build_provisioning_payload(
     username: &UserName,
 ) -> Result<ProvisioningPayload, InternalRpcError> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(db).await.map_err(internal_err)?;
+    let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+        .await
+        .map_err(internal_err)?;
     if identity.username != *username {
         return Err(InternalRpcError::Other(
             "identity username changed during provisioning".into(),
@@ -449,8 +650,9 @@ async fn register_add_device_payload(
         .await
         .map_err(internal_err)?
         .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    let db = ctx.get(DATABASE);
     persist_identity(
-        ctx.get(DATABASE),
+        &mut *db.acquire().await.map_err(internal_err)?,
         expected_username,
         server_name,
         payload.device_secret,

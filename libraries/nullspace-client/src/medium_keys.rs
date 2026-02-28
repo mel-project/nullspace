@@ -10,7 +10,7 @@ use nullspace_structs::timestamp::Timestamp;
 use crate::Config;
 use crate::auth_tokens::get_auth_token;
 use crate::database::DATABASE;
-use crate::directory::DIR_CLIENT;
+use crate::DIR_CLIENT;
 use crate::identity::Identity;
 use crate::server::get_server_client;
 
@@ -27,7 +27,7 @@ pub async fn medium_key_loop(ctx: &AnyCtx<Config>) {
 
 async fn rotate_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(db).await?;
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
     let dir = ctx.get(DIR_CLIENT);
     let descriptor = dir
         .get_user_descriptor(&identity.username)

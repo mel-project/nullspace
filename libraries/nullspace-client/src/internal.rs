@@ -3,19 +3,12 @@ use async_channel::Receiver as AsyncReceiver;
 use async_trait::async_trait;
 use bytes::Bytes;
 use nanorpc::nanorpc_derive;
-use nullspace_crypt::dh::DhSecret;
 use nullspace_crypt::hash::Hash;
-use nullspace_crypt::signing::{Signable, Signature};
-use nullspace_structs::certificate::DeviceSecret;
-use nullspace_structs::event::{MessagePayload, MessageText, TAG_MESSAGE};
+use nullspace_structs::event::{MessagePayload, TAG_MESSAGE};
 use nullspace_structs::fragment::{Attachment, ImageAttachment};
 use nullspace_structs::group::GroupId;
-use nullspace_structs::mailbox::MailboxKey;
-use nullspace_structs::profile::UserProfile;
-use nullspace_structs::server::{
-    AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest, SignedMediumPk,
-};
-use nullspace_structs::timestamp::{NanoTimestamp, Timestamp};
+use nullspace_structs::server::ServerName;
+use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -24,17 +17,16 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::attachments::{self, AttachmentStatus, store_attachment_root};
+use crate::attachments::{self, AttachmentStatus};
 use crate::config::Config;
 pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary};
-use crate::convo::{parse_convo_id, queue_message};
-use crate::database::{DATABASE, DbNotify, identity_exists};
-use crate::directory::DIR_CLIENT;
+use crate::convo::{convo_history, convo_list, mark_convo_read, queue_message};
+use crate::database::{DATABASE, DbNotify};
+use crate::identity::identity_exists;
 use crate::identity::Identity;
-use crate::profile::get_profile;
+use crate::profile::own_profile_set as set_own_profile;
 use crate::provisioning::{self, HostProvisioning};
-use crate::server::get_server_client;
-use crate::user_info::get_user_info;
+use crate::user_info::user_details_data;
 
 /// The client's full RPC interface.
 ///
@@ -521,38 +513,11 @@ impl InternalProtocol for InternalImpl {
         &self,
         username: UserName,
     ) -> Result<Option<RegisterStartInfo>, InternalRpcError> {
-        tracing::debug!(username = %username, "register_start begin");
-        let dir = self.ctx.get(DIR_CLIENT);
-        let descriptor = dir
-            .get_user_descriptor(&username)
-            .await
-            .map_err(internal_err)?;
-        let Some(descriptor) = descriptor else {
-            tracing::debug!(username = %username, "register_start not found");
-            return Ok(None);
-        };
-        let server_name = descriptor.server_name.clone();
-        tracing::debug!(username = %username, server = %server_name, "register_start found");
-        Ok(Some(RegisterStartInfo {
-            username,
-            server_name,
-        }))
+        provisioning::register_start(&self.ctx, username).await
     }
 
     async fn register_finish(&self, request: RegisterFinish) -> Result<(), InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if identity_exists(db).await.map_err(internal_err)? {
-            return Err(InternalRpcError::NotReady);
-        }
-        match request {
-            RegisterFinish::BootstrapNewUser {
-                username,
-                server_name,
-            } => register_bootstrap(self.ctx.clone(), username, server_name).await,
-            RegisterFinish::AddDeviceByCode { username, code } => {
-                provisioning::register_add_device_by_code(self.ctx.clone(), username, code).await
-            }
-        }
+        provisioning::register_finish(self.ctx.clone(), request).await
     }
 
     async fn provision_host_start(&self) -> Result<ProvisionHostStart, InternalRpcError> {
@@ -572,7 +537,9 @@ impl InternalProtocol for InternalImpl {
 
     async fn convo_list(&self) -> Result<Vec<ConvoSummary>, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
-        convo_list(db).await.map_err(internal_err)
+        convo_list(&mut *db.acquire().await.map_err(internal_err)?)
+            .await
+            .map_err(internal_err)
     }
 
     async fn convo_history(
@@ -583,9 +550,15 @@ impl InternalProtocol for InternalImpl {
         limit: u16,
     ) -> Result<Vec<ConvoMessage>, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
-        convo_history(db, convo_id, before, after, limit)
-            .await
-            .map_err(internal_err)
+        convo_history(
+            &mut *db.acquire().await.map_err(internal_err)?,
+            convo_id,
+            before,
+            after,
+            limit,
+        )
+        .await
+        .map_err(internal_err)
     }
 
     async fn convo_send(
@@ -597,7 +570,7 @@ impl InternalProtocol for InternalImpl {
             return Err(groups_disabled_error());
         }
         let db = self.ctx.get(DATABASE);
-        let identity = Identity::load(db)
+        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
         let body = Bytes::from(bcs::to_bytes(&message).map_err(internal_err)?);
@@ -615,9 +588,13 @@ impl InternalProtocol for InternalImpl {
         up_to_id: i64,
     ) -> Result<(), InternalRpcError> {
         let db = self.ctx.get(DATABASE);
-        let affected = mark_convo_read(db, convo_id, up_to_id)
-            .await
-            .map_err(internal_err)?;
+        let affected = mark_convo_read(
+            &mut *db.acquire().await.map_err(internal_err)?,
+            convo_id,
+            up_to_id,
+        )
+        .await
+        .map_err(internal_err)?;
         if affected > 0 {
             DbNotify::touch();
         }
@@ -631,7 +608,9 @@ impl InternalProtocol for InternalImpl {
 
     async fn own_server(&self) -> Result<ServerName, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
-        let identity = Identity::load(db).await.map_err(internal_err)?;
+        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+            .await
+            .map_err(internal_err)?;
         identity
             .server_name
             .ok_or_else(|| InternalRpcError::Other("server name not available".into()))
@@ -707,48 +686,38 @@ impl InternalProtocol for InternalImpl {
 
     async fn user_details(&self, username: UserName) -> Result<UserDetails, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
-        if !identity_exists(db).await.map_err(internal_err)? {
+        if !identity_exists(&mut *db.acquire().await.map_err(internal_err)?)
+            .await
+            .map_err(internal_err)?
+        {
             return Err(InternalRpcError::NotReady);
         }
-        let identity = Identity::load(db).await.map_err(internal_err)?;
-        let profile = get_profile(&self.ctx, &username)
-            .await
-            .map_err(map_anyhow_err)?;
-        if let Some(profile) = profile.as_ref()
-            && let Some(avatar) = profile.avatar.as_ref()
-        {
-            let mut conn = db.acquire().await.map_err(internal_err)?;
-            store_attachment_root(&mut conn, &username, &avatar.inner)
-                .await
-                .map_err(internal_err)?;
-        }
-        let user_info = get_user_info(&self.ctx, &username)
-            .await
-            .map_err(map_anyhow_err)?;
-
-        let (display_name, avatar) = match profile {
-            Some(profile) => (profile.display_name, profile.avatar),
-            None => (None, None),
-        };
-
-        let common_groups = Vec::new();
-        let last_dm_message = last_dm_message_summary(db, &identity.username, &username)
+        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
             .await
             .map_err(internal_err)?;
+        let details = user_details_data(&self.ctx, &identity.username, &username)
+            .await
+            .map_err(map_anyhow_err)?;
 
         Ok(UserDetails {
             username,
-            display_name,
-            avatar,
-            server_name: Some(user_info.server_name.clone()),
-            common_groups,
-            last_dm_message,
+            display_name: details.display_name,
+            avatar: details.avatar,
+            server_name: Some(details.server_name),
+            common_groups: Vec::new(),
+            last_dm_message: details.last_dm_received_at.map(|received_at| UserLastMessageSummary {
+                received_at: Some(received_at),
+                direction: MessageDirection::Incoming,
+                preview: String::new(),
+            }),
         })
     }
 
     async fn own_username(&self) -> Result<UserName, InternalRpcError> {
         let db = self.ctx.get(DATABASE);
-        let identity = Identity::load(db).await.map_err(internal_err)?;
+        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+            .await
+            .map_err(internal_err)?;
         Ok(identity.username)
     }
 
@@ -757,178 +726,8 @@ impl InternalProtocol for InternalImpl {
         display_name: Option<String>,
         avatar: Option<ImageAttachment>,
     ) -> Result<(), InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if !identity_exists(db).await.map_err(internal_err)? {
-            return Err(InternalRpcError::NotReady);
-        }
-        let identity = Identity::load(db).await.map_err(internal_err)?;
-        let Some(server_name) = identity.server_name.clone() else {
-            return Err(InternalRpcError::Other("server name not available".into()));
-        };
-        let server = server_from_name(&self.ctx, &server_name).await?;
-
-        let created = Timestamp::now();
-        let mut profile = UserProfile {
-            display_name,
-            avatar,
-            dm_mailbox: identity.dm_mailbox_id(),
-            created,
-            signature: Signature::from_bytes([0u8; 64]),
-        };
-        profile.sign(&identity.device_secret);
-
-        server
-            .profile_set(identity.username, profile)
-            .await
-            .map_err(internal_err)?
-            .map_err(|err| InternalRpcError::Other(err.to_string()))?;
-        Ok(())
+        set_own_profile(&self.ctx, display_name, avatar).await
     }
-}
-
-async fn register_bootstrap(
-    ctx: AnyCtx<Config>,
-    username: UserName,
-    server_name: ServerName,
-) -> Result<(), InternalRpcError> {
-    let dir = ctx.get(DIR_CLIENT);
-    if dir
-        .get_user_descriptor(&username)
-        .await
-        .map_err(internal_err)?
-        .is_some()
-    {
-        return Err(InternalRpcError::Other("username already exists".into()));
-    }
-    let server = server_from_name(&ctx, &server_name).await?;
-    let device_secret = DeviceSecret::random();
-    let nonce_bind = provisioning::next_nonce(0);
-    dir.bind_server(&username, &server_name, nonce_bind, &device_secret)
-        .await
-        .map_err(internal_err)?;
-    let auth = authenticate_device(&server, &username, &device_secret).await?;
-    let medium_sk = register_medium_key(&server, auth, &device_secret).await?;
-    let dm_mailbox_key = MailboxKey::random();
-    let dm_mailbox = server
-        .mailbox_create(auth, dm_mailbox_key)
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
-
-    let created = Timestamp::now();
-    let mut profile = UserProfile {
-        display_name: None,
-        avatar: None,
-        dm_mailbox,
-        created,
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    profile.sign(&device_secret);
-    server
-        .profile_set(username.clone(), profile)
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
-
-    persist_identity(
-        ctx.get(DATABASE),
-        username,
-        server_name,
-        device_secret,
-        medium_sk,
-        dm_mailbox_key,
-    )
-    .await?;
-    DbNotify::touch();
-    Ok(())
-}
-
-pub(crate) async fn server_from_name(
-    ctx: &AnyCtx<Config>,
-    server_name: &ServerName,
-) -> Result<Arc<ServerClient>, InternalRpcError> {
-    let dir = ctx.get(DIR_CLIENT);
-    let descriptor = dir
-        .get_server_descriptor(server_name)
-        .await
-        .map_err(internal_err)?
-        .ok_or_else(|| InternalRpcError::Other("server not found".into()))?;
-    let _ = descriptor;
-    get_server_client(ctx, server_name)
-        .await
-        .map_err(internal_err)
-}
-
-pub(crate) async fn register_medium_key(
-    server: &ServerClient,
-    auth: AuthToken,
-    device_secret: &DeviceSecret,
-) -> Result<DhSecret, InternalRpcError> {
-    let medium_sk = DhSecret::random();
-    let mut signed = SignedMediumPk {
-        medium_pk: medium_sk.public_key(),
-        created: Timestamp::now(),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    signed.sign(device_secret);
-    server
-        .device_add_medium_pk(auth, signed)
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
-    Ok(medium_sk)
-}
-
-pub(crate) async fn persist_identity(
-    db: &sqlx::SqlitePool,
-    username: UserName,
-    server_name: ServerName,
-    device_secret: DeviceSecret,
-    medium_sk: DhSecret,
-    dm_mailbox_key: MailboxKey,
-) -> Result<(), InternalRpcError> {
-    sqlx::query(
-        "INSERT INTO client_identity \
-         (id, username, server_name, device_secret, medium_sk_current, medium_sk_prev, dm_mailbox_key) \
-         VALUES (1, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(username.as_str())
-    .bind(server_name.as_str())
-    .bind(bcs::to_bytes(&device_secret).map_err(internal_err)?)
-    .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
-    .bind(bcs::to_bytes(&medium_sk).map_err(internal_err)?)
-    .bind(bcs::to_bytes(&dm_mailbox_key).map_err(internal_err)?)
-    .execute(db)
-    .await
-    .map_err(internal_err)?;
-    Ok(())
-}
-
-pub(crate) async fn authenticate_device(
-    server: &ServerClient,
-    username: &UserName,
-    device_secret: &DeviceSecret,
-) -> Result<AuthToken, InternalRpcError> {
-    let device_pk = device_secret.public().signing_public();
-    let challenge = server
-        .device_auth_start(username.clone(), device_pk)
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
-    let mut request = SignedDeviceAuthRequest {
-        request: DeviceAuthRequest {
-            username: username.clone(),
-            device_pk,
-            challenge: challenge.challenge,
-        },
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    request.sign(device_secret);
-    server
-        .device_auth_finish(request)
-        .await
-        .map_err(internal_err)?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))
 }
 
 pub(crate) fn internal_err(err: impl std::fmt::Display) -> InternalRpcError {
@@ -945,233 +744,4 @@ fn map_anyhow_err(err: anyhow::Error) -> InternalRpcError {
 
 fn groups_disabled_error() -> InternalRpcError {
     InternalRpcError::Other("groups are disabled".into())
-}
-
-async fn convo_list(db: &sqlx::SqlitePool) -> anyhow::Result<Vec<ConvoSummary>> {
-    let rows = sqlx::query_as::<
-        _,
-        (
-            String,
-            String,
-            i64,
-            i64,
-            Option<i64>,
-            Option<String>,
-            Option<i64>,
-            Option<Vec<u8>>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-        ),
-    >(
-        "SELECT t.thread_kind, t.thread_counterparty, t.created_at, \
-                (SELECT COUNT(*) FROM thread_events ue \
-                 JOIN client_identity ci ON ci.id = 1 \
-                 LEFT JOIN message_reads mr ON mr.message_id = ue.id \
-                 WHERE ue.thread_id = t.id \
-                   AND ue.received_at IS NOT NULL \
-                   AND ue.sender_username != ci.username \
-                   AND mr.message_id IS NULL) AS unread_count, \
-                e.id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
-         FROM event_threads t \
-         LEFT JOIN thread_events e \
-           ON e.id = (SELECT MAX(id) FROM thread_events WHERE thread_id = t.id) \
-         LEFT JOIN message_reads mr ON mr.message_id = e.id \
-         ORDER BY (e.received_at IS NULL) DESC, e.received_at DESC, t.created_at DESC, t.id DESC",
-    )
-    .fetch_all(db)
-    .await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for (
-        thread_kind,
-        counterparty,
-        _created_at,
-        unread_count,
-        msg_id,
-        sender_username,
-        event_tag,
-        event_body,
-        received_at,
-        read_at,
-        send_error,
-    ) in rows
-    {
-        let convo_id = parse_convo_id(&thread_kind, &counterparty)
-            .ok_or_else(|| anyhow::anyhow!("invalid convo row"))?;
-        let last_message = match (msg_id, sender_username, event_tag, event_body) {
-            (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
-                let sender = UserName::parse(sender_username)?;
-                let body = (decode_message_payload(db, &sender, u16::try_from(event_tag)?, &body)
-                    .await)
-                    .ok();
-                body.map(|body| ConvoMessage {
-                    id,
-                    convo_id: convo_id.clone(),
-                    sender,
-                    body,
-                    send_error,
-                    received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
-                    read_at: read_at.map(|ts| NanoTimestamp(ts as u64)),
-                })
-            }
-            _ => None,
-        };
-        out.push(ConvoSummary {
-            convo_id,
-            last_message,
-            unread_count: unread_count as u64,
-        });
-    }
-    Ok(out)
-}
-
-async fn convo_history(
-    db: &sqlx::SqlitePool,
-    convo_id: ConvoId,
-    before: Option<i64>,
-    after: Option<i64>,
-    limit: u16,
-) -> anyhow::Result<Vec<ConvoMessage>> {
-    let before = before.unwrap_or(i64::MAX);
-    let after = after.unwrap_or(i64::MIN);
-    let thread_kind = convo_id.convo_type();
-    let counterparty = convo_id.counterparty();
-    let mut rows = sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            i64,
-            Vec<u8>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-        ),
-    >(
-        "SELECT e.id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
-         FROM thread_events e \
-         JOIN event_threads t ON e.thread_id = t.id \
-         LEFT JOIN message_reads mr ON mr.message_id = e.id \
-         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.id <= ? AND e.id >= ? \
-         ORDER BY e.id DESC \
-         LIMIT ?",
-    )
-    .bind(thread_kind)
-    .bind(counterparty)
-    .bind(before)
-    .bind(after)
-    .bind(limit as i64)
-    .fetch_all(db)
-    .await?;
-    rows.reverse();
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, sender_username, event_tag, body, received_at, read_at, send_error) in rows {
-        let sender = UserName::parse(sender_username)?;
-        let body = match decode_message_payload(db, &sender, u16::try_from(event_tag)?, &body).await
-        {
-            Ok(body) => body,
-            Err(_) => {
-                continue;
-            }
-        };
-        out.push(ConvoMessage {
-            id,
-            convo_id: convo_id.clone(),
-            sender,
-            body,
-            send_error,
-            received_at: received_at.map(|ts| NanoTimestamp(ts as u64)),
-            read_at: read_at.map(|ts| NanoTimestamp(ts as u64)),
-        });
-    }
-    Ok(out)
-}
-
-async fn mark_convo_read(
-    db: &sqlx::SqlitePool,
-    convo_id: ConvoId,
-    up_to_id: i64,
-) -> anyhow::Result<u64> {
-    let read_at = NanoTimestamp::now().0 as i64;
-    let affected = sqlx::query(
-        "INSERT OR IGNORE INTO message_reads (message_id, read_at) \
-         SELECT e.id, ? \
-         FROM thread_events e \
-         JOIN event_threads t ON e.thread_id = t.id \
-         JOIN client_identity ci ON ci.id = 1 \
-         WHERE t.thread_kind = ? \
-           AND t.thread_counterparty = ? \
-           AND e.id <= ? \
-           AND e.received_at IS NOT NULL \
-           AND e.sender_username != ci.username",
-    )
-    .bind(read_at)
-    .bind(convo_id.convo_type())
-    .bind(convo_id.counterparty())
-    .bind(up_to_id)
-    .execute(db)
-    .await?
-    .rows_affected();
-    Ok(affected)
-}
-
-async fn last_dm_message_summary(
-    db: &sqlx::SqlitePool,
-    local_username: &UserName,
-    other_username: &UserName,
-) -> anyhow::Result<Option<UserLastMessageSummary>> {
-    let convo_id = ConvoId::Direct {
-        peer: other_username.clone(),
-    };
-    let thread_kind = convo_id.convo_type();
-    let counterparty = convo_id.counterparty();
-    let received_at = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT e.received_at \
-         FROM thread_events e \
-         JOIN event_threads t ON e.thread_id = t.id \
-         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.sender_username != ? \
-         ORDER BY e.id DESC \
-         LIMIT 1",
-    )
-    .bind(thread_kind)
-    .bind(counterparty)
-    .bind(local_username.as_str())
-    .fetch_optional(db)
-    .await?
-    .flatten();
-
-    let Some(received_at) = received_at else {
-        return Ok(None);
-    };
-    Ok(Some(UserLastMessageSummary {
-        received_at: Some(NanoTimestamp(received_at as u64)),
-        direction: MessageDirection::Incoming,
-        preview: String::new(),
-    }))
-}
-
-async fn decode_message_payload(
-    db: &sqlx::SqlitePool,
-    sender: &UserName,
-    event_tag: u16,
-    body: &[u8],
-) -> anyhow::Result<MessagePayload> {
-    if event_tag != TAG_MESSAGE {
-        return Ok(MessagePayload {
-            payload: MessageText::Plain("Unsupported message".to_string()),
-            attachments: Vec::new(),
-            images: Vec::new(),
-            replies_to: None,
-            metadata: Default::default(),
-        });
-    }
-
-    let payload: MessagePayload = bcs::from_bytes(body)?;
-    for root in &payload.attachments {
-        let _ = store_attachment_root(&mut *db.acquire().await?, sender, &root).await?;
-    }
-    for image in &payload.images {
-        let _ = store_attachment_root(&mut *db.acquire().await?, sender, &image.inner).await?;
-    }
-    Ok(payload)
 }

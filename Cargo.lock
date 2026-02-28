@@ -4718,6 +4718,7 @@ dependencies = [
  "serde_with",
  "smol_str 0.3.4",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
  "toml 0.9.10+spec-1.1.0",

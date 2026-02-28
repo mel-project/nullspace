@@ -5,13 +5,19 @@ use std::time::Duration;
 use anyhow::Context;
 use moka::future::Cache;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
+use nullspace_structs::fragment::ImageAttachment;
 use nullspace_crypt::signing::{Signable, SigningPublic};
 use nullspace_structs::server::{ServerClient, ServerName, SignedMediumPk};
+use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::{UserDescriptor, UserName};
 use tracing::warn;
 
+use crate::attachments::store_attachment_root;
 use crate::config::{Config, Ctx};
-use crate::directory::DIR_CLIENT;
+use crate::convo::last_dm_received_at;
+use crate::database::DATABASE;
+use crate::profile::get_profile;
+use crate::DIR_CLIENT;
 use crate::server::get_server_client;
 
 pub struct UserInfo {
@@ -20,6 +26,13 @@ pub struct UserInfo {
     pub server_name: ServerName,
     pub devices: BTreeSet<SigningPublic>,
     pub medium_pks: BTreeMap<Hash, SignedMediumPk>,
+}
+
+pub struct UserDetailsData {
+    pub display_name: Option<String>,
+    pub avatar: Option<ImageAttachment>,
+    pub server_name: ServerName,
+    pub last_dm_received_at: Option<NanoTimestamp>,
 }
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
@@ -109,4 +122,32 @@ async fn fetch_medium_pks(
         .device_medium_pks(username.clone())
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+pub async fn user_details_data(
+    ctx: &anyctx::AnyCtx<Config>,
+    local_username: &UserName,
+    username: &UserName,
+) -> anyhow::Result<UserDetailsData> {
+    let profile = get_profile(ctx, username).await?;
+    let db = ctx.get(DATABASE);
+    if let Some(profile) = profile.as_ref()
+        && let Some(avatar) = profile.avatar.as_ref()
+    {
+        let mut conn = db.acquire().await?;
+        store_attachment_root(&mut conn, username, &avatar.inner).await?;
+    }
+    let user_info = get_user_info(ctx, username).await?;
+    let (display_name, avatar) = match profile {
+        Some(profile) => (profile.display_name, profile.avatar),
+        None => (None, None),
+    };
+    let mut conn = db.acquire().await?;
+    let last_dm_received_at = last_dm_received_at(&mut conn, local_username, username).await?;
+    Ok(UserDetailsData {
+        display_name,
+        avatar,
+        server_name: user_info.server_name.clone(),
+        last_dm_received_at,
+    })
 }

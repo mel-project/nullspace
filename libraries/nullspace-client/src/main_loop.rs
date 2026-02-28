@@ -6,8 +6,9 @@ use nanorpc::{JrpcRequest, JrpcResponse, RpcService};
 use tokio::sync::oneshot;
 
 use crate::Config;
-use crate::database::{DATABASE, DbNotify, event_loop, identity_exists};
-use crate::events::init_event_tx;
+use crate::database::{DATABASE, DbNotify};
+use crate::events::{event_loop, init_event_tx};
+use crate::identity::identity_exists;
 
 use crate::convo::convo_loop;
 
@@ -56,11 +57,16 @@ async fn worker_loop(ctx: &AnyCtx<Config>) {
     let db = ctx.get(DATABASE);
     let mut notify = DbNotify::new();
     loop {
-        match identity_exists(db).await {
-            Ok(true) => break,
-            Ok(false) => {}
+        match db.acquire().await {
+            Ok(mut conn) => match identity_exists(&mut conn).await {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to check identity state");
+                }
+            },
             Err(err) => {
-                tracing::warn!(error = %err, "failed to check identity state");
+                tracing::warn!(error = %err, "failed to acquire database connection");
             }
         }
         notify.wait_for_change().await;

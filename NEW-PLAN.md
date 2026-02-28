@@ -22,6 +22,7 @@ The `MESSAGE` event tag is used for most messages. Its payload is a BCS-encoded 
 - metadata: `BTreeMap<SmolStr, String>`
 
 Note that `Attachment` should have a server name indicating where it's hosted, as it's not always clear by the context (especially if users move between servers).
+
 # DMs
 
 DMs are sent to a mailbox advertised in the user's **user profile**. The mailbox key to this mailbox is distributed through device provisioning to each new device the user creates, so this mailbox MUST never change (and thus cache coherence is a non-issue).

@@ -1,5 +1,4 @@
 use anyhow::Context;
-use sqlx::SqlitePool;
 
 use nullspace_crypt::dh::DhSecret;
 use nullspace_structs::certificate::DeviceSecret;
@@ -18,12 +17,12 @@ pub struct Identity {
 }
 
 impl Identity {
-    pub async fn load(db: &SqlitePool) -> anyhow::Result<Self> {
+    pub async fn load(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Self> {
         let row = sqlx::query_as::<_, (String, Option<String>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>(
             "SELECT username, server_name, device_secret, medium_sk_current, medium_sk_prev, dm_mailbox_key \
                  FROM client_identity WHERE id = 1",
         )
-        .fetch_optional(db)
+        .fetch_optional(&mut *db)
         .await?;
         let Some((
             username,
@@ -60,10 +59,9 @@ impl Identity {
     }
 }
 
-pub async fn store_server_name(db: &SqlitePool, server_name: &ServerName) -> anyhow::Result<()> {
-    sqlx::query("UPDATE client_identity SET server_name = ? WHERE id = 1")
-        .bind(server_name.as_str())
-        .execute(db)
+pub async fn identity_exists(db: &mut sqlx::SqliteConnection) -> anyhow::Result<bool> {
+    let row = sqlx::query_as::<_, (i64,)>("SELECT 1 FROM client_identity WHERE id = 1")
+        .fetch_optional(&mut *db)
         .await?;
-    Ok(())
+    Ok(row.is_some())
 }

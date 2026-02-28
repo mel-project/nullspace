@@ -15,9 +15,10 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use tracing::warn;
 
-use crate::database::{DATABASE, DbNotify, ensure_thread_id};
+use crate::convo::ensure_thread_id;
+use crate::database::{DATABASE, DbNotify};
 use crate::identity::Identity;
-use crate::retry::retry_backoff;
+use crate::retry_backoff;
 use crate::user_info::{UserInfo, get_user_info};
 use crate::{attachments::store_attachment_root, config::Config};
 
@@ -82,7 +83,7 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
     let mut notify = DbNotify::new();
     loop {
-        let Some(pending) = next_pending_message(db).await? else {
+        let Some(pending) = next_pending_message(&mut *db.acquire().await?).await? else {
             notify.wait_for_change().await;
             continue;
         };
@@ -129,7 +130,9 @@ struct PendingMessage {
     sent_at: NanoTimestamp,
 }
 
-async fn next_pending_message(db: &sqlx::SqlitePool) -> anyhow::Result<Option<PendingMessage>> {
+async fn next_pending_message(
+    db: &mut sqlx::SqliteConnection,
+) -> anyhow::Result<Option<PendingMessage>> {
     let row = sqlx::query_as::<_, (i64, String, String, i64, Vec<u8>, Option<Vec<u8>>, i64)>(
         "SELECT e.id, t.thread_kind, t.thread_counterparty, e.event_tag, e.event_body, e.event_after, e.sent_at \
          FROM thread_events e \
@@ -138,7 +141,7 @@ async fn next_pending_message(db: &sqlx::SqlitePool) -> anyhow::Result<Option<Pe
          ORDER BY e.id \
          LIMIT 1",
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *db)
     .await?;
     let Some((id, thread_kind, counterparty, event_tag, event_body, event_after, sent_at)) = row
     else {
@@ -182,7 +185,7 @@ async fn send_dm(
     event: Event,
 ) -> anyhow::Result<NanoTimestamp> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(db).await?;
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
 
     let peer_received_at = send_dm_once(ctx, &identity, peer, &event).await?;
     let self_received_at = if identity.username != *peer {

@@ -9,15 +9,14 @@ use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
 use crate::config::Config;
-use crate::database::{
-    DATABASE, DbNotify, ensure_mailbox_state, ensure_thread_id, load_mailbox_after,
-    update_mailbox_after,
-};
+use crate::convo::ensure_thread_id;
+use crate::database::{DATABASE, DbNotify};
 use crate::identity::Identity;
 use crate::long_poll::LONG_POLLER;
-use crate::server::get_server_client;
+use crate::mailbox::{ensure_mailbox_state, load_mailbox_after, update_mailbox_after};
+use crate::server::{get_server_client, own_server_name};
 
-use super::dm_common::{device_auth, refresh_own_server_name};
+use super::dm_common::device_auth;
 use super::send::store_message_attachments;
 
 pub(super) async fn dm_recv_loop(ctx: &AnyCtx<Config>) {
@@ -31,17 +30,9 @@ pub(super) async fn dm_recv_loop(ctx: &AnyCtx<Config>) {
 
 async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(db).await?;
-    let server_name = match refresh_own_server_name(ctx, db, &identity).await {
-        Ok(name) => name,
-        Err(err) => match identity.server_name.clone() {
-            Some(name) => {
-                tracing::warn!(error = %err, "failed to refresh server name");
-                name
-            }
-            None => return Err(err),
-        },
-    };
+    let mut conn = db.acquire().await?;
+    let identity = Identity::load(&mut conn).await?;
+    let server_name = own_server_name(ctx, &identity).await?;
     let server = get_server_client(ctx, &server_name).await?;
     let auth = device_auth(ctx).await?;
     let mailbox = identity.dm_mailbox_id();
@@ -51,8 +42,9 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
-    ensure_mailbox_state(db, &server_name, mailbox, NanoTimestamp(0)).await?;
-    let mut after = load_mailbox_after(db, &server_name, mailbox).await?;
+    ensure_mailbox_state(&mut conn, &server_name, mailbox, NanoTimestamp(0)).await?;
+    let mut after = load_mailbox_after(&mut conn, &server_name, mailbox).await?;
+    drop(conn);
     let poller = ctx.get(LONG_POLLER);
     loop {
         let entry = match poller
@@ -80,8 +72,9 @@ async fn process_mailbox_entry(
     entry: MailboxEntry,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(db).await?;
-    update_mailbox_after(db, server_name, mailbox, entry.received_at).await?;
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
+    update_mailbox_after(&mut *db.acquire().await?, server_name, mailbox, entry.received_at)
+        .await?;
 
     let encrypted: HeaderEncrypted = bcs::from_bytes(&entry.body.0)?;
     let decrypted = match encrypted.decrypt_bytes(&identity.medium_sk_current) {

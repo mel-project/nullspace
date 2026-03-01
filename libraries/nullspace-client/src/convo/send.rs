@@ -15,14 +15,15 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use tracing::warn;
 
-use crate::convo::ensure_thread_id;
+use crate::convo::{ensure_thread_id, insert_thread_event};
 use crate::database::{DATABASE, DbNotify};
+use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::retry_backoff;
 use crate::user_info::{UserInfo, get_user_info};
 use crate::{attachments::store_attachment_root, config::Config};
 
-use super::{ConvoId, parse_convo_id};
+use super::{ConvoId, ThreadEventsRow, parse_convo_id};
 
 pub async fn queue_message(
     tx: &mut sqlx::SqliteConnection,
@@ -50,24 +51,22 @@ pub async fn queue_message(
     };
     let event_hash = event.hash();
 
-    let row = sqlx::query_as::<_, (i64,)>(
-        "INSERT INTO thread_events \
-         (thread_id, sender_username, event_tag, event_body, event_after, event_hash, sent_at, received_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL) \
-         RETURNING id",
+    let id = insert_thread_event(
+        &mut *tx,
+        thread_id,
+        sender.as_str(),
+        event_tag,
+        event_body,
+        event.after.as_ref(),
+        &event_hash,
+        sent_at,
+        None,
     )
-    .bind(thread_id)
-    .bind(sender.as_str())
-    .bind(i64::from(event_tag))
-    .bind(event_body.to_vec())
-    .bind(event.after.map(|hash| hash.to_bytes().to_vec()))
-    .bind(event_hash.to_bytes().to_vec())
-    .bind(sent_at.0 as i64)
-    .fetch_one(&mut *tx)
-    .await?;
+    .await?
+    .expect("queue_message insert should never conflict");
 
     store_message_attachments(tx, event_tag, event_body).await?;
-    Ok(row.0)
+    Ok(id)
 }
 
 pub async fn send_loop(ctx: &AnyCtx<Config>) {
@@ -93,15 +92,15 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
                 let err = anyhow::anyhow!("invalid convo entry");
                 let mut conn = db.acquire().await?;
                 mark_message_failed(&mut conn, pending.id, &err).await?;
-                DbNotify::touch();
                 continue;
             }
         };
 
-        let ctx = ctx.clone();
+        let convo_id_emit = convo_id.clone();
+        let send_ctx = ctx.clone();
         let pending_for_send = pending.clone();
         match retry_backoff(async move || {
-            send_message(ctx.clone(), &convo_id, &pending_for_send).await
+            send_message(&send_ctx, &convo_id, &pending_for_send).await
         })
         .await
         {
@@ -115,7 +114,7 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
                 mark_message_failed(&mut conn, pending.id, &err).await?;
             }
         }
-        DbNotify::touch();
+        emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id: convo_id_emit });
     }
 }
 
@@ -130,11 +129,19 @@ struct PendingMessage {
     sent_at: NanoTimestamp,
 }
 
+#[derive(sqlx::FromRow)]
+struct PendingMessageRow {
+    #[sqlx(flatten)]
+    event: ThreadEventsRow,
+    thread_kind: String,
+    thread_counterparty: String,
+}
+
 async fn next_pending_message(
     db: &mut sqlx::SqliteConnection,
 ) -> anyhow::Result<Option<PendingMessage>> {
-    let row = sqlx::query_as::<_, (i64, String, String, i64, Vec<u8>, Option<Vec<u8>>, i64)>(
-        "SELECT e.id, t.thread_kind, t.thread_counterparty, e.event_tag, e.event_body, e.event_after, e.sent_at \
+    let row = sqlx::query_as::<_, PendingMessageRow>(
+        "SELECT e.*, t.thread_kind, t.thread_counterparty \
          FROM thread_events e \
          JOIN event_threads t ON e.thread_id = t.id \
          WHERE e.received_at IS NULL AND e.send_error IS NULL \
@@ -143,24 +150,23 @@ async fn next_pending_message(
     )
     .fetch_optional(&mut *db)
     .await?;
-    let Some((id, thread_kind, counterparty, event_tag, event_body, event_after, sent_at)) = row
-    else {
+    let Some(row) = row else {
         return Ok(None);
     };
 
     Ok(Some(PendingMessage {
-        id,
-        thread_kind,
-        counterparty,
-        event_tag: u16::try_from(event_tag).context("invalid event tag")?,
-        event_body: Bytes::from(event_body),
-        event_after: event_after.map(bytes_to_hash).transpose()?,
-        sent_at: NanoTimestamp(sent_at as u64),
+        id: row.event.id,
+        thread_kind: row.thread_kind,
+        counterparty: row.thread_counterparty,
+        event_tag: u16::try_from(row.event.event_tag).context("invalid event tag")?,
+        event_body: Bytes::from(row.event.event_body),
+        event_after: row.event.event_after.map(bytes_to_hash).transpose()?,
+        sent_at: NanoTimestamp(row.event.sent_at as u64),
     }))
 }
 
 async fn send_message(
-    ctx: AnyCtx<Config>,
+    ctx: &AnyCtx<Config>,
     convo_id: &ConvoId,
     pending: &PendingMessage,
 ) -> anyhow::Result<NanoTimestamp> {
@@ -173,7 +179,7 @@ async fn send_message(
                 tag: pending.event_tag,
                 body: pending.event_body.clone(),
             };
-            send_dm(&ctx, peer, event).await
+            send_dm(ctx, peer, event).await
         }
         ConvoId::Group { .. } => anyhow::bail!("groups are disabled"),
     }
@@ -234,14 +240,11 @@ async fn fetch_peer_mailbox_id(peer: &UserInfo) -> anyhow::Result<MailboxId> {
         .map_err(|err| anyhow::anyhow!(err.to_string()))?
         .context("target profile not found")?;
 
-    let mut verified = false;
-    for device_pk in &peer.devices {
-        if profile.verify(*device_pk).is_ok() {
-            verified = true;
-            break;
-        }
-    }
-    if !verified {
+    if !peer
+        .devices
+        .iter()
+        .any(|device_pk| profile.verify(*device_pk).is_ok())
+    {
         anyhow::bail!("target profile signature is invalid");
     }
 

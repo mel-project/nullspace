@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::database::DATABASE;
 use crate::identity::identity_exists;
 use crate::identity::Identity;
-use crate::internal::InternalRpcError;
+use crate::internal::{InternalRpcError, internal_err};
 use crate::server::{get_server_client, own_server_name};
 use crate::user_info::get_user_info;
 
@@ -50,28 +50,21 @@ pub async fn own_profile_set(
     avatar: Option<ImageAttachment>,
 ) -> Result<(), InternalRpcError> {
     let db = ctx.get(DATABASE);
-    if !identity_exists(&mut *db.acquire().await.map_err(|err| {
-        InternalRpcError::Other(err.to_string())
-    })?)
-    .await
-    .map_err(|err| InternalRpcError::Other(err.to_string()))?
+    if !identity_exists(&mut *db.acquire().await.map_err(internal_err)?)
+        .await
+        .map_err(internal_err)?
     {
         return Err(InternalRpcError::NotReady);
     }
-    let identity = Identity::load(
-        &mut *db
-            .acquire()
-            .await
-            .map_err(|err| InternalRpcError::Other(err.to_string()))?,
-    )
-    .await
-    .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+    let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+        .await
+        .map_err(internal_err)?;
     let server_name = own_server_name(ctx, &identity)
         .await
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+        .map_err(internal_err)?;
     let server = get_server_client(ctx, &server_name)
         .await
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+        .map_err(internal_err)?;
 
     let created = Timestamp::now();
     let mut profile = UserProfile {
@@ -85,7 +78,7 @@ pub async fn own_profile_set(
     server
         .profile_set(identity.username, profile)
         .await
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?
-        .map_err(|err| InternalRpcError::Other(err.to_string()))?;
+        .map_err(internal_err)?
+        .map_err(internal_err)?;
     Ok(())
 }

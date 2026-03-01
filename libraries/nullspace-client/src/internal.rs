@@ -23,6 +23,7 @@ use crate::config::Config;
 pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary};
 use crate::convo::{convo_history, convo_list, mark_convo_read, queue_message};
 use crate::database::{DATABASE, DbNotify};
+use crate::events::emit_event;
 use crate::identity::identity_exists;
 use crate::identity::Identity;
 use crate::profile::own_profile_set as set_own_profile;
@@ -498,6 +499,16 @@ impl InternalImpl {
             host_provisioning: Arc::new(HostProvisioning::new()),
         }
     }
+
+    async fn conn(&self) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, InternalRpcError> {
+        self.ctx.get(DATABASE).acquire().await.map_err(internal_err)
+    }
+
+    async fn load_identity(&self) -> Result<Identity, InternalRpcError> {
+        Identity::load(&mut *self.conn().await?)
+            .await
+            .map_err(internal_err)
+    }
 }
 
 #[async_trait]
@@ -537,8 +548,7 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn convo_list(&self) -> Result<Vec<ConvoSummary>, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        convo_list(&mut *db.acquire().await.map_err(internal_err)?)
+        convo_list(&mut *self.conn().await?)
             .await
             .map_err(internal_err)
     }
@@ -550,16 +560,9 @@ impl InternalProtocol for InternalImpl {
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<ConvoMessage>, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        convo_history(
-            &mut *db.acquire().await.map_err(internal_err)?,
-            convo_id,
-            before,
-            after,
-            limit,
-        )
-        .await
-        .map_err(internal_err)
+        convo_history(&mut *self.conn().await?, convo_id, before, after, limit)
+            .await
+            .map_err(internal_err)
     }
 
     async fn convo_send(
@@ -570,16 +573,17 @@ impl InternalProtocol for InternalImpl {
         if matches!(convo_id, ConvoId::Group { .. }) {
             return Err(groups_disabled_error());
         }
-        let db = self.ctx.get(DATABASE);
-        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+        let identity = self
+            .load_identity()
             .await
             .map_err(|_| InternalRpcError::NotReady)?;
         let body = Bytes::from(bcs::to_bytes(&message).map_err(internal_err)?);
-        let mut conn = db.acquire().await.map_err(internal_err)?;
+        let mut conn = self.conn().await?;
         let id = queue_message(&mut conn, &convo_id, &identity.username, TAG_MESSAGE, &body)
             .await
             .map_err(internal_err)?;
         DbNotify::touch();
+        emit_event(&self.ctx, Event::ConvoUpdated { convo_id });
         Ok(id)
     }
 
@@ -588,16 +592,11 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         up_to_id: i64,
     ) -> Result<(), InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        let affected = mark_convo_read(
-            &mut *db.acquire().await.map_err(internal_err)?,
-            convo_id,
-            up_to_id,
-        )
-        .await
-        .map_err(internal_err)?;
+        let affected = mark_convo_read(&mut *self.conn().await?, &convo_id, up_to_id)
+            .await
+            .map_err(internal_err)?;
         if affected > 0 {
-            DbNotify::touch();
+            emit_event(&self.ctx, Event::ConvoUpdated { convo_id });
         }
         Ok(())
     }
@@ -608,11 +607,8 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn own_server(&self) -> Result<ServerName, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
-            .await
-            .map_err(internal_err)?;
-        identity
+        self.load_identity()
+            .await?
             .server_name
             .ok_or_else(|| InternalRpcError::Other("server name not available".into()))
     }
@@ -686,16 +682,13 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn user_details(&self, username: UserName) -> Result<UserDetails, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        if !identity_exists(&mut *db.acquire().await.map_err(internal_err)?)
+        if !identity_exists(&mut *self.conn().await?)
             .await
             .map_err(internal_err)?
         {
             return Err(InternalRpcError::NotReady);
         }
-        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
-            .await
-            .map_err(internal_err)?;
+        let identity = self.load_identity().await?;
         let details = user_details_data(&self.ctx, &identity.username, &username)
             .await
             .map_err(map_anyhow_err)?;
@@ -715,11 +708,7 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn own_username(&self) -> Result<UserName, InternalRpcError> {
-        let db = self.ctx.get(DATABASE);
-        let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
-            .await
-            .map_err(internal_err)?;
-        Ok(identity.username)
+        Ok(self.load_identity().await?.username)
     }
 
     async fn own_profile_set(

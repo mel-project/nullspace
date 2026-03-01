@@ -51,3 +51,55 @@ CREATE TABLE mailbox_state (
     after_timestamp INTEGER NOT NULL,
     PRIMARY KEY (server_name, mailbox_id)
 );
+
+CREATE TABLE attachment_roots (
+    hash BLOB PRIMARY KEY,
+    root BLOB NOT NULL
+);
+
+CREATE TABLE attachment_paths (
+    hash BLOB PRIMARY KEY,
+    download_path TEXT NOT NULL
+);
+
+CREATE TABLE user_descriptor_cache (
+    username TEXT NOT NULL PRIMARY KEY,
+    descriptor BLOB NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+
+CREATE TABLE user_info_cache (
+    username TEXT NOT NULL PRIMARY KEY,
+    fetched_at INTEGER NOT NULL
+);
+
+CREATE TABLE user_devices_cache (
+    username TEXT NOT NULL PRIMARY KEY,
+    devices BLOB NOT NULL
+);
+
+CREATE TABLE user_device_medium_pks_cache (
+    username TEXT NOT NULL PRIMARY KEY,
+    medium_pks BLOB NOT NULL
+);
+
+CREATE INDEX user_descriptor_cache_idx
+    ON user_descriptor_cache (username);
+
+CREATE INDEX user_info_cache_idx
+    ON user_info_cache (username);
+
+CREATE INDEX user_devices_cache_idx
+    ON user_devices_cache (username);
+
+CREATE INDEX user_device_medium_pks_cache_idx
+    ON user_device_medium_pks_cache (username);
+
+CREATE TABLE message_reads (
+    message_id INTEGER PRIMARY KEY,
+    read_at INTEGER NOT NULL,
+    FOREIGN KEY (message_id) REFERENCES thread_events(id) ON DELETE CASCADE
+);
+
+CREATE INDEX message_reads_read_at_idx
+    ON message_reads (read_at);

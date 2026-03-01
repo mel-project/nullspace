@@ -8,15 +8,16 @@ use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
 use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
+use crate::auth_tokens::get_auth_token;
 use crate::config::Config;
-use crate::convo::ensure_thread_id;
-use crate::database::{DATABASE, DbNotify};
+use crate::convo::{THREAD_KIND_DIRECT, ensure_thread_id, insert_thread_event};
+use crate::database::DATABASE;
+use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::long_poll::LONG_POLLER;
 use crate::mailbox::{ensure_mailbox_state, load_mailbox_after, update_mailbox_after};
 use crate::server::{get_server_client, own_server_name};
 
-use super::dm_common::device_auth;
 use super::send::store_message_attachments;
 
 pub(super) async fn dm_recv_loop(ctx: &AnyCtx<Config>) {
@@ -34,7 +35,7 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let identity = Identity::load(&mut conn).await?;
     let server_name = own_server_name(ctx, &identity).await?;
     let server = get_server_client(ctx, &server_name).await?;
-    let auth = device_auth(ctx).await?;
+    let auth = get_auth_token(ctx).await?;
     let mailbox = identity.dm_mailbox_id();
 
     server
@@ -58,10 +59,15 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             }
         };
         after = entry.received_at;
-        if let Err(err) = process_mailbox_entry(ctx, &server_name, mailbox, entry).await {
-            tracing::warn!(error = %err, "failed to process mailbox entry");
+        match process_mailbox_entry(ctx, &server_name, mailbox, entry).await {
+            Ok(Some(convo_id)) => {
+                emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to process mailbox entry");
+            }
         }
-        DbNotify::touch();
     }
 }
 
@@ -70,7 +76,7 @@ async fn process_mailbox_entry(
     server_name: &ServerName,
     mailbox: MailboxId,
     entry: MailboxEntry,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<super::ConvoId>> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(&mut *db.acquire().await?).await?;
     update_mailbox_after(&mut *db.acquire().await?, server_name, mailbox, entry.received_at)
@@ -100,7 +106,7 @@ async fn process_mailbox_entry(
             recipient = %event.recipient,
             "ignoring dm with mismatched recipient",
         );
-        return Ok(());
+        return Ok(None);
     }
 
     let peer_username = if sender_username == identity.username {
@@ -110,7 +116,8 @@ async fn process_mailbox_entry(
     };
 
     let mut conn = db.acquire().await?;
-    let thread_id = ensure_thread_id(&mut *conn, "direct", peer_username.as_str()).await?;
+    let thread_id =
+        ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;
     let is_valid_link = validate_event_link(&mut conn, thread_id, event.after).await?;
     if !is_valid_link {
         tracing::warn!(
@@ -121,27 +128,25 @@ async fn process_mailbox_entry(
     }
 
     let event_hash = event.hash();
-    let inserted = sqlx::query(
-        "INSERT OR IGNORE INTO thread_events \
-         (thread_id, sender_username, event_tag, event_body, event_after, event_hash, sent_at, received_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    let inserted = insert_thread_event(
+        &mut conn,
+        thread_id,
+        sender_username.as_str(),
+        event.tag,
+        &event.body,
+        event.after.as_ref(),
+        &event_hash,
+        event.sent_at,
+        Some(entry.received_at),
     )
-    .bind(thread_id)
-    .bind(sender_username.as_str())
-    .bind(i64::from(event.tag))
-    .bind(event.body.to_vec())
-    .bind(event.after.map(|hash| hash.to_bytes().to_vec()))
-    .bind(event_hash.to_bytes().to_vec())
-    .bind(event.sent_at.0 as i64)
-    .bind(entry.received_at.0 as i64)
-    .execute(&mut *conn)
-    .await?
-    .rows_affected();
+    .await?;
 
-    if inserted > 0 {
+    if inserted.is_some() {
         store_message_attachments(&mut conn, event.tag, &event.body).await?;
+        Ok(Some(super::ConvoId::Direct { peer: peer_username }))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 async fn validate_event_link(

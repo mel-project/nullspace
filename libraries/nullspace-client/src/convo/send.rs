@@ -7,7 +7,6 @@ use bytes::Bytes;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::Signable;
 use nullspace_structs::Blob;
-use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::{Event, MessagePayload, TAG_MESSAGE};
 use nullspace_structs::mailbox::MailboxId;
 use nullspace_structs::server::SignedMediumPk;
@@ -15,13 +14,15 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use tracing::warn;
 
-use crate::convo::{ensure_thread_id, insert_thread_event};
+use crate::convo::{NewThreadEvent, ensure_thread_id, insert_thread_event};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::retry_backoff;
 use crate::user_info::{UserInfo, get_user_info};
 use crate::{attachments::store_attachment_root, config::Config};
+
+use super::device_crypt::sign_and_encrypt;
 
 use super::{ConvoId, ThreadEventsRow, parse_convo_id};
 
@@ -53,14 +54,16 @@ pub async fn queue_message(
 
     let id = insert_thread_event(
         &mut *tx,
-        thread_id,
-        sender.as_str(),
-        event_tag,
-        event_body,
-        event.after.as_ref(),
-        &event_hash,
-        sent_at,
-        None,
+        &NewThreadEvent {
+            thread_id,
+            sender: sender.as_str(),
+            event_tag,
+            event_body,
+            event_after: event.after.as_ref(),
+            event_hash: &event_hash,
+            sent_at,
+            received_at: None,
+        },
     )
     .await?
     .expect("queue_message insert should never conflict");
@@ -213,16 +216,7 @@ async fn send_dm_once(
     let target_mailbox = fetch_peer_mailbox_id(peer.as_ref()).await?;
 
     let event_bytes = bcs::to_bytes(event)?;
-    let signed = DeviceSigned::sign_bytes(
-        Bytes::from(event_bytes),
-        identity.username.clone(),
-        identity.device_secret.public().signing_public(),
-        &identity.device_secret,
-    );
-    let signed_bytes = bcs::to_bytes(&signed)?;
-    let encrypted = HeaderEncrypted::encrypt_bytes(&signed_bytes, recipients)
-        .map_err(|_| anyhow::anyhow!("failed to encrypt DM for {target}"))?;
-    let body = Bytes::from(bcs::to_bytes(&encrypted)?);
+    let body = sign_and_encrypt(identity, &event_bytes, recipients)?;
 
     let received_at = peer
         .server

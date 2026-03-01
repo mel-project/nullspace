@@ -1,6 +1,8 @@
+use std::ops::{Add, Sub};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A seconds-granularity Unix timestamp, represented as an integer.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,5 +38,19 @@ impl NanoTimestamp {
         let nsec = u32::try_from(self.0 % 1_000_000_000).ok()?;
         let dt = DateTime::from_timestamp(secs, nsec)?;
         Some(dt.with_timezone(&Local).date_naive())
+    }
+}
+
+impl Add<Duration> for NanoTimestamp {
+    type Output = Self;
+    fn add(self, rhs: Duration) -> Self {
+        Self(self.0.saturating_add(rhs.as_nanos() as u64))
+    }
+}
+
+impl Sub<Duration> for NanoTimestamp {
+    type Output = Self;
+    fn sub(self, rhs: Duration) -> Self {
+        Self(self.0.saturating_sub(rhs.as_nanos() as u64))
     }
 }

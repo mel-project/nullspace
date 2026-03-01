@@ -16,6 +16,7 @@ use tracing::warn;
 
 use crate::config::Config;
 
+pub(crate) mod device_crypt;
 mod dm_recv;
 mod send;
 
@@ -88,21 +89,25 @@ pub async fn ensure_thread_id(
     Ok(row.0)
 }
 
+/// Fields for inserting a new thread event row.
+pub(crate) struct NewThreadEvent<'a> {
+    pub thread_id: i64,
+    pub sender: &'a str,
+    pub event_tag: u16,
+    pub event_body: &'a [u8],
+    pub event_after: Option<&'a Hash>,
+    pub event_hash: &'a Hash,
+    pub sent_at: NanoTimestamp,
+    pub received_at: Option<NanoTimestamp>,
+}
+
 /// Shared INSERT INTO thread_events used by both send.rs and dm_recv.rs.
 ///
 /// Returns `Some(id)` if a row was inserted, `None` if it was ignored
 /// (duplicate event hash).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_thread_event(
     conn: &mut sqlx::SqliteConnection,
-    thread_id: i64,
-    sender: &str,
-    event_tag: u16,
-    event_body: &[u8],
-    event_after: Option<&Hash>,
-    event_hash: &Hash,
-    sent_at: NanoTimestamp,
-    received_at: Option<NanoTimestamp>,
+    event: &NewThreadEvent<'_>,
 ) -> anyhow::Result<Option<i64>> {
     let row = sqlx::query_as::<_, (i64,)>(
         "INSERT OR IGNORE INTO thread_events \
@@ -110,14 +115,14 @@ pub(crate) async fn insert_thread_event(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
          RETURNING id",
     )
-    .bind(thread_id)
-    .bind(sender)
-    .bind(i64::from(event_tag))
-    .bind(event_body)
-    .bind(event_after.map(|hash| hash.to_bytes().to_vec()))
-    .bind(event_hash.to_bytes().to_vec())
-    .bind(sent_at.0 as i64)
-    .bind(received_at.map(|ts| ts.0 as i64))
+    .bind(event.thread_id)
+    .bind(event.sender)
+    .bind(i64::from(event.event_tag))
+    .bind(event.event_body)
+    .bind(event.event_after.map(|hash| hash.to_bytes().to_vec()))
+    .bind(event.event_hash.to_bytes().to_vec())
+    .bind(event.sent_at.0 as i64)
+    .bind(event.received_at.map(|ts| ts.0 as i64))
     .fetch_optional(&mut *conn)
     .await?;
     Ok(row.map(|(id,)| id))

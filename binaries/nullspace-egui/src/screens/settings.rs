@@ -28,7 +28,7 @@ impl Widget for Settings<'_> {
             Window::new("Settings")
                 .collapsible(false)
                 .default_pos(center)
-                .default_size([720.0, 500.0])
+                .max_size([500.0, 500.0])
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
                     let mut selected_tab: Var<SettingsTab> =

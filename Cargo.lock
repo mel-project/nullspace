@@ -4964,6 +4964,7 @@ dependencies = [
  "smol_str 0.3.4",
  "thiserror 2.0.17",
  "url",
+ "uuid",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ edition.workspace = true
 catppuccin-egui = { version = "5.7.0", default-features = false, features = [
     "egui33",
 ] }
-eframe = { version = "0.33.3", features = ["persistence"] }
+eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
 bytes = "1.10.1"
 clap = { version = "4.5.40", features = ["derive"] }
@@ -63,6 +63,7 @@ generational-box = "0.7.3"
 scopeguard = "1.2.0"
 uuid = { version = "1", features = ["serde"] }
 fs2 = "0.4.3"
+derive_setters = "0.1.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.3", default-features = false, features = [

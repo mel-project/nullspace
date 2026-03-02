@@ -50,11 +50,14 @@ impl Widget for ConvoSelect<'_> {
 
                     ui.add_space(4.0);
 
-                    ui.add(Label::new(
-                        RichText::new(label)
-                            .family(egui::FontFamily::Name("main_bold".into()))
-                            .color(text_color),
-                    ));
+                    ui.add(
+                        Label::new(
+                            RichText::new(label)
+                                .family(egui::FontFamily::Name("main_bold".into()))
+                                .color(text_color),
+                        )
+                        .truncate(),
+                    );
                     if self.convo.unread_count > 0 {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(8.0);

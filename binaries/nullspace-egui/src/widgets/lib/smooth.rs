@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
+use derive_setters::Setters;
 use eframe::egui::{Response, Widget};
 
 use fast_thumbhash::thumb_hash_from_b91;
@@ -29,12 +30,14 @@ static IMAGE_CACHE: LazyLock<Cache<CacheKey, eframe::egui::TextureHandle>> =
 static ANY_CACHE: LazyLock<Cache<PathBuf, eframe::egui::TextureHandle>> =
     LazyLock::new(|| Cache::builder().max_capacity(100).build());
 
+#[derive(Setters)]
 pub struct SmoothImage<'a> {
     filename: &'a Path,
     thumbhash: Option<&'a str>,
     max_size: eframe::egui::Vec2,
     corner_radius: eframe::egui::CornerRadius,
     preserve_aspect_ratio: bool,
+    #[setters(strip_option)]
     aspect_ratio: Option<f32>,
     sense: eframe::egui::Sense,
 }
@@ -49,39 +52,6 @@ impl<'a> SmoothImage<'a> {
             preserve_aspect_ratio: true,
             aspect_ratio: None,
             sense: eframe::egui::Sense::empty(),
-        }
-    }
-
-    pub fn fit_to_size(self, max_size: eframe::egui::Vec2) -> Self {
-        Self { max_size, ..self }
-    }
-
-    pub fn corner_radius(self, corner_radius: eframe::egui::CornerRadius) -> Self {
-        Self {
-            corner_radius,
-            ..self
-        }
-    }
-
-    pub fn preserve_aspect_ratio(self, preserve_aspect_ratio: bool) -> Self {
-        Self {
-            preserve_aspect_ratio,
-            ..self
-        }
-    }
-
-    pub fn sense(self, sense: eframe::egui::Sense) -> Self {
-        Self { sense, ..self }
-    }
-
-    pub fn thumbhash(self, thumbhash: Option<&'a str>) -> Self {
-        Self { thumbhash, ..self }
-    }
-
-    pub fn aspect_ratio(self, aspect_ratio: f32) -> Self {
-        Self {
-            aspect_ratio: Some(aspect_ratio),
-            ..self
         }
     }
 }

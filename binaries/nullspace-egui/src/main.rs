@@ -137,13 +137,18 @@ impl NullspaceApp {
                 egui::TextStyle::Heading,
                 egui::FontId::new(14.0, egui::FontFamily::Name("main_bold".into())),
             );
-            style.visuals.window_shadow.offset = [0, 3];
-            style.visuals.window_shadow.blur = 20;
+            style.visuals.window_shadow.offset = [0, 0];
+            style.visuals.window_shadow.blur = 30;
             style.visuals.window_shadow.color = Color32::from_black_alpha(25);
+            style.visuals.popup_shadow = style.visuals.window_shadow;
+            // style.visuals.text_alpha_from_coverage = egui::epaint::AlphaFromCoverage::Gamma(1.4);
+            // style.visuals.widgets.noninteractive.fg_stroke.color = Color32::BLACK;
+            // style.visuals.widgets.a
             // style.visuals.panel_fill = Color32::WHITE;
             // style.visuals.window_fill = Color32::WHITE;
             // style.visuals.faint_bg_color = Color32::from_gray(240);
             style.interaction.selectable_labels = false;
+            style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
             // style.debug.debug_on_hover = true; // show callstack / rects on hover
             // style.debug.show_expand_width = true; // highlight width expanders
             // style.debug.show_expand_height = true; // highlight height expanders
@@ -425,7 +430,10 @@ fn main() -> eframe::Result<()> {
             .expect("dir anchor pk"),
     };
     let client = Client::new(config);
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Glow,
+        ..Default::default()
+    };
 
     eframe::run_native(
         "nullspace-egui",

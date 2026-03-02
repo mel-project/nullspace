@@ -19,7 +19,7 @@ use crate::utils::folders;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
 use crate::utils::units::{format_filesize, unit_for_bytes};
-use crate::widgets::smooth::SmoothImage;
+use crate::widgets::lib::SmoothImage;
 use crate::{NullspaceApp, widgets::avatar::Avatar};
 
 const IMAGE_MAX_WIDTH: f32 = 500.0;
@@ -313,7 +313,7 @@ impl Widget for ImageAttachmentContent<'_> {
             let response = ui.add(
                 SmoothImage::new(path.as_path())
                     .thumbhash(Some(self.thumbhash))
-                    .fit_to_size(egui::vec2(max_width, IMAGE_MAX_HEIGHT))
+                    .max_size(egui::vec2(max_width, IMAGE_MAX_HEIGHT))
                     .corner_radius(egui::CornerRadius::same(8))
                     .preserve_aspect_ratio(true)
                     .aspect_ratio(aspect)

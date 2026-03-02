@@ -10,7 +10,7 @@ use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
 use crate::utils::folders;
-use crate::widgets::smooth::SmoothImage;
+use crate::widgets::lib::SmoothImage;
 
 pub struct Avatar {
     pub sender: UserName,
@@ -62,7 +62,7 @@ impl Widget for Avatar {
                 ui.add(
                     SmoothImage::new(path.as_path())
                         .thumbhash(Some(attachment.thumbhash.as_str()))
-                        .fit_to_size(size)
+                        .max_size(size)
                         .corner_radius(circle_corner_radius)
                         .preserve_aspect_ratio(false)
                         .sense(sense),

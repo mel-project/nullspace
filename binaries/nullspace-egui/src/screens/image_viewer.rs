@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{Response, Widget, Window};
 
-use crate::widgets::smooth::SmoothImage;
+use crate::widgets::lib::SmoothImage;
 
 pub struct ImageViewer<'a>(pub &'a mut Option<PathBuf>);
 
@@ -40,7 +40,7 @@ impl Widget for ImageViewer<'_> {
                         ));
                     image_ui.add(
                         SmoothImage::new(path.as_path())
-                            .fit_to_size(image_area)
+                            .max_size(image_area)
                             .preserve_aspect_ratio(true),
                     );
                 });

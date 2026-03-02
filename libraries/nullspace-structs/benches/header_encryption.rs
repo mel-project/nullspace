@@ -15,6 +15,7 @@ fn dm_benchmarks(c: &mut Criterion) {
     let recipient = UserName::parse("@rcpt01").expect("recipient username");
 
     let content = Event {
+        sender: sender_username.clone(),
         recipient,
         sent_at: NanoTimestamp(0),
         after: None,

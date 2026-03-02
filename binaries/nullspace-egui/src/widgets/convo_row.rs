@@ -22,8 +22,8 @@ use crate::utils::units::{format_filesize, unit_for_bytes};
 use crate::widgets::smooth::SmoothImage;
 use crate::{NullspaceApp, widgets::avatar::Avatar};
 
-const IMAGE_MAX_WIDTH: f32 = 400.0;
-const IMAGE_MAX_HEIGHT: f32 = 400.0;
+const IMAGE_MAX_WIDTH: f32 = 500.0;
+const IMAGE_MAX_HEIGHT: f32 = 500.0;
 
 pub struct ConvoRow<'a> {
     pub app: &'a mut NullspaceApp,

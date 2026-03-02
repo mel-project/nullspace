@@ -85,6 +85,15 @@ async fn process_mailbox_entry(
     let verified = decrypt_and_verify(ctx, &identity, &entry.body.0).await?;
     let event: Event = bcs::from_bytes(&verified.payload)?;
 
+    if event.sender != verified.sender {
+        tracing::warn!(
+            event_sender = %event.sender,
+            verified_sender = %verified.sender,
+            "ignoring event with sender mismatch",
+        );
+        return Ok(None);
+    }
+
     if event.recipient != identity.username && verified.sender != identity.username {
         tracing::warn!(
             sender = %verified.sender,

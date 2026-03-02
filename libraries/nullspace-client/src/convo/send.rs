@@ -44,6 +44,7 @@ pub async fn queue_message(
 
     let event_after = load_latest_thread_hash(&mut *tx, thread_id).await?;
     let event = Event {
+        sender: sender.clone(),
         recipient: peer,
         sent_at,
         after: event_after,
@@ -126,6 +127,7 @@ struct PendingMessage {
     id: i64,
     thread_kind: String,
     counterparty: String,
+    sender: UserName,
     event_tag: u16,
     event_body: Bytes,
     event_after: Option<Hash>,
@@ -161,6 +163,7 @@ async fn next_pending_message(
         id: row.event.id,
         thread_kind: row.thread_kind,
         counterparty: row.thread_counterparty,
+        sender: UserName::parse(&row.event.sender_username).context("invalid sender username")?,
         event_tag: u16::try_from(row.event.event_tag).context("invalid event tag")?,
         event_body: Bytes::from(row.event.event_body),
         event_after: row.event.event_after.map(bytes_to_hash).transpose()?,
@@ -176,6 +179,7 @@ async fn send_message(
     match convo_id {
         ConvoId::Direct { peer } => {
             let event = Event {
+                sender: pending.sender.clone(),
                 recipient: peer.clone(),
                 sent_at: pending.sent_at,
                 after: pending.event_after,

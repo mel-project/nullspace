@@ -9,6 +9,7 @@ use crate::username::UserName;
 
 pub const TAG_MESSAGE: u16 = 1;
 
+/// The text content of a message, either plain or rich (formatted).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageText {
@@ -16,6 +17,7 @@ pub enum MessageText {
     Rich(String),
 }
 
+/// The full payload of a message event, including text, attachments, and metadata.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessagePayload {
     pub payload: MessageText,
@@ -28,6 +30,7 @@ pub struct MessagePayload {
 /// A decoded event payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
+    pub sender: UserName,
     pub recipient: UserName,
     pub sent_at: NanoTimestamp,
     pub after: Option<Hash>,

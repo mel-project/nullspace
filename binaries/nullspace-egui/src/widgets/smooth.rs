@@ -323,7 +323,7 @@ fn make_texture(
     } else {
         eframe::egui::ColorImage::from_rgb(size, dst_image.buffer())
     };
-    tracing::debug!(texel_size=?texel_size, elapsed=debug(start.elapsed()), "finished processing image");
+    tracing::trace!(texel_size=?texel_size, elapsed=debug(start.elapsed()), "finished processing image");
 
     Ok(ctx.load_texture(
         format!("smooth_image_{:?}_{}x{}", id, texel_size[0], texel_size[1]),

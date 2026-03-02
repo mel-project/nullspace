@@ -16,12 +16,14 @@ use crate::server::ServerName;
 #[serde(transparent)]
 pub struct UserName(SmolStr);
 
+/// A descriptor linking a user to their home server and device keys.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserDescriptor {
     pub server_name: ServerName,
     pub devices: BTreeSet<SigningPublic>,
 }
 
+/// Error returned when a username string does not match the required format.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 #[error("invalid format for username")]
 pub struct UserNameError;

@@ -128,12 +128,14 @@ pub trait ServerProtocol {
     async fn frag_download(&self, hash: Hash) -> Result<Option<Fragment>, ServerRpcError>;
 }
 
+/// Direction of a message-passing channel.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum ChanDirection {
     Forward,
     Backward,
 }
 
+/// A medium-term Diffie-Hellman public key signed by the device's long-term key.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SignedMediumPk {
     pub medium_pk: DhPublic,
@@ -155,12 +157,14 @@ impl Signable for SignedMediumPk {
     }
 }
 
+/// A random challenge issued by the server for device authentication.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DeviceAuthChallenge {
     pub challenge: [u8; 32],
     pub expires_at: Timestamp,
 }
 
+/// A device's response to an authentication challenge, binding username and device key to the challenge.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DeviceAuthRequest {
     pub username: UserName,
@@ -168,6 +172,7 @@ pub struct DeviceAuthRequest {
     pub challenge: [u8; 32],
 }
 
+/// A signed wrapper around a [`DeviceAuthRequest`].
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SignedDeviceAuthRequest {
     pub request: DeviceAuthRequest,
@@ -193,6 +198,7 @@ impl Signable for SignedDeviceAuthRequest {
 #[serde(transparent)]
 pub struct ServerName(SmolStr);
 
+/// Error returned when a server name string does not match the required format.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 #[error("invalid server name")]
 pub struct ServerNameError;

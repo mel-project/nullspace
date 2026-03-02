@@ -4,10 +4,12 @@ use std::str::FromStr;
 use thiserror::Error;
 use uuid::Uuid;
 
+/// A unique group identifier, wrapping a v4 UUID.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 #[serde(transparent)]
 pub struct GroupId(Uuid);
 
+/// Error returned when parsing an invalid group ID string.
 #[derive(Debug, Error)]
 #[error("invalid group id")]
 pub struct GroupIdParseError;

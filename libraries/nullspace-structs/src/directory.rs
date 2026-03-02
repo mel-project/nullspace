@@ -36,6 +36,7 @@ pub trait DirectoryProtocol {
     ) -> Result<(), DirectoryErr>;
 }
 
+/// Errors returned by directory RPC operations.
 #[derive(Error, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum DirectoryErr {
@@ -54,11 +55,13 @@ pub struct PowSeed {
     pub use_before: Timestamp,
 }
 
+/// Algorithm and parameters for proof-of-work challenges.
 #[derive(Clone, Debug, Serialize, Deserialize, Copy, PartialEq, Eq, Hash)]
 pub enum PowAlgo {
     EquiX { effort: u64 },
 }
 
+/// A solved proof-of-work challenge submitted alongside directory updates.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PowSolution {
     pub seed: Hash,

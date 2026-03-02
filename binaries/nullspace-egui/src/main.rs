@@ -4,6 +4,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use fs2::FileExt;
@@ -201,6 +202,7 @@ impl NullspaceApp {
 
 impl eframe::App for NullspaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let start = Instant::now();
         // hack to speed up touchpad scroll while not speeding up mouse scroll too much
         ctx.options_mut(|opt| opt.input_options.line_scroll_speed = 18.0);
         ctx.input_mut(|input| input.smooth_scroll_delta *= 4.0);
@@ -369,6 +371,9 @@ impl eframe::App for NullspaceApp {
             } else {
                 self.state.last_saved_prefs = self.state.prefs.clone();
             }
+        }
+        if start.elapsed() > Duration::from_millis(10) {
+            tracing::warn!(elapsed = debug(start.elapsed()), "drawn took a while :(");
         }
     }
 }

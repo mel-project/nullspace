@@ -68,22 +68,6 @@ impl DeviceSigned {
         signed
     }
 
-    /// Sign a blob payload with the sender device.
-    pub fn sign_blob(
-        message: &Blob,
-        sender: UserName,
-        sender_device_pk: SigningPublic,
-        sender_device: &DeviceSecret,
-    ) -> Result<Self, DeviceSignedError> {
-        let body = bcs::to_bytes(message).map_err(|_| DeviceSignedError::Encode)?;
-        Ok(Self::sign_bytes(
-            Bytes::from(body),
-            sender,
-            sender_device_pk,
-            sender_device,
-        ))
-    }
-
     /// Return the sender username.
     pub fn sender(&self) -> &UserName {
         &self.sender
@@ -98,12 +82,6 @@ impl DeviceSigned {
         self.verify(self.sender_device_pk)
             .map_err(|_| DeviceSignedError::Verify)?;
         Ok(self.body)
-    }
-
-    /// Verify and decode the body as a blob.
-    pub fn verify_blob(self) -> Result<Blob, DeviceSignedError> {
-        let body = self.verify_bytes()?;
-        bcs::from_bytes(&body).map_err(|_| DeviceSignedError::Decode)
     }
 }
 
@@ -237,6 +215,7 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let event = Event {
+            sender: UserName::parse("@sender_test").expect("sender username"),
             recipient: UserName::parse("@recipient01").expect("recipient username"),
             sent_at: NanoTimestamp(0),
             after: None,

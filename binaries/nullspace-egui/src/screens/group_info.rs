@@ -1,8 +1,8 @@
 use eframe::egui::{Grid, Response, TextEdit, Widget, Window};
-use egui::{Color32, RichText};
+use egui::RichText;
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use nullspace_client::internal::GroupMemberStatus;
+use nullspace_client::GroupMemberStatus;
 use nullspace_structs::group::GroupId;
 use nullspace_structs::username::UserName;
 
@@ -33,7 +33,8 @@ impl Widget for GroupInfo<'_> {
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    RichText::new(format!("Group {}", self.group.short_id())).color(Color32::GRAY),
+                    RichText::new(format!("Group {}", self.group.short_id()))
+                        .color(ui.visuals().weak_text_color()),
                 );
                 ui.add_space(4.0);
 
@@ -62,7 +63,9 @@ impl Widget for GroupInfo<'_> {
                             ui.horizontal(|ui| {
                                 let response =
                                     ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-                                ui.label(RichText::new(status).color(Color32::GRAY));
+                                ui.label(
+                                    RichText::new(status).color(ui.visuals().weak_text_color()),
+                                );
                                 if response.clicked() {
                                     *self.user_info = Some(member.username.clone());
                                 }

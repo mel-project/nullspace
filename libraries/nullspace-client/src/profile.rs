@@ -6,8 +6,8 @@ use nullspace_structs::username::UserName;
 
 use crate::config::Config;
 use crate::database::DATABASE;
-use crate::identity::identity_exists;
 use crate::identity::Identity;
+use crate::identity::identity_exists;
 use crate::internal::{InternalRpcError, internal_err};
 use crate::server::{get_server_client, own_server_name};
 use crate::user_info::get_user_info;

@@ -59,7 +59,7 @@ Message flow on the bidirectional channel:
 3. A polls `backward` until it receives `v1.provision_ehlo`.
 4. Both sides finish SPAKE and derive the same 32-byte shared key.
 
-If no completion happens, A rotates to a fresh `(channel_id, token)` and displays a new code. A practical default is 15 seconds per attempt.
+If no completion happens, the host-side attempt expires and the caller may start a fresh attempt to obtain a new code. A practical default is 15 seconds per attempt.
 
 ## Blob payloads
 
@@ -89,7 +89,8 @@ Plaintext JSON:
 ```json
 {
   "device_secret": "...",
-  "add_device_update": "..."
+  "add_device_update": "...",
+  "dm_mailbox_key": "..."
 }
 ```
 

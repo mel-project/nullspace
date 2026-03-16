@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use nullspace_client::internal::ConvoMessage;
+use nullspace_client::ConvoMessage;
 use nullspace_structs::event::MessageText;
 use nullspace_structs::timestamp::NanoTimestamp;
 

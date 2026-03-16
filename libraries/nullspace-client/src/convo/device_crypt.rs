@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::identity::Identity;
 
 /// Result of decrypting and verifying a device-signed, header-encrypted message.
-pub(crate) struct VerifiedPayload {
+pub struct VerifiedPayload {
     pub sender: UserName,
     pub payload: Bytes,
 }
@@ -17,7 +17,7 @@ pub(crate) struct VerifiedPayload {
 ///
 /// Tries the current medium key first, falling back to the previous one.
 /// The sender's device is verified against the directory.
-pub(crate) async fn decrypt_and_verify(
+pub async fn decrypt_and_verify(
     ctx: &AnyCtx<Config>,
     identity: &Identity,
     ciphertext: &[u8],
@@ -45,7 +45,7 @@ pub(crate) async fn decrypt_and_verify(
 }
 
 /// Sign a payload with the device key, then header-encrypt for all recipients.
-pub(crate) fn sign_and_encrypt(
+pub fn sign_and_encrypt(
     identity: &Identity,
     payload: &[u8],
     recipients: impl IntoIterator<Item = DhPublic>,

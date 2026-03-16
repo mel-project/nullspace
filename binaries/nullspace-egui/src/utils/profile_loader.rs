@@ -3,7 +3,7 @@ use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nullspace_client::internal::UserDetails;
+use nullspace_client::UserDetails;
 use nullspace_structs::username::UserName;
 
 use crate::rpc::{flatten_rpc, get_rpc};

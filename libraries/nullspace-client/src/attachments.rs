@@ -36,7 +36,7 @@ pub async fn store_attachment_root(
     Ok(hash)
 }
 
-pub(crate) async fn load_attachment_root(
+pub async fn load_attachment_root(
     db: &mut sqlx::SqliteConnection,
     attachment_id: Hash,
 ) -> anyhow::Result<Attachment> {

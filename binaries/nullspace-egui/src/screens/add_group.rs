@@ -12,7 +12,7 @@ pub struct AddGroup<'a> {
 
 impl Widget for AddGroup<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let create = ui.use_async_slot::<Result<nullspace_client::internal::ConvoId, String>>(());
+        let create = ui.use_async_slot::<Result<nullspace_client::ConvoId, String>>(());
         let server = ui.use_memo(
             || {
                 let result = pollster::block_on(get_rpc().own_server());

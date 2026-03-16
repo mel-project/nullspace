@@ -324,8 +324,11 @@ fn paint_loading(
             .paint_at(ui, rect);
         return;
     }
-    ui.painter()
-        .rect_filled(rect, corner_radius, eframe::egui::Color32::LIGHT_GRAY);
+    ui.painter().rect_filled(
+        rect,
+        corner_radius,
+        ui.visuals().widgets.inactive.weak_bg_fill,
+    );
     // eframe::egui::Spinner::new().paint_at(ui, rect);
 }
 
@@ -333,14 +336,14 @@ fn paint_error(ui: &mut eframe::egui::Ui, rect: eframe::egui::Rect, err: &str) {
     ui.painter().rect_filled(
         rect,
         eframe::egui::CornerRadius::ZERO,
-        eframe::egui::Color32::from_rgb(80, 20, 20),
+        ui.visuals().extreme_bg_color,
     );
     ui.painter().text(
         rect.center(),
         eframe::egui::Align2::CENTER_CENTER,
         "Image error",
         eframe::egui::TextStyle::Body.resolve(ui.style()),
-        eframe::egui::Color32::LIGHT_RED,
+        ui.visuals().error_fg_color,
     );
 
     let mut message = err.lines().next().unwrap_or(err).to_string();
@@ -353,6 +356,6 @@ fn paint_error(ui: &mut eframe::egui::Ui, rect: eframe::egui::Rect, err: &str) {
         eframe::egui::Align2::CENTER_CENTER,
         message,
         eframe::egui::TextStyle::Small.resolve(ui.style()),
-        eframe::egui::Color32::LIGHT_RED,
+        ui.visuals().error_fg_color,
     );
 }

@@ -173,4 +173,3 @@ async fn validate_event_link(
         }
     }
 }
-

@@ -2,10 +2,10 @@ use core::f32;
 use std::path::PathBuf;
 
 use eframe::egui::{Response, RichText, Widget};
-use egui::{Color32, ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
+use egui::{ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use fast_thumbhash::thumb_hash_from_b91;
-use nullspace_client::internal::ConvoMessage;
+use nullspace_client::ConvoMessage;
 use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::MessageText;
@@ -52,9 +52,10 @@ impl ConvoRow<'_> {
 
         let sender_color = username_color(&self.message.sender);
         let timestamp = format_timestamp(self.message.received_at);
+        let weak_text_color = ui.visuals().weak_text_color();
 
         ui.horizontal_top(|ui| {
-            ui.label(RichText::new(format!("[{timestamp}]")).color(Color32::GRAY));
+            ui.label(RichText::new(format!("[{timestamp}]")).color(weak_text_color));
             ui.colored_label(sender_color, format!("{}: ", sender_label));
             render_message_body(ui, self.app, self.message);
         });
@@ -78,6 +79,7 @@ impl ConvoRow<'_> {
             .view(&self.message.sender)
             .and_then(|details| details.avatar);
         let timestamp = format_timestamp(self.message.received_at);
+        let weak_text_color = ui.visuals().weak_text_color();
 
         ui.horizontal_top(|ui| {
             // This "trick" makes avatar and no-avatar take the same space
@@ -102,7 +104,7 @@ impl ConvoRow<'_> {
                                 .color(sender_color)
                                 .family(egui::FontFamily::Name("main_bold".into())),
                         );
-                        ui.label(RichText::new(timestamp.to_string()).color(Color32::GRAY));
+                        ui.label(RichText::new(timestamp.to_string()).color(weak_text_color));
                     });
                 }
                 render_message_body(ui, self.app, self.message);
@@ -122,13 +124,14 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
         .get(&TextStyle::Body)
         .cloned()
         .unwrap();
+    let text_color = ui.visuals().text_color();
     let mut base_text_format = TextFormat {
-        color: Color32::BLACK,
+        color: text_color,
         font_id,
         ..Default::default()
     };
     if message.send_error.is_some() {
-        base_text_format.strikethrough = egui::Stroke::new(1.0, Color32::BLACK);
+        base_text_format.strikethrough = egui::Stroke::new(1.0, text_color);
     }
     ui.vertical(|ui| {
         let text = match &message.body.payload {
@@ -171,7 +174,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
         if let Some(err) = &message.send_error {
             ui.label(
                 RichText::new(format!("Send failed: {err}"))
-                    .color(Color32::RED)
+                    .color(ui.visuals().error_fg_color)
                     .size(11.0),
             );
         }
@@ -211,7 +214,7 @@ impl Widget for AttachmentContent<'_> {
         let attachment_label =
             format!("\u{ea7b} [{} {}] {}", size_text, unit_suffix, self.filename);
 
-        ui.colored_label(Color32::DARK_BLUE, attachment_label);
+        ui.colored_label(ui.visuals().hyperlink_color, attachment_label);
 
         if let Some((downloaded, total)) = dl_progress {
             let speed_key = format!("download-{}", self.id);
@@ -225,7 +228,7 @@ impl Widget for AttachmentContent<'_> {
         } else if let Some(error) = dl_error {
             ui.label(
                 RichText::new(format!("Download failed: {error}"))
-                    .color(Color32::RED)
+                    .color(ui.visuals().error_fg_color)
                     .size(11.0),
             );
         } else {
@@ -335,7 +338,7 @@ impl Widget for ImageAttachmentContent<'_> {
                 ui.painter().rect_filled(
                     rect,
                     egui::CornerRadius::same(8),
-                    Color32::from_white_alpha(200),
+                    ui.visuals().window_fill(),
                 );
                 if let Some((downloaded, total)) = dl_progress {
                     ui.label(format!("{:.2}%", downloaded as f32 / total as f32 * 100.0));
@@ -343,7 +346,7 @@ impl Widget for ImageAttachmentContent<'_> {
                 } else if let Some(error) = dl_error {
                     ui.label(
                         RichText::new(format!("Download failed: {error}"))
-                            .color(Color32::RED)
+                            .color(ui.visuals().error_fg_color)
                             .size(11.0),
                     );
                 } else if !should_auto_download {
@@ -354,7 +357,10 @@ impl Widget for ImageAttachmentContent<'_> {
                         start_dl!();
                     }
                 } else {
-                    ui.label(RichText::new("Auto-downloading image...").color(Color32::GRAY));
+                    ui.label(
+                        RichText::new("Auto-downloading image...")
+                            .color(ui.visuals().weak_text_color()),
+                    );
                 }
             });
         });
@@ -365,8 +371,11 @@ impl Widget for ImageAttachmentContent<'_> {
 
 fn paint_thumbhash(ui: &mut egui::Ui, rect: egui::Rect, id: Hash, thumbhash: &str) {
     let Ok((thumb_w, thumb_h, rgba)) = thumb_hash_from_b91(thumbhash) else {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(8), Color32::from_gray(180));
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(8),
+            ui.visuals().widgets.inactive.weak_bg_fill,
+        );
         return;
     };
     let image = egui::ColorImage::from_rgba_unmultiplied([thumb_w, thumb_h], &rgba);

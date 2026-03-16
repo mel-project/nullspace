@@ -12,10 +12,7 @@ use fs2::FileExt;
 use egui::style::ScrollStyle;
 use egui::{Color32, Modal};
 use egui_file_dialog::FileDialog as EguiFileDialog;
-use nullspace_client::{
-    Client, Config,
-    internal::{Event, UploadedRoot},
-};
+use nullspace_client::{Client, Config, Event, UploadedRoot};
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::SigningPublic;
 use nullspace_structs::username::UserName;
@@ -26,7 +23,7 @@ use uuid::Uuid;
 
 use crate::events::{event_loop, spawn_audio_thread};
 use crate::fonts::load_fonts;
-use crate::utils::prefs::PrefData;
+use crate::utils::prefs::{AppTheme, PrefData};
 use crate::utils::profile_loader::ProfileLoader;
 
 macro_rules! ui_unwrap {
@@ -115,45 +112,8 @@ impl NullspaceApp {
         let ctx = cc.egui_ctx.clone();
         smol::spawn(event_loop(ctx, event_tx, focused.clone(), audio_tx)).detach();
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
-        // catppuccin_egui::set_theme(&cc.egui_ctx, catppuccin_egui::LATTE);
-
-        cc.egui_ctx.style_mut(|style| {
-            style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-            style.spacing.window_margin = egui::Margin::same(8);
-            style.spacing.button_padding = egui::vec2(8.0, 4.0);
-            // style.spacing.indent = 16.0;
-            style.spacing.scroll = ScrollStyle::floating();
-            for wid in [
-                &mut style.visuals.widgets.active,
-                &mut style.visuals.widgets.hovered,
-                &mut style.visuals.widgets.noninteractive,
-                &mut style.visuals.widgets.open,
-                &mut style.visuals.widgets.inactive,
-            ] {
-                wid.corner_radius = egui::CornerRadius::ZERO.at_least(6);
-            }
-            style.text_styles.insert(
-                egui::TextStyle::Heading,
-                egui::FontId::new(14.0, egui::FontFamily::Name("main_bold".into())),
-            );
-            style.visuals.window_shadow.offset = [0, 0];
-            style.visuals.window_shadow.blur = 30;
-            style.visuals.window_shadow.color = Color32::from_black_alpha(25);
-            style.visuals.popup_shadow = style.visuals.window_shadow;
-            // style.visuals.text_alpha_from_coverage = egui::epaint::AlphaFromCoverage::Gamma(1.4);
-            // style.visuals.widgets.noninteractive.fg_stroke.color = Color32::BLACK;
-            // style.visuals.widgets.a
-            // style.visuals.panel_fill = Color32::WHITE;
-            // style.visuals.window_fill = Color32::WHITE;
-            // style.visuals.faint_bg_color = Color32::from_gray(240);
-            style.interaction.selectable_labels = false;
-            style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
-            // style.debug.debug_on_hover = true; // show callstack / rects on hover
-            // style.debug.show_expand_width = true; // highlight width expanders
-            // style.debug.show_expand_height = true; // highlight height expanders
-            // style.debug.show_resize = true; // show resize handles
-        });
+        configure_theme_styles(&cc.egui_ctx);
+        apply_theme_preference(&cc.egui_ctx, prefs.theme);
 
         let fonts = egui::FontDefinitions::default();
         cc.egui_ctx.set_fonts(load_fonts(fonts));
@@ -223,6 +183,7 @@ impl eframe::App for NullspaceApp {
         }
 
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
+        apply_theme_preference(ctx, self.state.prefs.theme);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
 
@@ -468,6 +429,40 @@ fn supports_hide_window() -> bool {
         }
     }
     true
+}
+
+fn configure_theme_styles(ctx: &egui::Context) {
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        ctx.style_mut_of(theme, |style| {
+            style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+            style.spacing.window_margin = egui::Margin::same(8);
+            style.spacing.button_padding = egui::vec2(8.0, 4.0);
+            style.spacing.scroll = ScrollStyle::floating();
+            for wid in [
+                &mut style.visuals.widgets.active,
+                &mut style.visuals.widgets.hovered,
+                &mut style.visuals.widgets.noninteractive,
+                &mut style.visuals.widgets.open,
+                &mut style.visuals.widgets.inactive,
+            ] {
+                wid.corner_radius = egui::CornerRadius::ZERO.at_least(6);
+            }
+            style.text_styles.insert(
+                egui::TextStyle::Heading,
+                egui::FontId::new(14.0, egui::FontFamily::Name("main_bold".into())),
+            );
+            style.visuals.window_shadow.offset = [0, 0];
+            style.visuals.window_shadow.blur = 30;
+            style.visuals.window_shadow.color = Color32::from_black_alpha(25);
+            style.visuals.popup_shadow = style.visuals.window_shadow;
+            style.interaction.selectable_labels = false;
+            style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
+        });
+    }
+}
+
+fn apply_theme_preference(ctx: &egui::Context, theme: AppTheme) {
+    ctx.set_theme(theme.to_egui());
 }
 
 fn load_prefs(path: &PathBuf) -> Option<PrefData> {

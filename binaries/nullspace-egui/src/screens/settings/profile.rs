@@ -5,7 +5,7 @@ use egui::{Color32, RichText};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::{State, Var};
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
-use nullspace_client::internal::{UploadedRoot, UserDetails};
+use nullspace_client::{UploadedRoot, UserDetails};
 use nullspace_structs::fragment::ImageAttachment;
 use pollster::FutureExt;
 use taffy::style_helpers::{auto, fr, length};

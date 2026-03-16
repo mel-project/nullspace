@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use egui::Context;
-use nullspace_client::internal::Event;
+use nullspace_client::Event;
 use rodio::{Decoder, OutputStreamBuilder, Sink};
 use smol::channel::Sender as AsyncSender;
 use std::sync::mpsc::{Receiver, Sender as StdSender};

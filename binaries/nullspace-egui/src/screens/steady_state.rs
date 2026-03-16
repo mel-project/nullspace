@@ -2,7 +2,7 @@ use eframe::egui::{Response, ViewportCommand, Widget};
 use egui::{Align, Button, Layout, Sense, vec2};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use nullspace_client::internal::{ConvoId, ConvoSummary};
+use nullspace_client::{ConvoId, ConvoSummary};
 
 use crate::NullspaceApp;
 use crate::rpc::flatten_rpc;

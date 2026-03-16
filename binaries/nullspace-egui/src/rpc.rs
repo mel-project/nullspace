@@ -15,7 +15,7 @@ pub fn get_rpc() -> &'static InternalClient {
 }
 
 pub fn flatten_rpc<T, E>(
-    result: Result<Result<T, nullspace_client::internal::InternalRpcError>, E>,
+    result: Result<Result<T, nullspace_client::InternalRpcError>, E>,
 ) -> Result<T, String>
 where
     E: std::fmt::Display,

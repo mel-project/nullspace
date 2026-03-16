@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nullspace_client::internal::UserDetails;
+use nullspace_client::UserDetails;
 use nullspace_structs::username::UserName;
 use tracing::warn;
 

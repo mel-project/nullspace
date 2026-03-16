@@ -10,12 +10,12 @@ use nullspace_dirclient::DirClient;
 use nullspace_rpc_pool::{PooledTransport, RpcPool};
 use nullspace_structs::server::{AuthToken, ProxyError, ServerClient, ServerName};
 
+use crate::DIR_CLIENT;
+use crate::RPC_POOL;
 use crate::auth_tokens::get_auth_token;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
-use crate::DIR_CLIENT;
 use crate::identity::Identity;
-use crate::RPC_POOL;
 
 pub static SERVER_CACHE: Ctx<Cache<ServerName, Arc<ServerClient>>> =
     |_ctx: &anyctx::AnyCtx<Config>| {

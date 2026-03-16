@@ -18,7 +18,7 @@ use crate::convo::{NewThreadEvent, ensure_thread_id, insert_thread_event};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::identity::Identity;
-use crate::retry_backoff;
+use crate::retry::retry_backoff;
 use crate::user_info::{UserInfo, get_user_info};
 use crate::{attachments::store_attachment_root, config::Config};
 
@@ -118,7 +118,12 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
                 mark_message_failed(&mut conn, pending.id, &err).await?;
             }
         }
-        emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id: convo_id_emit });
+        emit_event(
+            ctx,
+            crate::internal::Event::ConvoUpdated {
+                convo_id: convo_id_emit,
+            },
+        );
     }
 }
 

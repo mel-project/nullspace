@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender as StdSender;
 #[cfg(not(target_os = "linux"))]
 use notify_rust::Notification;
 
-use nullspace_client::internal::{ConvoId, Event};
+use nullspace_client::{ConvoId, Event};
 use nullspace_structs::event::MessageText;
 
 use crate::rpc::flatten_rpc;

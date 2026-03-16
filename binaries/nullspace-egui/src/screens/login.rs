@@ -1,7 +1,7 @@
 use eframe::egui::{Button, Response, Spinner, Widget};
 use egui::{Color32, ComboBox, Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
-use nullspace_client::internal::RegisterFinish;
+use nullspace_client::RegisterFinish;
 use nullspace_structs::username::UserName;
 
 use crate::NullspaceApp;
@@ -60,10 +60,10 @@ impl Widget for Login<'_> {
 
         Modal::new(ui.next_auto_id()).show(ui.ctx(), |ui| {
             if let Some(err) = rpc_error.as_ref() {
-                ui.colored_label(Color32::RED, err);
+                ui.colored_label(ui.visuals().error_fg_color, err);
             }
             if let Some(notice) = rpc_notice.as_ref() {
-                ui.colored_label(Color32::LIGHT_GREEN, notice);
+                ui.colored_label(success_fg_color(ui.visuals()), notice);
             }
             ui.heading("Login or register");
             ui.separator();
@@ -210,5 +210,13 @@ impl Widget for Login<'_> {
         });
 
         ui.response()
+    }
+}
+
+fn success_fg_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(120, 220, 140)
+    } else {
+        Color32::from_rgb(0, 135, 60)
     }
 }

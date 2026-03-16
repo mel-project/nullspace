@@ -16,7 +16,7 @@ use tracing::warn;
 
 use crate::config::Config;
 
-pub(crate) mod device_crypt;
+mod device_crypt;
 mod dm_recv;
 mod send;
 
@@ -90,7 +90,7 @@ pub async fn ensure_thread_id(
 }
 
 /// Fields for inserting a new thread event row.
-pub(crate) struct NewThreadEvent<'a> {
+pub struct NewThreadEvent<'a> {
     pub thread_id: i64,
     pub sender: &'a str,
     pub event_tag: u16,
@@ -105,7 +105,7 @@ pub(crate) struct NewThreadEvent<'a> {
 ///
 /// Returns `Some(id)` if a row was inserted, `None` if it was ignored
 /// (duplicate event hash).
-pub(crate) async fn insert_thread_event(
+pub async fn insert_thread_event(
     conn: &mut sqlx::SqliteConnection,
     event: &NewThreadEvent<'_>,
 ) -> anyhow::Result<Option<i64>> {
@@ -229,7 +229,12 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
     for row in rows {
         let convo_id = parse_convo_id(&row.thread_kind, &row.thread_counterparty)
             .ok_or_else(|| anyhow::anyhow!("invalid convo row"))?;
-        let last_message = match (row.msg_id, row.sender_username, row.event_tag, row.event_body) {
+        let last_message = match (
+            row.msg_id,
+            row.sender_username,
+            row.event_tag,
+            row.event_body,
+        ) {
             (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
                 let body = match decode_message_payload(u16::try_from(event_tag)?, &body) {

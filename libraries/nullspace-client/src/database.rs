@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use crate::config::Ctx;
 use std::sync::atomic::{AtomicU64, Ordering};

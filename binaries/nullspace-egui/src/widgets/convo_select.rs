@@ -1,6 +1,6 @@
 use eframe::egui::{Response, Widget};
-use egui::{Align, Color32, Frame, Label, Layout, RichText, Sense};
-use nullspace_client::internal::{ConvoId, ConvoSummary};
+use egui::{Align, Frame, Label, Layout, RichText, Sense};
+use nullspace_client::{ConvoId, ConvoSummary};
 
 use crate::{NullspaceApp, widgets::avatar::Avatar};
 
@@ -61,9 +61,11 @@ impl Widget for ConvoSelect<'_> {
                     if self.convo.unread_count > 0 {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(8.0);
+                            let selection = ui.visuals().selection;
                             ui.add(Label::new(
                                 RichText::new(format!(" {} ", self.convo.unread_count))
-                                    .background_color(Color32::LIGHT_BLUE),
+                                    .background_color(selection.bg_fill)
+                                    .color(selection.stroke.color),
                             ));
                         });
                     }

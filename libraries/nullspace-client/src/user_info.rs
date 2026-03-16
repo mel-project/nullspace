@@ -5,19 +5,19 @@ use std::time::Duration;
 use anyhow::Context;
 use moka::future::Cache;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
-use nullspace_structs::fragment::ImageAttachment;
 use nullspace_crypt::signing::{Signable, SigningPublic};
+use nullspace_structs::fragment::ImageAttachment;
 use nullspace_structs::server::{ServerClient, ServerName, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::{UserDescriptor, UserName};
 use tracing::warn;
 
+use crate::DIR_CLIENT;
 use crate::attachments::store_attachment_root;
 use crate::config::{Config, Ctx};
 use crate::convo::last_dm_received_at;
 use crate::database::DATABASE;
 use crate::profile::get_profile;
-use crate::DIR_CLIENT;
 use crate::server::get_server_client;
 
 pub struct UserInfo {

@@ -3,7 +3,7 @@ use std::{ops::Deref, time::Duration};
 use eframe::egui::Ui;
 use egui::{Color32, RichText};
 use egui_hooks::{UseHookExt, hook::state::State};
-use nullspace_client::internal::ProvisionHostPhase;
+use nullspace_client::ProvisionHostState;
 
 use crate::rpc::get_rpc;
 use crate::utils::generational::GBox;
@@ -13,19 +13,16 @@ pub(super) fn render(ui: &mut Ui) {
     let pairing_code: State<Option<String>> = ui.use_state(|| None, ());
     let pairing_done: State<bool> = ui.use_state(|| false, ());
     let fatal_error: State<Option<String>> = ui.use_state(|| None, ());
-    let session_id: GBox<Option<u64>> = ui.use_gbox(|| None, ());
     let task: GBox<Option<smol::Task<()>>> = ui.use_gbox(|| None, ());
     let mut refreshes = ui.use_state(|| 0, ()).into_var();
 
     ui.use_cleanup(
         move || {
             task.set(None);
-            if let Some(id) = session_id.get() {
-                smol::spawn(async move {
-                    let _ = get_rpc().provision_host_stop(id).await;
-                })
-                .detach();
-            }
+            smol::spawn(async move {
+                let _ = get_rpc().provision_host_stop().await;
+            })
+            .detach();
         },
         (),
     );
@@ -35,25 +32,22 @@ pub(super) fn render(ui: &mut Ui) {
             let pairing_done = pairing_done.clone();
             let fatal_error = fatal_error.clone();
             task.set(None);
-            let old_session_id = session_id.get();
             task.set(Some(smol::spawn(async move {
-                if let Some(old_id) = old_session_id {
-                    let _ = get_rpc().provision_host_stop(old_id).await;
-                }
                 let result: anyhow::Result<()> = async {
                     let rpc = get_rpc();
-                    let started = rpc.provision_host_start().await??;
-                    session_id.set(Some(started.session_id));
-                    pairing_code.set_next(started.display_code.into());
+                    let display_code = rpc.provision_host_start().await??;
+                    pairing_code.set_next(Some(display_code));
                     pairing_done.set_next(false);
                     loop {
-                        let status = rpc.provision_host_status(started.session_id).await??;
-                        match status.phase {
-                            ProvisionHostPhase::Pending => {}
-                            ProvisionHostPhase::Completed => break,
-                            ProvisionHostPhase::Failed => {
-                                anyhow::bail!("failed to provision host at the end")
+                        match rpc.provision_host_status().await?? {
+                            ProvisionHostState::Idle => {
+                                anyhow::bail!("host provisioning stopped unexpectedly")
                             }
+                            ProvisionHostState::Pending { display_code } => {
+                                pairing_code.set_next(Some(display_code));
+                            }
+                            ProvisionHostState::Completed => break,
+                            ProvisionHostState::Failed { error } => anyhow::bail!(error),
                         }
                         smol::Timer::after(Duration::from_secs(1)).await;
                     }
@@ -72,7 +66,7 @@ pub(super) fn render(ui: &mut Ui) {
     ui.label("Pair a new device with this code:");
     ui.vertical_centered(|ui| {
         if let Some(fatal_error) = fatal_error.deref() {
-            ui.colored_label(Color32::RED, fatal_error);
+            ui.colored_label(ui.visuals().error_fg_color, fatal_error);
         }
         if let Some(pairing_code) = pairing_code.deref() {
             let mut text = RichText::new(pairing_code.as_str()).size(20.0);
@@ -84,11 +78,19 @@ pub(super) fn render(ui: &mut Ui) {
             ui.spinner();
         }
         if *pairing_done {
-            ui.colored_label(Color32::DARK_GREEN, "Device added.");
+            ui.colored_label(success_fg_color(ui.visuals()), "Device added.");
         }
         if ui.button("Refresh code").clicked() {
             fatal_error.set_next(None);
             *refreshes += 1;
         }
     });
+}
+
+fn success_fg_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(120, 220, 140)
+    } else {
+        Color32::from_rgb(0, 135, 60)
+    }
 }

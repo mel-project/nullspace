@@ -8,9 +8,9 @@ use nullspace_structs::server::SignedMediumPk;
 use nullspace_structs::timestamp::Timestamp;
 
 use crate::Config;
+use crate::DIR_CLIENT;
 use crate::auth_tokens::get_auth_token;
 use crate::database::DATABASE;
-use crate::DIR_CLIENT;
 use crate::identity::Identity;
 use crate::server::get_server_client;
 

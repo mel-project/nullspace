@@ -3,6 +3,7 @@
 Mailboxes are now a much "dumber" primitive. A mailbox is a pair `(mailbox_id, mailbox_key)`, where `mailbox_id = H_keyed(key="nullspace-mailbox", mailbox_id)`. Mailboxes are created dynamically by authenticated clients on their proper server; this makes "blame" for server-side rate limiting and such possible.
 
 Mailboxes are also changed to directly work with raw bytes, not a `Blob` abstraction, which is removed. We generally don't need to expose any sort of message type distinction at the mailbox level; this simplifies implementation as well as hiding a bit more metadata from servers.
+
 # Events and ordering
 
 **Events** (application-level messages, like DMs and group messages) that are in the same conversation form an eventually consistent *thread*.
@@ -65,8 +66,7 @@ Each `RotationEntry` contains:
 
 **Server behavior on read:** expose an endpoint that, given the registry nonce and a rotation index `i`, returns the `i`th rotation entry. This is stateless and cacheable.
 
-Concurrent admin appends are resolved by natural optimistic concurrency: the server accepts whichever arrives first, which updates the `admin_set`, potentially invalidating the second append's signature. The rejected admin retries against the new state.
-
+Concurrent admin appends are resolved by natural optimistic concurrency: the server accepts whichever arrives first, which updates the `admin_set`, potentially invalidating the second append's signature. 
 
 ## GBK rotation
 
@@ -101,7 +101,3 @@ There is inherently no way of implementing a "new users must be approved by an a
 When you invite a person using a GBK, you only reveal messages sent under that and later GBKs. If you want to share previous history, you must keep previous GBKs.
 
 But that would break forward secrecy. Thus, the group roster contains an advisory bit for "allow new users to see old messages" that can be set by admins. This advises (honest) clients whether or not to keep previous GBKs. (Dishonest clients can break FS anyway.)
-
-**Currently, we should not expose the GBK in a "portable" way in the UI that lets people paste it around. For example, group invites, after they are accepted, should have the GBK inside of it redacted from the local database, and they should not be forwardable. Otherwise, forward secrecy may easily be accidentally defeated**.
-
-Stable invite links will eventually be supported by a system that allows people to *request* being sent a GBK.

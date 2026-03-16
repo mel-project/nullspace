@@ -1,9 +1,9 @@
 use eframe::egui::{Key, Response, RichText, Widget};
-use egui::{Button, Color32, Image, Label, Modal, ProgressBar, ScrollArea, TextEdit};
+use egui::{Button, Image, Label, Modal, ProgressBar, ScrollArea, TextEdit};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::{State, Var};
 use egui_infinite_scroll::InfiniteScroll;
-use nullspace_client::internal::{ConvoId, ConvoMessage, UploadedRoot};
+use nullspace_client::{ConvoId, ConvoMessage, UploadedRoot};
 use nullspace_structs::event::{MessagePayload, MessageText};
 use nullspace_structs::username::UserName;
 use pollster::block_on;
@@ -270,7 +270,11 @@ fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: 
                     ui.add_space(8.0);
                     ui.vertical_centered(|ui| {
                         let label = format!("{}", date.format("%A, %d %b %Y"));
-                        ui.label(RichText::new(label).color(Color32::GRAY).size(12.0));
+                        ui.label(
+                            RichText::new(label)
+                                .color(ui.visuals().weak_text_color())
+                                .size(12.0),
+                        );
                     });
                     ui.add_space(4.0);
                 }
@@ -287,7 +291,10 @@ fn render_messages(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, scroller: 
 
             if let Some(err) = top_error.as_ref() {
                 ui.horizontal(|ui| {
-                    ui.colored_label(Color32::RED, format!("History load failed: {err}"));
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("History load failed: {err}"),
+                    );
                     if ui.button("Retry").clicked() {
                         scroller.retry_top();
                     }
@@ -383,7 +390,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
             byte_progress_text = "Upload failed".to_string();
             ui.label(
                 RichText::new(format!("Upload failed: {error}"))
-                    .color(Color32::RED)
+                    .color(ui.visuals().error_fg_color)
                     .size(11.0),
             );
             if ui.button("Clear").clicked() {

@@ -24,8 +24,8 @@ pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary};
 use crate::convo::{convo_history, convo_list, mark_convo_read, queue_message};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use crate::identity::identity_exists;
 use crate::identity::Identity;
+use crate::identity::identity_exists;
 use crate::profile::own_profile_set as set_own_profile;
 use crate::provisioning::{self, HostProvisioning};
 use crate::user_info::user_details_data;
@@ -96,22 +96,22 @@ pub trait InternalProtocol {
     /// emitted.
     async fn register_finish(&self, request: RegisterFinish) -> Result<(), InternalRpcError>;
 
-    /// Begins a device-provisioning session on the *host* (existing) device.
+    /// Starts or replaces the single active device-provisioning session on
+    /// the *host* (existing) device.
     ///
-    /// Returns a session ID and a human-readable pairing code that the user
-    /// enters on the new device.  The session runs in the background; poll
-    /// its progress with
-    /// [`provision_host_status`](Self::provision_host_status).
-    async fn provision_host_start(&self) -> Result<ProvisionHostStart, InternalRpcError>;
+    /// Returns the human-readable pairing code that the user enters on the
+    /// new device. Poll [`provision_host_status`](Self::provision_host_status)
+    /// to keep the host-side handshake progressing.
+    async fn provision_host_start(&self) -> Result<String, InternalRpcError>;
 
-    /// Queries the current state of a provisioning session.
-    async fn provision_host_status(
-        &self,
-        session_id: u64,
-    ) -> Result<ProvisionHostStatus, InternalRpcError>;
+    /// Queries the current host-side provisioning state.
+    ///
+    /// This call also advances pending host-side handshake work while the UI
+    /// is polling.
+    async fn provision_host_status(&self) -> Result<ProvisionHostState, InternalRpcError>;
 
-    /// Cancels an in-progress provisioning session.
-    async fn provision_host_stop(&self, session_id: u64) -> Result<(), InternalRpcError>;
+    /// Cancels the active host-side provisioning session, if any.
+    async fn provision_host_stop(&self) -> Result<(), InternalRpcError>;
 
     /// Lists all conversations (DMs and groups) with their most recent
     /// message and unread count.
@@ -382,36 +382,22 @@ pub enum RegisterFinish {
     },
 }
 
-/// Returned when starting a device-provisioning session on the host.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProvisionHostStart {
-    /// Opaque session handle for status polling and cancellation.
-    pub session_id: u64,
-    /// Human-readable pairing code to display to the user (e.g.
-    /// `"1234 5678 9012"`).
-    pub display_code: String,
-}
-
-/// Current state of a device-provisioning session.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProvisionHostStatus {
-    pub phase: ProvisionHostPhase,
-    pub display_code: String,
-    /// Set when `phase` is [`ProvisionHostPhase::Failed`].
-    pub error: Option<String>,
-}
-
-/// Lifecycle phase of a host-side provisioning session.
+/// Current state of the single active host-side provisioning session.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ProvisionHostPhase {
+pub enum ProvisionHostState {
+    /// No host-side provisioning session is active.
+    Idle,
     /// Waiting for the new device to enter the pairing code.
-    Pending,
+    Pending {
+        /// Human-readable pairing code to display to the user (e.g.
+        /// `"1234 5678 9012"`).
+        display_code: String,
+    },
     /// The new device was successfully provisioned.
     Completed,
-    /// The provisioning attempt failed (see
-    /// [`ProvisionHostStatus::error`]).
-    Failed,
+    /// The provisioning attempt failed.
+    Failed { error: String },
 }
 
 /// A member entry in a group's roster.
@@ -485,7 +471,7 @@ pub enum InternalRpcError {
 }
 
 #[derive(Clone)]
-pub(crate) struct InternalImpl {
+pub struct InternalImpl {
     ctx: AnyCtx<Config>,
     events: Arc<AsyncMutex<AsyncReceiver<Event>>>,
     host_provisioning: Arc<HostProvisioning>,
@@ -532,19 +518,16 @@ impl InternalProtocol for InternalImpl {
         provisioning::register_finish(self.ctx.clone(), request).await
     }
 
-    async fn provision_host_start(&self) -> Result<ProvisionHostStart, InternalRpcError> {
+    async fn provision_host_start(&self) -> Result<String, InternalRpcError> {
         self.host_provisioning.start(self.ctx.clone()).await
     }
 
-    async fn provision_host_status(
-        &self,
-        session_id: u64,
-    ) -> Result<ProvisionHostStatus, InternalRpcError> {
-        self.host_provisioning.status(session_id).await
+    async fn provision_host_status(&self) -> Result<ProvisionHostState, InternalRpcError> {
+        self.host_provisioning.status(&self.ctx).await
     }
 
-    async fn provision_host_stop(&self, session_id: u64) -> Result<(), InternalRpcError> {
-        self.host_provisioning.stop(session_id).await
+    async fn provision_host_stop(&self) -> Result<(), InternalRpcError> {
+        self.host_provisioning.stop().await
     }
 
     async fn convo_list(&self) -> Result<Vec<ConvoSummary>, InternalRpcError> {
@@ -699,10 +682,12 @@ impl InternalProtocol for InternalImpl {
             avatar: details.avatar,
             server_name: Some(details.server_name),
             common_groups: Vec::new(),
-            last_dm_message: details.last_dm_received_at.map(|received_at| UserLastMessageSummary {
-                received_at: Some(received_at),
-                direction: MessageDirection::Incoming,
-                preview: String::new(),
+            last_dm_message: details.last_dm_received_at.map(|received_at| {
+                UserLastMessageSummary {
+                    received_at: Some(received_at),
+                    direction: MessageDirection::Incoming,
+                    preview: String::new(),
+                }
             }),
         })
     }
@@ -720,7 +705,7 @@ impl InternalProtocol for InternalImpl {
     }
 }
 
-pub(crate) fn internal_err(err: impl std::fmt::Display) -> InternalRpcError {
+pub fn internal_err(err: impl std::fmt::Display) -> InternalRpcError {
     InternalRpcError::Other(err.to_string())
 }
 

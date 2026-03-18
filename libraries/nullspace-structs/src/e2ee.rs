@@ -198,7 +198,7 @@ fn header_aad(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Event, MessagePayload, MessageText, TAG_MESSAGE};
+    use crate::event::{Event, EventRecipient, MessagePayload, MessageText, TAG_MESSAGE};
     use crate::timestamp::NanoTimestamp;
     use std::collections::BTreeMap;
 
@@ -216,7 +216,7 @@ mod tests {
         };
         let event = Event {
             sender: UserName::parse("@sender_test").expect("sender username"),
-            recipient: UserName::parse("@recipient01").expect("recipient username"),
+            recipient: EventRecipient::Dm(UserName::parse("@recipient01").expect("recipient username")),
             sent_at: NanoTimestamp(0),
             after: None,
             tag: TAG_MESSAGE,

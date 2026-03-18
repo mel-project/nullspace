@@ -474,7 +474,6 @@ pub enum GroupAction {
         banned: bool,
     },
     Leave,
-    RotateKeys,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -627,9 +626,6 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         message: MessagePayload,
     ) -> Result<i64, InternalRpcError> {
-        if matches!(convo_id, ConvoId::Group { .. }) {
-            return Err(groups_disabled_error());
-        }
         let identity = self
             .load_identity()
             .await
@@ -659,8 +655,16 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn group_create(&self, request: GroupCreateRequest) -> Result<GroupId, InternalRpcError> {
-        let _ = request;
-        Err(groups_disabled_error())
+        let group_id = crate::groups::group_create(&self.ctx, request)
+            .await
+            .map_err(internal_err)?;
+        emit_event(
+            &self.ctx,
+            Event::ConvoUpdated {
+                convo_id: ConvoId::Group { group_id },
+            },
+        );
+        Ok(group_id)
     }
 
     async fn own_server(&self) -> Result<ServerName, InternalRpcError> {

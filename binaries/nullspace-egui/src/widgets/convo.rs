@@ -160,11 +160,8 @@ fn refresh_newer(convo_id: ConvoId, scroller: &mut Scroller) {
                 .items
                 .last()
                 .and_then(|message| message.id.checked_add(1))
-        });
-
-    if after.is_none() {
-        return;
-    }
+        })
+        .or(Some(0));
 
     let mut fetched_messages = Vec::new();
     loop {

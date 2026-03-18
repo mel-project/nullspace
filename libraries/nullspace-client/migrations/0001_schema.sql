@@ -10,7 +10,7 @@ CREATE TABLE client_identity (
 
 CREATE TABLE event_threads (
     id INTEGER PRIMARY KEY,
-    thread_kind TEXT NOT NULL CHECK (thread_kind IN ('direct')),
+    thread_kind TEXT NOT NULL CHECK (thread_kind IN ('direct', 'group')),
     thread_counterparty TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
@@ -103,3 +103,11 @@ CREATE TABLE message_reads (
 
 CREATE INDEX message_reads_read_at_idx
     ON message_reads (read_at);
+
+CREATE TABLE group_keys (
+    group_id BLOB NOT NULL,
+    rotation_index INTEGER NOT NULL,
+    gbk BLOB NOT NULL,
+    server_name TEXT NOT NULL,
+    PRIMARY KEY (group_id, rotation_index)
+);

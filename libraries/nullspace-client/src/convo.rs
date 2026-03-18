@@ -18,6 +18,8 @@ use crate::config::Config;
 
 mod device_crypt;
 mod dm_recv;
+mod group_recv;
+mod group_rotation;
 mod send;
 
 pub use send::queue_message;
@@ -135,8 +137,6 @@ pub struct ConvoItem {
     pub id: i64,
     pub convo_id: ConvoId,
     pub sender: UserName,
-    pub event_hash: Hash,
-    pub after: Option<Hash>,
     pub sent_at: NanoTimestamp,
     pub send_error: Option<String>,
     pub received_at: Option<NanoTimestamp>,
@@ -340,7 +340,12 @@ struct ConvoHistoryRow {
 }
 
 pub async fn convo_loop(ctx: &AnyCtx<Config>) {
-    (send::send_loop(ctx), dm_recv::dm_recv_loop(ctx))
+    (
+        send::send_loop(ctx),
+        dm_recv::dm_recv_loop(ctx),
+        group_recv::group_recv_loop(ctx),
+        group_rotation::group_rotation_loop(ctx),
+    )
         .race()
         .await;
 }
@@ -388,8 +393,6 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
                         id,
                         convo_id: convo_id.clone(),
                         sender,
-                        event_hash: Hash::digest(&[]),
-                        after: None,
                         sent_at: NanoTimestamp(0),
                         send_error: row.send_error.clone(),
                         received_at: row.received_at.map(|ts| NanoTimestamp(ts as u64)),
@@ -458,13 +461,6 @@ pub async fn convo_history(
             id: row.event.id,
             convo_id: convo_id.clone(),
             sender,
-            event_hash: bytes_to_hash(&row.event.event_hash)?,
-            after: row
-                .event
-                .event_after
-                .as_deref()
-                .map(bytes_to_hash)
-                .transpose()?,
             sent_at: NanoTimestamp(row.event.sent_at as u64),
             send_error: row.event.send_error,
             received_at: row.event.received_at.map(|ts| NanoTimestamp(ts as u64)),
@@ -550,7 +546,3 @@ fn decode_convo_item_kind(
     }))
 }
 
-fn bytes_to_hash(bytes: &[u8]) -> anyhow::Result<Hash> {
-    let bytes: [u8; 32] = bytes.try_into()?;
-    Ok(Hash::from_bytes(bytes))
-}

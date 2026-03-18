@@ -41,6 +41,10 @@ impl MailboxKey {
         Self(rand::random())
     }
 
+    pub fn from_bytes(bytes: [u8; 20]) -> Self {
+        Self(bytes)
+    }
+
     pub fn to_bytes(&self) -> [u8; 20] {
         self.0
     }

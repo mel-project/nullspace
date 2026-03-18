@@ -7,7 +7,8 @@ use bytes::Bytes;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::Signable;
 use nullspace_structs::Blob;
-use nullspace_structs::event::{Event, MessagePayload, TAG_MESSAGE};
+use nullspace_structs::event::{Event, EventRecipient, MessagePayload, TAG_MESSAGE};
+use nullspace_structs::group::{GroupBearerKey, GroupId};
 use nullspace_structs::mailbox::MailboxId;
 use nullspace_structs::server::SignedMediumPk;
 use nullspace_structs::timestamp::NanoTimestamp;
@@ -33,9 +34,9 @@ pub async fn queue_message(
     event_tag: u16,
     event_body: &Bytes,
 ) -> anyhow::Result<i64> {
-    let peer = match convo_id {
-        ConvoId::Direct { peer } => peer.clone(),
-        ConvoId::Group { .. } => anyhow::bail!("groups are disabled"),
+    let recipient = match convo_id {
+        ConvoId::Direct { peer } => EventRecipient::Dm(peer.clone()),
+        ConvoId::Group { group_id } => EventRecipient::Group(group_id.clone()),
     };
 
     let counterparty = convo_id.counterparty();
@@ -45,7 +46,7 @@ pub async fn queue_message(
     let event_after = load_latest_thread_hash(&mut *tx, thread_id).await?;
     let event = Event {
         sender: sender.clone(),
-        recipient: peer,
+        recipient,
         sent_at,
         after: event_after,
         tag: event_tag,
@@ -185,7 +186,7 @@ async fn send_message(
         ConvoId::Direct { peer } => {
             let event = Event {
                 sender: pending.sender.clone(),
-                recipient: peer.clone(),
+                recipient: EventRecipient::Dm(peer.clone()),
                 sent_at: pending.sent_at,
                 after: pending.event_after,
                 tag: pending.event_tag,
@@ -193,7 +194,17 @@ async fn send_message(
             };
             send_dm(ctx, peer, event).await
         }
-        ConvoId::Group { .. } => anyhow::bail!("groups are disabled"),
+        ConvoId::Group { group_id } => {
+            let event = Event {
+                sender: pending.sender.clone(),
+                recipient: EventRecipient::Group(group_id.clone()),
+                sent_at: pending.sent_at,
+                after: pending.event_after,
+                tag: pending.event_tag,
+                body: pending.event_body.clone(),
+            };
+            send_group(ctx, group_id, event).await
+        }
     }
 }
 
@@ -233,6 +244,66 @@ async fn send_dm_once(
         .await?
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     Ok(received_at)
+}
+
+async fn send_group(
+    ctx: &AnyCtx<Config>,
+    group_id: &GroupId,
+    event: Event,
+) -> anyhow::Result<NanoTimestamp> {
+    use nullspace_structs::e2ee::DeviceSigned;
+    use crate::server::{get_server_client, own_server_name};
+
+    let db = ctx.get(DATABASE);
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
+    let gbk = load_gbk(&mut *db.acquire().await?, group_id).await?;
+
+    let server_name = own_server_name(ctx, &identity).await?;
+    let server = get_server_client(ctx, &server_name).await?;
+
+    // Sign the event bytes with the device key
+    let event_bytes = bcs::to_bytes(&event)?;
+    let signed = DeviceSigned::sign_bytes(
+        Bytes::from(event_bytes),
+        identity.username.clone(),
+        identity.device_secret.public().signing_public(),
+        &identity.device_secret,
+    );
+    let signed_bytes = bcs::to_bytes(&signed)?;
+
+    // Symmetrically encrypt with the group key
+    let sym_key = gbk.symmetric_key();
+    let nonce: [u8; 24] = rand::random();
+    let ciphertext = sym_key
+        .encrypt(nonce, &signed_bytes, &[])
+        .map_err(|_| anyhow::anyhow!("group message encryption failed"))?;
+
+    // Prepend nonce to ciphertext
+    let mut payload = Vec::with_capacity(24 + ciphertext.len());
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+
+    let mailbox_id = gbk.mailbox_key().mailbox_id();
+    let received_at = server
+        .mailbox_send(mailbox_id, Blob(Bytes::from(payload)), 0)
+        .await?
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    Ok(received_at)
+}
+
+pub(crate) async fn load_gbk(
+    conn: &mut sqlx::SqliteConnection,
+    group_id: &GroupId,
+) -> anyhow::Result<GroupBearerKey> {
+    let row = sqlx::query_as::<_, (Vec<u8>,)>(
+        "SELECT gbk FROM group_keys WHERE group_id = ? ORDER BY rotation_index DESC LIMIT 1",
+    )
+    .bind(group_id.to_bytes().to_vec())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let (gbk_bytes,) = row.ok_or_else(|| anyhow::anyhow!("group bearer key not found"))?;
+    let gbk: GroupBearerKey = bcs::from_bytes(&gbk_bytes)?;
+    Ok(gbk)
 }
 
 async fn fetch_peer_mailbox_id(peer: &UserInfo) -> anyhow::Result<MailboxId> {

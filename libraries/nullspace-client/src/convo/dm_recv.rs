@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyctx::AnyCtx;
-use nullspace_structs::event::Event;
+use nullspace_structs::event::{Event, EventRecipient};
 use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
 use nullspace_structs::server::ServerName;
 
@@ -94,17 +94,28 @@ async fn process_mailbox_entry(
         return Ok(None);
     }
 
-    if event.recipient != identity.username && verified.sender != identity.username {
+    let dm_recipient = match &event.recipient {
+        EventRecipient::Dm(name) => name,
+        EventRecipient::Group(_) => {
+            tracing::warn!(
+                sender = %verified.sender,
+                "ignoring group event arriving in DM mailbox (context mismatch)",
+            );
+            return Ok(None);
+        }
+    };
+
+    if *dm_recipient != identity.username && verified.sender != identity.username {
         tracing::warn!(
             sender = %verified.sender,
-            recipient = %event.recipient,
+            recipient = %dm_recipient,
             "ignoring dm with mismatched recipient",
         );
         return Ok(None);
     }
 
     let peer_username = if verified.sender == identity.username {
-        event.recipient.clone()
+        dm_recipient.clone()
     } else {
         verified.sender.clone()
     };

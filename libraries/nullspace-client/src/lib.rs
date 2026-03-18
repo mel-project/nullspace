@@ -7,6 +7,7 @@ mod config;
 mod convo;
 mod database;
 mod events;
+mod groups;
 mod identity;
 mod internal;
 mod long_poll;

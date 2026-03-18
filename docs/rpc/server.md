@@ -5,6 +5,7 @@ This document specifies the RPC API exposed by a Nullspace server, corresponding
 Servers provide:
 
 - mailboxes (direct messages and groups)
+- group registry storage for group key rotation state
 - device authentication (challenge/response) and medium-term key publication
 - a content-addressed fragment store for attachments
 - a short-lived bidirectional channel primitive (used by [device provisioning](../protocol/provisioning.md))
@@ -330,21 +331,79 @@ Self-removal:
 
 - If `acl.token_hash == H(auth_token_bytes)` and all requested permissions are false, the server SHOULD delete the ACL entry for that token hash.
 
-### `v1_register_group(auth_token, group_id) -> ()`
+### `v1_group_create(auth_token, group_id, registry_nonce, initial_admin_set) -> ()`
 
-Creates the group mailboxes for `group_id` and grants the caller full ACL rights to both.
+Creates an empty group registry.
 
-Authorization:
+Inputs:
+
+- `group_id`: group identifier
+- `registry_nonce`: 32-byte opaque lookup nonce (hex)
+- `initial_admin_set`: list of device signing public keys
+
+Authorization and validation:
 
 - `auth_token` MUST be a valid device-authenticated token.
+- `initial_admin_set` MUST be non-empty.
+- The authenticated device key MUST appear in `initial_admin_set`.
 
 Effect:
 
-- Ensures that the group messages and management mailboxes exist (see [groups](../protocol/groups.md)).
-- Inserts/updates an ACL entry for `H(auth_token_bytes)` on both mailboxes with:
-  - `can_edit_acl = true`
-  - `can_send = true`
-  - `can_recv = true`
+- Creates a registry keyed by `group_id`, readable via `registry_nonce`.
+- Stores `initial_admin_set` as the current admin set.
+- If the same `(group_id, registry_nonce, initial_admin_set)` already exists, the call is treated as idempotent.
+
+### `v1_group_update(signed_rotation_entry) -> ()`
+
+Appends the next rotation entry to a group registry.
+
+Input:
+
+```
+signed_rotation_entry = {
+  group_id,
+  index,
+  signer,
+  entry,
+  signature
+}
+
+entry = {
+  new_admin_set,
+  gbk_rotation
+}
+```
+
+- `new_admin_set`: list of device signing public keys
+- `gbk_rotation`: opaque header-encrypted blob
+- `signature` is over:
+
+```
+BCS([group_id, index, signer, entry])
+```
+
+Validation:
+
+- `new_admin_set` MUST be non-empty.
+- `index` MUST equal the current log length.
+- `signer` MUST be in the current admin set for `group_id`.
+- `signature` MUST verify under `signer`.
+
+Effect:
+
+- Appends the entry at `index`.
+- Replaces the current admin set with `new_admin_set`.
+
+### `v1_group_get(registry_nonce, index) -> signed_rotation_entry | null`
+
+Returns the rotation entry at `index` for the registry identified by `registry_nonce`.
+
+Returns `null` if:
+
+- the registry nonce is unknown, or
+- no entry exists at `index`
+
+This method is intentionally unauthenticated and stateless so it can be cached aggressively.
 
 ### `v1_upload_frag(auth_token, fragment, ttl_seconds) -> ()`
 

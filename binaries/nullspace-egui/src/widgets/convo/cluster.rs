@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use nullspace_client::ConvoMessage;
+use nullspace_client::{ConvoItem, ConvoItemKind};
 use nullspace_structs::event::MessageText;
 use nullspace_structs::timestamp::NanoTimestamp;
 
@@ -18,27 +18,36 @@ enum MessageKind {
     Attachment,
     ImageAttachment,
     Mixed,
+    System,
 }
 
-fn message_kind(message: &ConvoMessage) -> MessageKind {
-    let has_text = match &message.body.payload {
-        MessageText::Plain(text) | MessageText::Rich(text) => !text.is_empty(),
-    };
-    let has_attachments = !message.body.attachments.is_empty();
-    let has_images = !message.body.images.is_empty();
-    match (has_text, has_attachments, has_images) {
-        (true, false, false) => MessageKind::Text,
-        (false, true, false) => MessageKind::Attachment,
-        (false, false, true) => MessageKind::ImageAttachment,
-        _ => MessageKind::Mixed,
+fn message_kind(message: &ConvoItem) -> MessageKind {
+    match &message.kind {
+        ConvoItemKind::Message(body) => {
+            let has_text = match &body.payload {
+                MessageText::Plain(text) | MessageText::Rich(text) => !text.is_empty(),
+            };
+            let has_attachments = !body.attachments.is_empty();
+            let has_images = !body.images.is_empty();
+            match (has_text, has_attachments, has_images) {
+                (true, false, false) => MessageKind::Text,
+                (false, true, false) => MessageKind::Attachment,
+                (false, false, true) => MessageKind::ImageAttachment,
+                _ => MessageKind::Mixed,
+            }
+        }
+        ConvoItemKind::System(_) => MessageKind::System,
     }
 }
 
-fn same_cluster(left: &ConvoMessage, right: &ConvoMessage) -> bool {
+fn same_cluster(left: &ConvoItem, right: &ConvoItem) -> bool {
     if left.sender != right.sender {
         return false;
     }
     if message_kind(left) != message_kind(right) {
+        return false;
+    }
+    if message_kind(left) == MessageKind::System {
         return false;
     }
     if let (Some(left_ts), Some(right_ts)) = (left.received_at, right.received_at) {
@@ -48,7 +57,7 @@ fn same_cluster(left: &ConvoMessage, right: &ConvoMessage) -> bool {
     }
 }
 
-pub fn message_render_meta(messages: &[ConvoMessage]) -> Vec<MessageRenderMeta> {
+pub fn message_render_meta(messages: &[ConvoItem]) -> Vec<MessageRenderMeta> {
     let mut out = Vec::with_capacity(messages.len());
     for (index, message) in messages.iter().enumerate() {
         let previous = index.checked_sub(1).and_then(|idx| messages.get(idx));

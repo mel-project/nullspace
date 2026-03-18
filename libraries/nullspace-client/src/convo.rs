@@ -128,27 +128,167 @@ pub async fn insert_thread_event(
     Ok(row.map(|(id,)| id))
 }
 
-/// A single message in a conversation, as returned by
+/// A single item in a conversation, as returned by
 /// [`convo_history`](crate::internal::InternalProtocol::convo_history).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ConvoMessage {
-    /// Locally-assigned, monotonically increasing message ID.
+pub struct ConvoItem {
     pub id: i64,
-    /// The conversation this message belongs to.
     pub convo_id: ConvoId,
-    /// Who sent the message.
     pub sender: UserName,
-    /// The decoded message payload.
-    pub body: MessagePayload,
-    /// If the send loop failed to deliver this message, the error
-    /// description.  `None` for incoming messages and successfully
-    /// delivered outgoing messages.
+    pub event_hash: Hash,
+    pub after: Option<Hash>,
+    pub sent_at: NanoTimestamp,
     pub send_error: Option<String>,
-    /// Timestamp set by the server when the message was received.
-    /// `None` for outgoing messages that have not yet been delivered.
     pub received_at: Option<NanoTimestamp>,
-    /// Timestamp at which the local user marked this message as read.
     pub read_at: Option<NanoTimestamp>,
+    pub kind: ConvoItemKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConvoItemKind {
+    Message(MessagePayload),
+    System(SystemItem),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SystemItem {
+    Notice {
+        text: String,
+    },
+    GroupCreated,
+    GroupInvitationReceived {
+        invitation_id: i64,
+        group_id: GroupId,
+        display_title: String,
+    },
+    GroupInvitationShared {
+        username: UserName,
+    },
+    GroupMemberJoined {
+        username: UserName,
+    },
+    GroupMemberLeft {
+        username: UserName,
+    },
+    GroupMetadataChanged {
+        title: Option<String>,
+        description: Option<String>,
+    },
+    GroupMemberMutedChanged {
+        username: UserName,
+        muted: bool,
+    },
+    GroupNewMembersMutedChanged {
+        muted: bool,
+    },
+    GroupHistorySharingChanged {
+        allow_new_members_to_see_history: bool,
+    },
+    GroupAdminChanged {
+        username: UserName,
+        is_admin: bool,
+    },
+    GroupBanChanged {
+        username: UserName,
+        banned: bool,
+    },
+    GroupKeysRotated,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConvoItemPreview {
+    pub sender: Option<UserName>,
+    pub text: String,
+    pub is_system: bool,
+}
+
+impl ConvoItem {
+    pub fn preview(&self) -> ConvoItemPreview {
+        match &self.kind {
+            ConvoItemKind::Message(message) => {
+                let text = match &message.payload {
+                    MessageText::Plain(text) | MessageText::Rich(text) => text.clone(),
+                };
+                let text = if !text.is_empty() {
+                    text
+                } else if !message.images.is_empty() {
+                    "Image".to_string()
+                } else if !message.attachments.is_empty() {
+                    "Attachment".to_string()
+                } else {
+                    "Message".to_string()
+                };
+                ConvoItemPreview {
+                    sender: Some(self.sender.clone()),
+                    text,
+                    is_system: false,
+                }
+            }
+            ConvoItemKind::System(system) => ConvoItemPreview {
+                sender: None,
+                text: system.summary_text(),
+                is_system: true,
+            },
+        }
+    }
+}
+
+impl SystemItem {
+    pub fn summary_text(&self) -> String {
+        match self {
+            SystemItem::Notice { text } => text.clone(),
+            SystemItem::GroupCreated => "Group created".to_string(),
+            SystemItem::GroupInvitationReceived { display_title, .. } => {
+                format!("Invited to {display_title}")
+            }
+            SystemItem::GroupInvitationShared { username } => {
+                format!("Shared invite with {username}")
+            }
+            SystemItem::GroupMemberJoined { username } => format!("{username} joined"),
+            SystemItem::GroupMemberLeft { username } => format!("{username} left"),
+            SystemItem::GroupMetadataChanged { .. } => "Group details updated".to_string(),
+            SystemItem::GroupMemberMutedChanged { username, muted } => {
+                if *muted {
+                    format!("{username} muted")
+                } else {
+                    format!("{username} unmuted")
+                }
+            }
+            SystemItem::GroupNewMembersMutedChanged { muted } => {
+                if *muted {
+                    "New members muted".to_string()
+                } else {
+                    "New members unmuted".to_string()
+                }
+            }
+            SystemItem::GroupHistorySharingChanged {
+                allow_new_members_to_see_history,
+            } => {
+                if *allow_new_members_to_see_history {
+                    "History sharing enabled".to_string()
+                } else {
+                    "History sharing disabled".to_string()
+                }
+            }
+            SystemItem::GroupAdminChanged { username, is_admin } => {
+                if *is_admin {
+                    format!("{username} is now an admin")
+                } else {
+                    format!("{username} is no longer an admin")
+                }
+            }
+            SystemItem::GroupBanChanged { username, banned } => {
+                if *banned {
+                    format!("{username} banned")
+                } else {
+                    format!("{username} unbanned")
+                }
+            }
+            SystemItem::GroupKeysRotated => "Group keys rotated".to_string(),
+        }
+    }
 }
 
 /// Summary of a conversation for list views.
@@ -158,9 +298,8 @@ pub struct ConvoMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConvoSummary {
     pub convo_id: ConvoId,
-    /// The most recent message in the conversation, if any.
-    pub last_message: Option<ConvoMessage>,
-    /// Number of unread incoming messages.
+    pub display_title: String,
+    pub last_item: Option<ConvoItemPreview>,
     pub unread_count: u64,
 }
 
@@ -229,7 +368,7 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
     for row in rows {
         let convo_id = parse_convo_id(&row.thread_kind, &row.thread_counterparty)
             .ok_or_else(|| anyhow::anyhow!("invalid convo row"))?;
-        let last_message = match (
+        let last_item = match (
             row.msg_id,
             row.sender_username,
             row.event_tag,
@@ -237,28 +376,36 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
         ) {
             (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
-                let body = match decode_message_payload(u16::try_from(event_tag)?, &body) {
-                    Ok(body) => Some(body),
+                let kind = match decode_convo_item_kind(u16::try_from(event_tag)?, &body, id) {
+                    Ok(kind) => Some(kind),
                     Err(err) => {
                         warn!(error = %err, "failed to decode message payload in convo_list");
                         None
                     }
                 };
-                body.map(|body| ConvoMessage {
-                    id,
-                    convo_id: convo_id.clone(),
-                    sender,
-                    body,
-                    send_error: row.send_error,
-                    received_at: row.received_at.map(|ts| NanoTimestamp(ts as u64)),
-                    read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+                kind.map(|kind| {
+                    ConvoItem {
+                        id,
+                        convo_id: convo_id.clone(),
+                        sender,
+                        event_hash: Hash::digest(&[]),
+                        after: None,
+                        sent_at: NanoTimestamp(0),
+                        send_error: row.send_error.clone(),
+                        received_at: row.received_at.map(|ts| NanoTimestamp(ts as u64)),
+                        read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+                        kind,
+                    }
+                    .preview()
                 })
             }
             _ => None,
         };
+        let display_title = display_title_for_convo(&convo_id);
         out.push(ConvoSummary {
             convo_id,
-            last_message,
+            display_title,
+            last_item,
             unread_count: row.unread_count as u64,
         });
     }
@@ -271,7 +418,7 @@ pub async fn convo_history(
     before: Option<i64>,
     after: Option<i64>,
     limit: u16,
-) -> anyhow::Result<Vec<ConvoMessage>> {
+) -> anyhow::Result<Vec<ConvoItem>> {
     let before = before.unwrap_or(i64::MAX);
     let after = after.unwrap_or(i64::MIN);
     let thread_kind = convo_id.convo_type();
@@ -296,24 +443,33 @@ pub async fn convo_history(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let sender = UserName::parse(row.event.sender_username)?;
-        let body = match decode_message_payload(
+        let kind = match decode_convo_item_kind(
             u16::try_from(row.event.event_tag)?,
             &row.event.event_body,
+            row.event.id,
         ) {
-            Ok(body) => body,
+            Ok(kind) => kind,
             Err(err) => {
                 warn!(error = %err, "failed to decode message payload in convo_history");
                 continue;
             }
         };
-        out.push(ConvoMessage {
+        out.push(ConvoItem {
             id: row.event.id,
             convo_id: convo_id.clone(),
             sender,
-            body,
+            event_hash: bytes_to_hash(&row.event.event_hash)?,
+            after: row
+                .event
+                .event_after
+                .as_deref()
+                .map(bytes_to_hash)
+                .transpose()?,
+            sent_at: NanoTimestamp(row.event.sent_at as u64),
             send_error: row.event.send_error,
             received_at: row.event.received_at.map(|ts| NanoTimestamp(ts as u64)),
             read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+            kind,
         });
     }
     Ok(out)
@@ -374,15 +530,27 @@ pub async fn last_dm_received_at(
     Ok(received_at.map(|ts| NanoTimestamp(ts as u64)))
 }
 
-fn decode_message_payload(event_tag: u16, body: &[u8]) -> anyhow::Result<MessagePayload> {
-    if event_tag != TAG_MESSAGE {
-        return Ok(MessagePayload {
-            payload: MessageText::Plain("Unsupported message".to_string()),
-            attachments: Vec::new(),
-            images: Vec::new(),
-            replies_to: None,
-            metadata: Default::default(),
-        });
+fn display_title_for_convo(convo_id: &ConvoId) -> String {
+    match convo_id {
+        ConvoId::Direct { peer } => peer.as_str().to_owned(),
+        ConvoId::Group { group_id } => format!("Group {}", group_id.short_id()),
     }
-    Ok(bcs::from_bytes(body)?)
+}
+
+fn decode_convo_item_kind(
+    event_tag: u16,
+    body: &[u8],
+    local_id: i64,
+) -> anyhow::Result<ConvoItemKind> {
+    if event_tag == TAG_MESSAGE {
+        return Ok(ConvoItemKind::Message(bcs::from_bytes(body)?));
+    }
+    Ok(ConvoItemKind::System(SystemItem::Notice {
+        text: format!("Unsupported item #{local_id}"),
+    }))
+}
+
+fn bytes_to_hash(bytes: &[u8]) -> anyhow::Result<Hash> {
+    let bytes: [u8; 32] = bytes.try_into()?;
+    Ok(Hash::from_bytes(bytes))
 }

@@ -3,7 +3,7 @@ use egui::{Button, Image, Label, Modal, ProgressBar, ScrollArea, TextEdit};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::{State, Var};
 use egui_infinite_scroll::InfiniteScroll;
-use nullspace_client::{ConvoId, ConvoMessage, UploadedRoot};
+use nullspace_client::{ConvoId, ConvoItem, UploadedRoot};
 use nullspace_structs::event::{MessagePayload, MessageText};
 use nullspace_structs::username::UserName;
 use pollster::block_on;
@@ -35,7 +35,7 @@ const INITIAL_HISTORY_LIMIT: u16 = 50;
 const PAGE_HISTORY_LIMIT: u16 = 10;
 const MESSAGE_PREFETCH: usize = 10;
 
-type Scroller = InfiniteScroll<ConvoMessage, i64>;
+type Scroller = InfiniteScroll<ConvoItem, i64>;
 
 pub struct Convo<'a>(pub &'a mut NullspaceApp, pub ConvoId);
 
@@ -128,7 +128,7 @@ fn infer_mime(path: &Path) -> SmolStr {
 }
 
 fn new_scroller(convo_id: ConvoId) -> Scroller {
-    InfiniteScroll::<ConvoMessage, i64>::new().start_loader(move |cursor, callback| {
+    InfiniteScroll::<ConvoItem, i64>::new().start_loader(move |cursor, callback| {
         let limit = if cursor.is_some() {
             PAGE_HISTORY_LIMIT
         } else {

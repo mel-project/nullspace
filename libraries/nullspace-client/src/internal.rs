@@ -20,7 +20,9 @@ use uuid::Uuid;
 
 use crate::attachments::{self, AttachmentStatus};
 use crate::config::Config;
-pub use crate::convo::{ConvoId, ConvoMessage, ConvoSummary};
+pub use crate::convo::{
+    ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, SystemItem,
+};
 use crate::convo::{convo_history, convo_list, mark_convo_read, queue_message};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
@@ -132,7 +134,7 @@ pub trait InternalProtocol {
         before: Option<i64>,
         after: Option<i64>,
         limit: u16,
-    ) -> Result<Vec<ConvoMessage>, InternalRpcError>;
+    ) -> Result<Vec<ConvoItem>, InternalRpcError>;
 
     /// Marks all messages up to (and including) `up_to_id` as read.
     ///
@@ -156,34 +158,30 @@ pub trait InternalProtocol {
         message: MessagePayload,
     ) -> Result<i64, InternalRpcError>;
 
-    /// Creates a new group on the given server and returns its
-    /// [`ConvoId`].
-    ///
-    /// The calling user becomes the group's initial administrator.
-    async fn convo_create_group(&self, server: ServerName) -> Result<ConvoId, InternalRpcError>;
+    /// Creates a new group and returns its [`GroupId`].
+    async fn group_create(&self, request: GroupCreateRequest) -> Result<GroupId, InternalRpcError>;
 
     /// Returns the server name this client's identity is registered on.
     async fn own_server(&self) -> Result<ServerName, InternalRpcError>;
 
-    /// Invites a user to a group.
-    ///
-    /// The invitation is delivered as a special DM to the target user,
-    /// who can accept it with
-    /// [`group_accept_invite`](Self::group_accept_invite).
-    async fn group_invite(
+    /// Returns a consolidated snapshot of the local user's current view of a group.
+    async fn group_view(&self, group: GroupId) -> Result<GroupView, InternalRpcError>;
+
+    /// Applies a typed group action.
+    async fn group_action(
         &self,
         group: GroupId,
-        username: UserName,
+        action: GroupAction,
     ) -> Result<(), InternalRpcError>;
 
-    /// Returns the current membership roster for a group.
-    async fn group_members(&self, group: GroupId) -> Result<Vec<GroupMember>, InternalRpcError>;
+    /// Lists pending inbound group invitations.
+    async fn group_invitation_list(&self) -> Result<Vec<GroupInvitationSummary>, InternalRpcError>;
 
-    /// Accepts a group invitation received as a DM.
-    ///
-    /// `dm_id` is the message ID of the invitation DM.  On success returns
-    /// the [`GroupId`] of the joined group.
-    async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError>;
+    /// Accepts an inbound group invitation and returns the joined group ID.
+    async fn group_invitation_accept(
+        &self,
+        invitation_id: i64,
+    ) -> Result<GroupId, InternalRpcError>;
 
     /// Starts an asynchronous file upload.
     ///
@@ -400,25 +398,95 @@ pub enum ProvisionHostState {
     Failed { error: String },
 }
 
-/// A member entry in a group's roster.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GroupMember {
-    pub username: UserName,
-    /// Whether this member has admin privileges (can invite others).
-    pub is_admin: bool,
-    pub status: GroupMemberStatus,
+pub struct GroupCreateRequest {
+    pub server: ServerName,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub new_members_muted: bool,
+    pub allow_new_members_to_see_history: bool,
 }
 
-/// Membership state of a user in a group.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GroupMemberStatus {
-    /// Invited but has not yet accepted.
-    Pending,
-    /// Active member.
-    Accepted,
-    /// Removed from the group.
-    Banned,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupView {
+    pub group_id: GroupId,
+    pub display_title: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub server: ServerName,
+    pub capabilities: GroupCapabilities,
+    pub settings: GroupSettings,
+    pub roster: Vec<GroupRosterEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupCapabilities {
+    pub can_send_messages: bool,
+    pub can_share_invites: bool,
+    pub can_edit_metadata: bool,
+    pub can_manage_mutes: bool,
+    pub can_manage_members: bool,
+    pub can_manage_admins: bool,
+    pub can_rotate_keys: bool,
+    pub can_leave: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupSettings {
+    pub new_members_muted: bool,
+    pub allow_new_members_to_see_history: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupRosterEntry {
+    pub username: UserName,
+    pub is_admin: bool,
+    pub is_muted: bool,
+    pub is_banned: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GroupAction {
+    ShareInvite {
+        username: UserName,
+    },
+    SetMetadata {
+        title: Option<String>,
+        description: Option<String>,
+    },
+    SetMemberMuted {
+        username: UserName,
+        muted: bool,
+    },
+    SetNewMembersMuted {
+        muted: bool,
+    },
+    SetAllowNewMembersToSeeHistory {
+        allow: bool,
+    },
+    SetAdmin {
+        username: UserName,
+        is_admin: bool,
+    },
+    SetBanned {
+        username: UserName,
+        banned: bool,
+    },
+    Leave,
+    RotateKeys,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupInvitationSummary {
+    pub invitation_id: i64,
+    pub group_id: GroupId,
+    pub display_title: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub inviter: UserName,
+    pub server: ServerName,
+    pub received_at: NanoTimestamp,
 }
 
 /// Rich profile and relationship information about a user.
@@ -465,6 +533,12 @@ pub enum InternalRpcError {
     /// user's device chain).
     #[error("access denied")]
     AccessDenied,
+    /// The requested entity is not present in the local client state.
+    #[error("not found")]
+    NotFound,
+    /// The caller needs to refresh and retry against newer local state.
+    #[error("conflict")]
+    Conflict,
     /// A catch-all for unexpected failures.
     #[error("{0}")]
     Other(String),
@@ -542,7 +616,7 @@ impl InternalProtocol for InternalImpl {
         before: Option<i64>,
         after: Option<i64>,
         limit: u16,
-    ) -> Result<Vec<ConvoMessage>, InternalRpcError> {
+    ) -> Result<Vec<ConvoItem>, InternalRpcError> {
         convo_history(&mut *self.conn().await?, convo_id, before, after, limit)
             .await
             .map_err(internal_err)
@@ -584,8 +658,8 @@ impl InternalProtocol for InternalImpl {
         Ok(())
     }
 
-    async fn convo_create_group(&self, server: ServerName) -> Result<ConvoId, InternalRpcError> {
-        let _ = server;
+    async fn group_create(&self, request: GroupCreateRequest) -> Result<GroupId, InternalRpcError> {
+        let _ = request;
         Err(groups_disabled_error())
     }
 
@@ -596,22 +670,29 @@ impl InternalProtocol for InternalImpl {
             .ok_or_else(|| InternalRpcError::Other("server name not available".into()))
     }
 
-    async fn group_invite(
-        &self,
-        group: GroupId,
-        username: UserName,
-    ) -> Result<(), InternalRpcError> {
-        let _ = (group, username);
-        Err(groups_disabled_error())
-    }
-
-    async fn group_members(&self, group: GroupId) -> Result<Vec<GroupMember>, InternalRpcError> {
+    async fn group_view(&self, group: GroupId) -> Result<GroupView, InternalRpcError> {
         let _ = group;
         Err(groups_disabled_error())
     }
 
-    async fn group_accept_invite(&self, dm_id: i64) -> Result<GroupId, InternalRpcError> {
-        let _ = dm_id;
+    async fn group_action(
+        &self,
+        group: GroupId,
+        action: GroupAction,
+    ) -> Result<(), InternalRpcError> {
+        let _ = (group, action);
+        Err(groups_disabled_error())
+    }
+
+    async fn group_invitation_list(&self) -> Result<Vec<GroupInvitationSummary>, InternalRpcError> {
+        Err(groups_disabled_error())
+    }
+
+    async fn group_invitation_accept(
+        &self,
+        invitation_id: i64,
+    ) -> Result<GroupId, InternalRpcError> {
+        let _ = invitation_id;
         Err(groups_disabled_error())
     }
 

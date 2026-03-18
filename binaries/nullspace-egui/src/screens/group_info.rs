@@ -2,7 +2,7 @@ use eframe::egui::{Grid, Response, TextEdit, Widget, Window};
 use egui::RichText;
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use nullspace_client::GroupMemberStatus;
+use nullspace_client::GroupAction;
 use nullspace_structs::group::GroupId;
 use nullspace_structs::username::UserName;
 
@@ -39,26 +39,28 @@ impl Widget for GroupInfo<'_> {
                 ui.add_space(4.0);
 
                 ui.heading("Members");
-                let members = ui.use_memo(
+                let group_view = ui.use_memo(
                     || {
-                        let result = block_on(get_rpc().group_members(self.group));
+                        let result = block_on(get_rpc().group_view(self.group));
                         flatten_rpc(result)
                     },
                     (self.group, self.app.state.msg_updates),
                 );
 
-                match members {
-                    Ok(members) => {
-                        for member in members {
+                match group_view {
+                    Ok(group_view) => {
+                        for member in group_view.roster {
                             let mut label =
                                 self.app.state.profile_loader.label_for(&member.username);
                             if member.is_admin {
                                 label.push_str(" [admin]");
                             }
-                            let status = match member.status {
-                                GroupMemberStatus::Pending => "pending",
-                                GroupMemberStatus::Accepted => "accepted",
-                                GroupMemberStatus::Banned => "banned",
+                            let status = if member.is_banned {
+                                "banned"
+                            } else if member.is_muted {
+                                "muted"
+                            } else {
+                                "active"
                             };
                             ui.horizontal(|ui| {
                                 let response =
@@ -95,7 +97,11 @@ impl Widget for GroupInfo<'_> {
                                 }
                             };
                             let group = self.group;
-                            let _ = flatten_rpc(get_rpc().group_invite(group, username).block_on());
+                            let _ = flatten_rpc(
+                                get_rpc()
+                                    .group_action(group, GroupAction::ShareInvite { username })
+                                    .block_on(),
+                            );
                         }
                         ui.end_row();
                     });

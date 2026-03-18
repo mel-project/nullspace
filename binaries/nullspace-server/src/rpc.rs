@@ -10,6 +10,7 @@ use bytes::Bytes;
 use moka::future::Cache as FutureCache;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService, RpcTransport};
 use nullspace_rpc_pool::PooledTransport;
+use nullspace_structs::group::{GroupId, GroupRotation};
 use nullspace_structs::mailbox::{MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs};
 use nullspace_structs::server::{
     AuthToken, ChanDirection, DeviceAuthChallenge, ProxyError, ServerName, ServerProtocol,
@@ -20,7 +21,7 @@ use nullspace_structs::{Blob, profile::UserProfile, timestamp::NanoTimestamp, us
 use crate::config::CONFIG;
 use crate::profile;
 use crate::rpc_pool::RPC_POOL;
-use crate::{channel, device, dir_client::DIR_CLIENT, fragment, mailbox};
+use crate::{channel, device, dir_client::DIR_CLIENT, fragment, group, mailbox};
 
 #[derive(Clone, Default)]
 pub struct ServerRpc;
@@ -130,6 +131,26 @@ impl ServerProtocol for ServerRpc {
         timeout_ms: u64,
     ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerRpcError> {
         mailbox::mailbox_multirecv(args, timeout_ms).await
+    }
+
+    async fn group_create(
+        &self,
+        auth: AuthToken,
+        rotation: GroupRotation,
+    ) -> Result<(), ServerRpcError> {
+        group::group_create(auth, rotation).await
+    }
+
+    async fn group_update(&self, entry: GroupRotation) -> Result<(), ServerRpcError> {
+        group::group_update(entry).await
+    }
+
+    async fn group_get(
+        &self,
+        group_id: GroupId,
+        index: u64,
+    ) -> Result<Option<GroupRotation>, ServerRpcError> {
+        group::group_get(group_id, index).await
     }
 
     async fn frag_upload(

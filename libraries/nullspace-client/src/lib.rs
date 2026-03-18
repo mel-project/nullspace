@@ -29,9 +29,11 @@ use tokio::sync::oneshot;
 pub use crate::config::Config;
 use crate::config::Ctx;
 pub use crate::internal::{
-    ConvoId, ConvoMessage, ConvoSummary, Event, GroupMember, GroupMemberStatus, InternalClient,
-    InternalProtocol, InternalRpcError, MessageDirection, ProvisionHostState, RegisterFinish,
-    RegisterStartInfo, UploadedRoot, UserDetails, UserLastMessageSummary,
+    ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, Event, GroupAction,
+    GroupCapabilities, GroupCreateRequest, GroupInvitationSummary, GroupRosterEntry, GroupSettings,
+    GroupView, InternalClient, InternalProtocol, InternalRpcError, MessageDirection,
+    ProvisionHostState, RegisterFinish, RegisterStartInfo, SystemItem, UploadedRoot, UserDetails,
+    UserLastMessageSummary,
 };
 
 static RPC_POOL: Ctx<RpcPool> =

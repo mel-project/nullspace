@@ -23,9 +23,7 @@ impl Widget for ConvoSelect<'_> {
 
         let label = match &self.convo.convo_id {
             ConvoId::Direct { peer } => self.app.state.profile_loader.label_for(peer),
-            ConvoId::Group { group_id } => {
-                format!("Group {}", group_id.short_id())
-            }
+            ConvoId::Group { .. } => self.convo.display_title.clone(),
         };
 
         let frame_response = Frame::new()

@@ -1,5 +1,7 @@
 use eframe::egui::{Button, Modal, Response, Spinner, Widget};
 use egui_hooks::UseHookExt;
+use nullspace_client::GroupCreateRequest;
+use nullspace_structs::group::GroupId;
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
@@ -12,7 +14,7 @@ pub struct AddGroup<'a> {
 
 impl Widget for AddGroup<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        let create = ui.use_async_slot::<Result<nullspace_client::ConvoId, String>>(());
+        let create = ui.use_async_slot::<Result<GroupId, String>>(());
         let server = ui.use_memo(
             || {
                 let result = pollster::block_on(get_rpc().own_server());
@@ -46,7 +48,17 @@ impl Widget for AddGroup<'_> {
                             unreachable!("server must be available when create is enabled")
                         });
                         create.start(async move {
-                            flatten_rpc(get_rpc().convo_create_group(server).await)
+                            flatten_rpc(
+                                get_rpc()
+                                    .group_create(GroupCreateRequest {
+                                        server,
+                                        title: None,
+                                        description: None,
+                                        new_members_muted: false,
+                                        allow_new_members_to_see_history: false,
+                                    })
+                                    .await,
+                            )
                         });
                     }
                 });

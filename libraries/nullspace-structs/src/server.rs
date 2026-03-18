@@ -16,6 +16,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::fragment::Fragment;
+use crate::group::{GroupId, GroupRotation};
 use crate::mailbox::{MailboxEntry, MailboxId, MailboxKey, MailboxRecvArgs};
 use crate::profile::UserProfile;
 use crate::timestamp::Timestamp;
@@ -100,6 +101,23 @@ pub trait ServerProtocol {
         args: Vec<MailboxRecvArgs>,
         timeout_ms: u64,
     ) -> Result<BTreeMap<MailboxId, Vec<MailboxEntry>>, ServerRpcError>;
+
+    /// Creates a group registry owned by the authenticated device.
+    async fn group_create(
+        &self,
+        auth: AuthToken,
+        rotation: GroupRotation,
+    ) -> Result<(), ServerRpcError>;
+
+    /// Appends the next signed rotation entry to a group registry.
+    async fn group_update(&self, entry: GroupRotation) -> Result<(), ServerRpcError>;
+
+    /// Reads a single rotation entry by registry nonce and index.
+    async fn group_get(
+        &self,
+        group_id: GroupId,
+        index: u64,
+    ) -> Result<Option<GroupRotation>, ServerRpcError>;
 
     /// Proxy a request to another server.
     async fn proxy_server(

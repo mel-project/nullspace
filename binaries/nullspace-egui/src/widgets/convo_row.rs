@@ -5,7 +5,7 @@ use eframe::egui::{Response, RichText, Widget};
 use egui::{ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use fast_thumbhash::thumb_hash_from_b91;
-use nullspace_client::ConvoMessage;
+use nullspace_client::{ConvoItem, ConvoItemKind};
 use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::MessageText;
@@ -27,7 +27,7 @@ const IMAGE_MAX_HEIGHT: f32 = 500.0;
 
 pub struct ConvoRow<'a> {
     pub app: &'a mut NullspaceApp,
-    pub message: &'a ConvoMessage,
+    pub message: &'a ConvoItem,
     pub style: ConvoRowStyle,
     pub is_beginning: bool,
     pub is_end: bool,
@@ -44,6 +44,20 @@ impl Widget for ConvoRow<'_> {
 
 impl ConvoRow<'_> {
     fn text_ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        if let ConvoItemKind::System(system) = &self.message.kind {
+            let timestamp = format_timestamp(self.message.received_at);
+            let weak_text_color = ui.visuals().weak_text_color();
+            ui.horizontal_top(|ui| {
+                ui.label(RichText::new(format!("[{timestamp}]")).color(weak_text_color));
+                ui.label(
+                    RichText::new(system.summary_text())
+                        .color(weak_text_color)
+                        .italics(),
+                );
+            });
+            return ui.response();
+        }
+
         let sender_label = self
             .app
             .state
@@ -63,6 +77,21 @@ impl ConvoRow<'_> {
     }
 
     fn friendly_ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        if let ConvoItemKind::System(system) = &self.message.kind {
+            ui.horizontal(|ui| {
+                ui.add_space(36.0 + ui.style().spacing.item_spacing.x);
+                ui.label(
+                    RichText::new(system.summary_text())
+                        .color(ui.visuals().weak_text_color())
+                        .italics(),
+                );
+            });
+            if self.is_end {
+                ui.add_space(8.0);
+            }
+            return ui.response();
+        }
+
         if self.message.received_at.is_none() {
             ui.set_opacity(0.5);
         }
@@ -117,7 +146,16 @@ impl ConvoRow<'_> {
     }
 }
 
-fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, message: &ConvoMessage) {
+fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, message: &ConvoItem) {
+    let ConvoItemKind::Message(body) = &message.kind else {
+        ui.label(
+            RichText::new("Unsupported conversation item")
+                .color(ui.visuals().weak_text_color())
+                .italics(),
+        );
+        return;
+    };
+
     let font_id = ui
         .style()
         .text_styles
@@ -134,7 +172,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
         base_text_format.strikethrough = egui::Stroke::new(1.0, text_color);
     }
     ui.vertical(|ui| {
-        let text = match &message.body.payload {
+        let text = match &body.payload {
             MessageText::Plain(text) | MessageText::Rich(text) => text,
         };
         if !text.is_empty() {
@@ -143,7 +181,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
             ui.label(job);
         }
 
-        for attachment in &message.body.attachments {
+        for attachment in &body.attachments {
             let id = attachment.bcs_hash();
             ui.push_id(id, |ui| {
                 ui.add(AttachmentContent {
@@ -156,7 +194,7 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
             });
         }
 
-        for image in &message.body.images {
+        for image in &body.images {
             let id = image.inner.bcs_hash();
             ui.push_id(id, |ui| {
                 ui.add(ImageAttachmentContent {

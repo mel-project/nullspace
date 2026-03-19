@@ -11,10 +11,10 @@ use nullspace_structs::group::{GroupBearerKey, GroupId, GroupRotation};
 use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
-use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::identity::Identity;
+use crate::net::get_auth_token;
 use crate::net::get_server_client;
 
 /// Admin rotation submit loop.
@@ -30,7 +30,7 @@ pub(super) async fn group_rotation_loop(ctx: &AnyCtx<Config>) {
         if let Err(err) = group_rotation_loop_once(ctx).await {
             tracing::error!(error = %err, "group rotation loop error");
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     }
 }
 

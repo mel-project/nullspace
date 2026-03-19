@@ -9,10 +9,10 @@ use nullspace_structs::timestamp::Timestamp;
 
 use crate::Config;
 use crate::DIR_CLIENT;
-use crate::auth_tokens::get_auth_token;
+use crate::net::get_auth_token;
 use crate::database::DATABASE;
-use crate::identity::Identity;
-use crate::server::get_server_client;
+use super::Identity;
+use crate::net::get_server_client;
 
 const MEDIUM_ROTATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 

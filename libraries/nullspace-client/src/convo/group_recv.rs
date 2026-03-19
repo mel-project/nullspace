@@ -9,16 +9,16 @@ use nullspace_structs::mailbox::MailboxEntry;
 use nullspace_structs::server::ServerName;
 use tokio::task::JoinSet;
 
-use crate::auth_tokens::get_auth_token;
+use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::convo::{ConvoId, NewThreadEvent, ensure_thread_id, insert_thread_event};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use crate::groups::store_gbk;
+use super::groups::store_gbk;
 use crate::identity::Identity;
-use crate::long_poll::LONG_POLLER;
-use crate::mailbox::{load_mailbox_after, update_mailbox_after};
-use crate::server::get_server_client;
+use crate::net::LONG_POLLER;
+use crate::net::{load_mailbox_after, update_mailbox_after};
+use crate::net::get_server_client;
 
 use super::send::store_message_attachments;
 
@@ -258,7 +258,7 @@ async fn process_group_entry(
     // Verify device signature
     let signed: DeviceSigned = bcs::from_bytes(&signed_bytes)?;
     let sender = signed.sender().clone();
-    let descriptor = crate::user_info::get_user_descriptor(ctx, &sender).await?;
+    let descriptor = crate::users::get_user_descriptor(ctx, &sender).await?;
     if !descriptor.devices.contains(&signed.sender_device_pk()) {
         anyhow::bail!("group message sender device not in directory");
     }

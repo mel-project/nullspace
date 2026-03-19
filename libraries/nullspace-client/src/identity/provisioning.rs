@@ -26,15 +26,15 @@ use serde_with::{FromInto, IfIsHumanReadable, serde_as};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::DIR_CLIENT;
-use crate::auth_tokens::get_auth_token;
+use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use crate::identity::Identity;
+use super::Identity;
 use crate::internal::{
     Event, InternalRpcError, ProvisionHostState, RegisterFinish, RegisterStartInfo, internal_err,
 };
-use crate::server::get_server_client;
+use crate::net::get_server_client;
 
 const PROVISION_HOST_REPOST_INTERVAL: Duration = Duration::from_secs(5);
 const PROVISION_GUEST_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -67,7 +67,7 @@ pub async fn register_finish(
 ) -> Result<(), InternalRpcError> {
     let db = ctx.get(DATABASE);
     let mut conn = db.acquire().await.map_err(internal_err)?;
-    if crate::identity::identity_exists(&mut conn)
+    if super::identity_exists(&mut conn)
         .await
         .map_err(internal_err)?
     {

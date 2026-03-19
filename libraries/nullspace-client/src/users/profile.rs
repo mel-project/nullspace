@@ -9,8 +9,8 @@ use crate::database::DATABASE;
 use crate::identity::Identity;
 use crate::identity::identity_exists;
 use crate::internal::{InternalRpcError, internal_err};
-use crate::server::{get_server_client, own_server_name};
-use crate::user_info::get_user_info;
+use crate::net::{get_server_client, own_server_name};
+use super::info::get_user_info;
 
 pub async fn get_profile(
     ctx: &anyctx::AnyCtx<Config>,

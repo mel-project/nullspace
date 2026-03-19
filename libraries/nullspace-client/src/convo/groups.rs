@@ -6,13 +6,13 @@ use nullspace_structs::e2ee::HeaderEncrypted;
 use nullspace_structs::group::{GroupBearerKey, GroupId, GroupRotation};
 use nullspace_structs::server::ServerName;
 
-use crate::auth_tokens::get_auth_token;
+use crate::net::get_auth_token;
 use crate::config::Config;
-use crate::convo::{ConvoId, ensure_thread_id};
+use super::{ConvoId, ensure_thread_id};
 use crate::database::DATABASE;
 use crate::identity::Identity;
 use crate::internal::GroupCreateRequest;
-use crate::server::{get_server_client, own_server_name};
+use crate::net::{get_server_client, own_server_name};
 
 pub async fn group_create(
     ctx: &AnyCtx<Config>,

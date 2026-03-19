@@ -1,16 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyctx::AnyCtx;
 use anyhow::Context;
 use bytes::Bytes;
-use nullspace_crypt::hash::{BcsHashExt, Hash};
-use nullspace_crypt::signing::Signable;
-use nullspace_structs::Blob;
+use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::{Event, EventRecipient, MessagePayload, TAG_MESSAGE};
-use nullspace_structs::group::{GroupBearerKey, GroupId};
-use nullspace_structs::mailbox::MailboxId;
-use nullspace_structs::server::SignedMediumPk;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use tracing::warn;
@@ -18,13 +12,11 @@ use tracing::warn;
 use crate::convo::{NewThreadEvent, ensure_thread_id, insert_thread_event};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use crate::identity::Identity;
 use crate::retry::retry_backoff;
-use crate::user_info::{UserInfo, get_user_info};
 use crate::{attachments::store_attachment_root, config::Config};
 
-use super::device_crypt::sign_and_encrypt;
-
+use super::dm_send::send_dm;
+use super::group_send::send_group;
 use super::{ConvoId, ThreadEventsRow, parse_convo_id};
 
 pub async fn queue_message(
@@ -206,151 +198,6 @@ async fn send_message(
             send_group(ctx, group_id, event).await
         }
     }
-}
-
-async fn send_dm(
-    ctx: &AnyCtx<Config>,
-    peer: &UserName,
-    event: Event,
-) -> anyhow::Result<NanoTimestamp> {
-    let db = ctx.get(DATABASE);
-    let identity = Identity::load(&mut *db.acquire().await?).await?;
-
-    let peer_received_at = send_dm_once(ctx, &identity, peer, &event).await?;
-    let self_received_at = if identity.username != *peer {
-        send_dm_once(ctx, &identity, &identity.username, &event).await?
-    } else {
-        peer_received_at
-    };
-    Ok(self_received_at)
-}
-
-async fn send_dm_once(
-    ctx: &AnyCtx<Config>,
-    identity: &Identity,
-    target: &UserName,
-    event: &Event,
-) -> anyhow::Result<NanoTimestamp> {
-    let peer = get_user_info(ctx, target).await?;
-    let recipients = recipients_from_peer(peer.as_ref())?;
-    let target_mailbox = fetch_peer_mailbox_id(peer.as_ref()).await?;
-
-    let event_bytes = bcs::to_bytes(event)?;
-    let body = sign_and_encrypt(identity, &event_bytes, recipients)?;
-
-    let received_at = peer
-        .server
-        .mailbox_send(target_mailbox, Blob(body), 0)
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    Ok(received_at)
-}
-
-async fn send_group(
-    ctx: &AnyCtx<Config>,
-    group_id: &GroupId,
-    event: Event,
-) -> anyhow::Result<NanoTimestamp> {
-    use nullspace_structs::e2ee::DeviceSigned;
-    use crate::server::{get_server_client, own_server_name};
-
-    let db = ctx.get(DATABASE);
-    let identity = Identity::load(&mut *db.acquire().await?).await?;
-    let gbk = load_gbk(&mut *db.acquire().await?, group_id).await?;
-
-    let server_name = own_server_name(ctx, &identity).await?;
-    let server = get_server_client(ctx, &server_name).await?;
-
-    // Sign the event bytes with the device key
-    let event_bytes = bcs::to_bytes(&event)?;
-    let signed = DeviceSigned::sign_bytes(
-        Bytes::from(event_bytes),
-        identity.username.clone(),
-        identity.device_secret.public().signing_public(),
-        &identity.device_secret,
-    );
-    let signed_bytes = bcs::to_bytes(&signed)?;
-
-    // Symmetrically encrypt with the group key
-    let sym_key = gbk.symmetric_key();
-    let nonce: [u8; 24] = rand::random();
-    let ciphertext = sym_key
-        .encrypt(nonce, &signed_bytes, &[])
-        .map_err(|_| anyhow::anyhow!("group message encryption failed"))?;
-
-    // Prepend nonce to ciphertext
-    let mut payload = Vec::with_capacity(24 + ciphertext.len());
-    payload.extend_from_slice(&nonce);
-    payload.extend_from_slice(&ciphertext);
-
-    let mailbox_id = gbk.mailbox_key().mailbox_id();
-    let received_at = server
-        .mailbox_send(mailbox_id, Blob(Bytes::from(payload)), 0)
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-    Ok(received_at)
-}
-
-pub(crate) async fn load_gbk(
-    conn: &mut sqlx::SqliteConnection,
-    group_id: &GroupId,
-) -> anyhow::Result<GroupBearerKey> {
-    let row = sqlx::query_as::<_, (Vec<u8>,)>(
-        "SELECT gbk FROM group_keys WHERE group_id = ? ORDER BY rotation_index DESC LIMIT 1",
-    )
-    .bind(group_id.to_bytes().to_vec())
-    .fetch_optional(&mut *conn)
-    .await?;
-    let (gbk_bytes,) = row.ok_or_else(|| anyhow::anyhow!("group bearer key not found"))?;
-    let gbk: GroupBearerKey = bcs::from_bytes(&gbk_bytes)?;
-    Ok(gbk)
-}
-
-async fn fetch_peer_mailbox_id(peer: &UserInfo) -> anyhow::Result<MailboxId> {
-    let profile = peer
-        .server
-        .profile(peer.username.clone())
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?
-        .context("target profile not found")?;
-
-    if !peer
-        .devices
-        .iter()
-        .any(|device_pk| profile.verify(*device_pk).is_ok())
-    {
-        anyhow::bail!("target profile signature is invalid");
-    }
-
-    Ok(profile.dm_mailbox)
-}
-
-fn collect_recipients(
-    username: &UserName,
-    devices: &BTreeSet<nullspace_crypt::signing::SigningPublic>,
-    medium_pks: &BTreeMap<Hash, SignedMediumPk>,
-) -> anyhow::Result<Vec<nullspace_crypt::dh::DhPublic>> {
-    let mut recipients = Vec::new();
-    for device_pk in devices {
-        let device_hash = device_pk.bcs_hash();
-        let Some(medium_pk) = medium_pks.get(&device_hash) else {
-            warn!(username = %username, device_hash = %device_hash, "missing medium-term key");
-            continue;
-        };
-        if medium_pk.verify(*device_pk).is_err() {
-            warn!(username = %username, device_hash = %device_hash, "invalid medium-term key signature");
-            continue;
-        }
-        recipients.push(medium_pk.medium_pk.clone());
-    }
-    if recipients.is_empty() {
-        anyhow::bail!("no medium-term keys available for {username}");
-    }
-    Ok(recipients)
-}
-
-fn recipients_from_peer(peer: &UserInfo) -> anyhow::Result<Vec<nullspace_crypt::dh::DhPublic>> {
-    collect_recipients(&peer.username, &peer.devices, &peer.medium_pks)
 }
 
 async fn mark_message_sent(

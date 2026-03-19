@@ -11,11 +11,11 @@ use nullspace_structs::group::{GroupBearerKey, GroupId, GroupRotation};
 use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
-use crate::auth_tokens::get_auth_token;
+use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::identity::Identity;
-use crate::server::get_server_client;
+use crate::net::get_server_client;
 
 /// Admin rotation submit loop.
 ///

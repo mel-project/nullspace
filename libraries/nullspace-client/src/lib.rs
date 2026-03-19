@@ -1,24 +1,17 @@
 #![doc = include_str!(concat!(env!("OUT_DIR"), "/README-rustdocified.md"))]
 
 mod attachments;
-mod auth_tokens;
 mod c_api;
 mod config;
 mod convo;
 mod database;
 mod events;
-mod groups;
 mod identity;
 mod internal;
-mod long_poll;
-mod mailbox;
 mod main_loop;
-mod medium_keys;
-mod profile;
-mod provisioning;
+mod net;
 mod retry;
-mod server;
-mod user_info;
+mod users;
 
 use anyctx::AnyCtx;
 use nanorpc::{DynRpcTransport, JrpcRequest, JrpcResponse, RpcTransport};

@@ -33,7 +33,7 @@ pub async fn decrypt_and_verify(
 
     let signed: DeviceSigned = bcs::from_bytes(&decrypted)?;
     let sender = signed.sender().clone();
-    let descriptor = crate::user_info::get_user_descriptor(ctx, &sender).await?;
+    let descriptor = crate::users::get_user_descriptor(ctx, &sender).await?;
     if !descriptor.devices.contains(&signed.sender_device_pk()) {
         anyhow::bail!("sender device not found in directory state");
     }

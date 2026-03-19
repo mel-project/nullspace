@@ -28,9 +28,9 @@ use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::identity::identity_exists;
-use crate::profile::own_profile_set as set_own_profile;
-use crate::provisioning::{self, HostProvisioning};
-use crate::user_info::user_details_data;
+use crate::users::own_profile_set as set_own_profile;
+use crate::identity::provisioning::{self, HostProvisioning};
+use crate::users::user_details_data;
 
 /// The client's full RPC interface.
 ///
@@ -655,7 +655,7 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn group_create(&self, request: GroupCreateRequest) -> Result<GroupId, InternalRpcError> {
-        let group_id = crate::groups::group_create(&self.ctx, request)
+        let group_id = crate::convo::group_create(&self.ctx, request)
             .await
             .map_err(internal_err)?;
         emit_event(

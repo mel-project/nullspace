@@ -14,7 +14,7 @@ use crate::RPC_POOL;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
 use crate::identity::Identity;
-use crate::server::own_server_name;
+use super::server::own_server_name;
 
 const AUTH_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
 

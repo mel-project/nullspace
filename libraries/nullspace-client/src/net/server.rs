@@ -12,7 +12,7 @@ use nullspace_structs::server::{AuthToken, ProxyError, ServerClient, ServerName}
 
 use crate::DIR_CLIENT;
 use crate::RPC_POOL;
-use crate::auth_tokens::get_auth_token;
+use super::auth::get_auth_token;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
 use crate::identity::Identity;

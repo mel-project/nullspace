@@ -18,10 +18,14 @@ use crate::config::Config;
 
 mod device_crypt;
 mod dm_recv;
+mod dm_send;
 mod group_recv;
 mod group_rotation;
+mod group_send;
+mod groups;
 mod send;
 
+pub use groups::group_create;
 pub use send::queue_message;
 
 pub const THREAD_KIND_DIRECT: &str = "direct";

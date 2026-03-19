@@ -18,7 +18,7 @@ use crate::database::DATABASE;
 use crate::events::emit_event;
 use crate::identity::identity_exists;
 use crate::internal::{Event, InternalRpcError};
-use crate::server::get_server_client;
+use crate::net::get_server_client;
 
 use super::{AttachmentStatus, load_attachment_root};
 

@@ -5,15 +5,15 @@ use nullspace_structs::event::{Event, EventRecipient};
 use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
 use nullspace_structs::server::ServerName;
 
-use crate::auth_tokens::get_auth_token;
+use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::convo::{NewThreadEvent, THREAD_KIND_DIRECT, ensure_thread_id, insert_thread_event};
 use crate::database::DATABASE;
 use crate::events::emit_event;
 use crate::identity::Identity;
-use crate::long_poll::LONG_POLLER;
-use crate::mailbox::{load_mailbox_after, update_mailbox_after};
-use crate::server::{get_server_client, own_server_name};
+use crate::net::LONG_POLLER;
+use crate::net::{load_mailbox_after, update_mailbox_after};
+use crate::net::{get_server_client, own_server_name};
 
 use super::device_crypt::decrypt_and_verify;
 use super::send::store_message_attachments;

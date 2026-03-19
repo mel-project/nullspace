@@ -14,7 +14,7 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use tokio::sync::oneshot;
 
 use crate::config::{Config, Ctx};
-use crate::server::get_server_client;
+use super::server::get_server_client;
 
 const LONG_POLL_MIN_MS: u64 = 15_000;
 const LONG_POLL_MAX_MS: u64 = 30 * 60 * 1000;

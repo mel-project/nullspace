@@ -50,7 +50,7 @@ pub async fn group_create(
     rotation.sign(&identity.device_secret);
 
     server
-        .group_create(auth.clone(), rotation)
+        .group_create(auth, rotation)
         .await?
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 

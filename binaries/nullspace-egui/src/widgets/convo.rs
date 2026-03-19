@@ -433,15 +433,14 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
                 }
                 upload_files_total.set_next(*upload_files_total + added);
             }
-        } else if let Some(path) = app.file_dialog.take_picked() {
-            if path.is_file() {
+        } else if let Some(path) = app.file_dialog.take_picked()
+            && path.is_file() {
                 pending_attachments.write().push(path);
                 if *upload_files_total == 0 {
                     upload_files_done.set_next(0);
                 }
                 upload_files_total.set_next(*upload_files_total + 1);
             }
-        }
     }
 
     let uploads_pending = attachment.is_some() || !pending_attachments.read().is_empty();

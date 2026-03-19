@@ -28,7 +28,7 @@ pub async fn queue_message(
 ) -> anyhow::Result<i64> {
     let recipient = match convo_id {
         ConvoId::Direct { peer } => EventRecipient::Dm(peer.clone()),
-        ConvoId::Group { group_id } => EventRecipient::Group(group_id.clone()),
+        ConvoId::Group { group_id } => EventRecipient::Group(*group_id),
     };
 
     let counterparty = convo_id.counterparty();
@@ -189,7 +189,7 @@ async fn send_message(
         ConvoId::Group { group_id } => {
             let event = Event {
                 sender: pending.sender.clone(),
-                recipient: EventRecipient::Group(group_id.clone()),
+                recipient: EventRecipient::Group(*group_id),
                 sent_at: pending.sent_at,
                 after: pending.event_after,
                 tag: pending.event_tag,

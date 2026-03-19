@@ -7,7 +7,6 @@ use nullspace_crypt::stream::StreamKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::Blob;
 use crate::certificate::DeviceSecret;
 use crate::username::UserName;
 

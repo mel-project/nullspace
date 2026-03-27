@@ -109,5 +109,7 @@ CREATE TABLE group_keys (
     rotation_index INTEGER NOT NULL,
     gbk BLOB NOT NULL,
     server_name TEXT NOT NULL,
+    admin_set BLOB NOT NULL,
+    rotation_hash BLOB NOT NULL,
     PRIMARY KEY (group_id, rotation_index)
 );

@@ -1,31 +1,32 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use crate::config::Config;
+use crate::database::DATABASE;
+use crate::identity::Identity;
+use crate::net::{get_auth_token, get_server_client};
+use crate::users::get_user_info;
 use anyctx::AnyCtx;
 use bytes::Bytes;
+use nullspace_crypt::dh::DhPublic;
+use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::{Event, EventRecipient, TAG_ROTATION_HINT};
-use nullspace_structs::group::{GroupBearerKey, GroupId, GroupRotation};
-use nullspace_structs::server::ServerName;
+use nullspace_structs::group::{
+    GroupBearerKey, GroupId, GroupRoster, GroupRotation, GroupRotationPayload,
+};
 use nullspace_structs::timestamp::NanoTimestamp;
 
-use crate::config::Config;
-use crate::database::DATABASE;
-use crate::identity::Identity;
-use crate::net::get_auth_token;
-use crate::net::get_server_client;
+use super::groups::load_roster;
 
 /// Admin rotation submit loop.
 ///
 /// Every hour, for each group where this device is an admin, roll the dice
 /// and maybe submit a new GBK rotation. The expected interval is ~1 rotation
 /// per day per group (with a single admin).
-///
-/// This loop never reads or writes the local GBK table — it only talks to
-/// the server. The recv loop discovers and adopts rotations via hints.
-pub(super) async fn group_rotation_loop(ctx: &AnyCtx<Config>) {
+pub async fn group_rotation_loop(ctx: &AnyCtx<Config>) {
     loop {
         if let Err(err) = group_rotation_loop_once(ctx).await {
             tracing::error!(error = %err, "group rotation loop error");
@@ -36,36 +37,56 @@ pub(super) async fn group_rotation_loop(ctx: &AnyCtx<Config>) {
 
 async fn group_rotation_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
+    let device_pk = identity.device_secret.public().signing_public();
 
-    let rows = sqlx::query_as::<_, (Vec<u8>, i64, Vec<u8>, String)>(
-        "SELECT group_id, MAX(rotation_index) as max_idx, gbk, server_name \
-         FROM group_keys GROUP BY group_id",
+    let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>(
+        "SELECT group_id, gbk, admin_set, rotation_hash \
+         FROM group_keys k WHERE rotation_index = \
+           (SELECT MAX(rotation_index) FROM group_keys WHERE group_id = k.group_id)",
     )
     .fetch_all(&mut *db.acquire().await?)
     .await?;
 
-    for (gid_bytes, max_idx, gbk_bytes, sn) in rows {
+    for (gid_bytes, gbk_bytes, admin_set_bytes, rot_hash_bytes) in rows {
         let gid_arr: [u8; 16] = gid_bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid group_id length"))?;
         let group_id = GroupId::from_bytes(gid_arr);
-        let current_index = max_idx as u64;
-        let server_name = ServerName::parse(sn)?;
-        let server = get_server_client(ctx, &server_name).await?;
 
-        // Fetch the current rotation to get admin_set
-        let current_rotation = match server.group_get(group_id, current_index).await? {
-            Ok(Some(rot)) => rot,
-            Ok(None) | Err(_) => continue,
+        let admin_set: BTreeSet<SigningPublic> = bcs::from_bytes(&admin_set_bytes)?;
+        let old_gbk: GroupBearerKey = bcs::from_bytes(&gbk_bytes)?;
+        if !admin_set.contains(&device_pk) {
+            continue;
+        }
+
+        // p = 1/(24*n_admins) per hour -> ~1 rotation/day
+        let n_admins = admin_set.len().max(1) as f64;
+        let p = 1.0 / (24.0 * n_admins);
+        if rand::random::<f64>() >= p {
+            continue;
+        }
+
+        let rot_hash_arr: [u8; 32] = rot_hash_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid rotation_hash length"))?;
+        let prev_rotation_hash = Hash::from_bytes(rot_hash_arr);
+
+        // Load the roster and submit rotation with full payload
+        let roster = match load_roster(&mut *db.acquire().await?, group_id).await {
+            Ok((_, roster)) => roster,
+            Err(err) => {
+                tracing::warn!(group = %group_id, error = %err, "no roster for rotation");
+                continue;
+            }
         };
 
-        let old_gbk: GroupBearerKey = bcs::from_bytes(&gbk_bytes)?;
-        if let Err(err) = maybe_submit_rotation(
+        if let Err(err) = submit_rotation(
             ctx,
+            &identity,
             group_id,
-            current_index,
-            &current_rotation.new_admin_set,
-            &server_name,
+            prev_rotation_hash,
+            &roster,
             &old_gbk,
         )
         .await
@@ -77,51 +98,45 @@ async fn group_rotation_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Roll the dice; if selected, generate a new GBK and submit it.
-async fn maybe_submit_rotation(
+/// Submit a new GBK rotation encrypted to all members in the roster.
+pub async fn submit_rotation(
     ctx: &AnyCtx<Config>,
+    identity: &Identity,
     group_id: GroupId,
-    current_index: u64,
-    admin_set: &BTreeSet<SigningPublic>,
-    server_name: &ServerName,
+    prev_rotation_hash: Hash,
+    roster: &GroupRoster,
     old_gbk: &GroupBearerKey,
 ) -> anyhow::Result<()> {
-    let db = ctx.get(DATABASE);
-    let identity = Identity::load(&mut *db.acquire().await?).await?;
+    let server_name = &old_gbk.server;
     let device_pk = identity.device_secret.public().signing_public();
 
-    if !admin_set.contains(&device_pk) {
-        return Ok(());
-    }
-
-    // p = 1/(24*n_admins) per hour → ~1 rotation/day
-    let n_admins = admin_set.len().max(1) as f64;
-    let p = 1.0 / (24.0 * n_admins);
-    if rand::random::<f64>() >= p {
-        return Ok(());
-    }
-
-    tracing::info!(group = %group_id, index = current_index + 1, "submitting GBK rotation");
+    tracing::info!(group = %group_id, "submitting GBK rotation");
 
     let new_gbk = GroupBearerKey::generate(group_id, server_name.clone());
-    let gbk_bytes = bcs::to_bytes(&new_gbk)?;
-    let gbk_encrypted =
-        HeaderEncrypted::encrypt_bytes(&gbk_bytes, [identity.medium_sk_current.public_key()])
-            .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Collect medium keys for all members and admin device keys
+    let (all_medium_keys, new_admin_set) = collect_member_keys(ctx, roster).await?;
+
+    let payload = GroupRotationPayload {
+        gbk: new_gbk.clone(),
+        roster: roster.clone(),
+    };
+    let payload_bytes = bcs::to_bytes(&payload)?;
+    let payload_encrypted = HeaderEncrypted::encrypt_bytes(&payload_bytes, all_medium_keys)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     let mut rotation = GroupRotation {
         group_id,
-        index: current_index + 1,
+        prev_hash: Some(prev_rotation_hash),
         signer: device_pk,
-        new_admin_set: admin_set.clone(),
-        gbk_rotation: gbk_encrypted,
+        new_admin_set,
+        gbk_rotation: payload_encrypted,
         signature: Signature::from_bytes([0u8; 64]),
     };
     rotation.sign(&identity.device_secret);
 
     let server = get_server_client(ctx, server_name).await?;
 
-    // Submit — AccessDenied means another admin raced us, which is fine
     match server.group_update(rotation).await? {
         Ok(()) => {}
         Err(e) => {
@@ -130,17 +145,53 @@ async fn maybe_submit_rotation(
         }
     }
 
-    // Create the new mailbox (only submitter knows the key at this point)
     let auth = get_auth_token(ctx).await?;
     server
         .mailbox_create(auth, new_gbk.mailbox_key())
         .await?
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    // Hint the old mailbox so members check the registry promptly
-    send_rotation_hint(ctx, &identity, group_id, old_gbk).await?;
+    send_rotation_hint(ctx, identity, group_id, old_gbk).await?;
 
     Ok(())
+}
+
+/// Look up all members' medium-term DH keys and derive the admin device key set.
+///
+/// Returns (all_medium_keys, admin_device_keys).
+pub async fn collect_member_keys(
+    ctx: &AnyCtx<Config>,
+    roster: &GroupRoster,
+) -> anyhow::Result<(Vec<DhPublic>, BTreeSet<SigningPublic>)> {
+    let mut all_medium_keys = Vec::new();
+    let mut admin_device_keys = BTreeSet::new();
+
+    for (username, state) in &roster.members {
+        let user_info = get_user_info(ctx, username).await?;
+
+        // Collect medium keys for encryption
+        for device_pk in &user_info.devices {
+            let device_hash = device_pk.bcs_hash();
+            if let Some(medium_pk) = user_info.medium_pks.get(&device_hash) {
+                if medium_pk.verify(*device_pk).is_ok() {
+                    all_medium_keys.push(medium_pk.medium_pk.clone());
+                }
+            }
+        }
+
+        // Collect admin device keys for new_admin_set
+        if state.is_admin {
+            for device_pk in &user_info.devices {
+                admin_device_keys.insert(*device_pk);
+            }
+        }
+    }
+
+    if all_medium_keys.is_empty() {
+        anyhow::bail!("no medium keys available for any group member");
+    }
+
+    Ok((all_medium_keys, admin_device_keys))
 }
 
 async fn send_rotation_hint(

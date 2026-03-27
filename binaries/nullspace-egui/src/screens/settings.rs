@@ -5,6 +5,7 @@ use egui_hooks::hook::state::Var;
 use crate::NullspaceApp;
 
 mod add_device;
+mod debug;
 mod preferences;
 mod profile;
 
@@ -13,6 +14,7 @@ enum SettingsTab {
     Profile,
     AddDevice,
     Preferences,
+    Debug,
 }
 
 pub struct Settings<'a> {
@@ -51,6 +53,7 @@ impl Widget for Settings<'_> {
                                 SettingsTab::Preferences,
                                 "Preferences",
                             );
+                            ui.selectable_value(&mut *selected_tab, SettingsTab::Debug, "Debug");
                         });
                         ui.separator();
                         ui.vertical(|ui| match *selected_tab {
@@ -67,6 +70,11 @@ impl Widget for Settings<'_> {
                             SettingsTab::Preferences => {
                                 ui.push_id("settings_preferences", |ui| {
                                     preferences::render(ui, self.app);
+                                });
+                            }
+                            SettingsTab::Debug => {
+                                ui.push_id("settings_debug", |ui| {
+                                    debug::render(ui, self.app);
                                 });
                             }
                         });

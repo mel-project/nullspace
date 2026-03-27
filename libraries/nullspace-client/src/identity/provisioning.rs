@@ -25,15 +25,15 @@ use serde_with::formats::Unpadded;
 use serde_with::{FromInto, IfIsHumanReadable, serde_as};
 use tokio::sync::Mutex as AsyncMutex;
 
+use super::Identity;
 use crate::DIR_CLIENT;
-use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use super::Identity;
 use crate::internal::{
     Event, InternalRpcError, ProvisionHostState, RegisterFinish, RegisterStartInfo, internal_err,
 };
+use crate::net::get_auth_token;
 use crate::net::get_server_client;
 
 const PROVISION_HOST_REPOST_INTERVAL: Duration = Duration::from_secs(5);

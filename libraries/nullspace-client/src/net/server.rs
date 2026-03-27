@@ -10,9 +10,9 @@ use nullspace_dirclient::DirClient;
 use nullspace_rpc_pool::{PooledTransport, RpcPool};
 use nullspace_structs::server::{AuthToken, ProxyError, ServerClient, ServerName};
 
+use super::auth::get_auth_token;
 use crate::DIR_CLIENT;
 use crate::RPC_POOL;
-use super::auth::get_auth_token;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
 use crate::identity::Identity;

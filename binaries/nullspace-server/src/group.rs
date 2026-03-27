@@ -7,12 +7,8 @@ use crate::database::DATABASE;
 use crate::fatal_retry_later;
 
 pub async fn group_create(auth: AuthToken, rotation: GroupRotation) -> Result<(), ServerRpcError> {
-    if rotation.index != 0 {
-        tracing::debug!(
-            group = %rotation.group_id,
-            index = rotation.index,
-            "group create denied: initial rotation index must be zero"
-        );
+    if rotation.prev_hash.is_some() {
+        tracing::debug!(group = %rotation.group_id, "group create denied: initial rotation must have no prev_hash");
         return Err(ServerRpcError::AccessDenied);
     }
     if rotation.new_admin_set.is_empty() {
@@ -37,7 +33,7 @@ pub async fn group_create(auth: AuthToken, rotation: GroupRotation) -> Result<()
         .verify(rotation.signer)
         .map_err(|_| ServerRpcError::AccessDenied)?;
 
-    insert_rotation_row(&mut tx, &rotation).await?;
+    insert_rotation_row(&mut tx, 0, &rotation).await?;
 
     tx.commit().await.map_err(fatal_retry_later)?;
     tracing::debug!(group = %rotation.group_id, "group create accepted");
@@ -46,42 +42,38 @@ pub async fn group_create(auth: AuthToken, rotation: GroupRotation) -> Result<()
 
 pub async fn group_update(rotation: GroupRotation) -> Result<(), ServerRpcError> {
     if rotation.new_admin_set.is_empty() {
-        tracing::debug!(group = %rotation.group_id, index = rotation.index, "group update denied: empty admin set");
+        tracing::debug!(group = %rotation.group_id, "group update denied: empty admin set");
+        return Err(ServerRpcError::AccessDenied);
+    }
+    if rotation.prev_hash.is_none() {
+        tracing::debug!(group = %rotation.group_id, "group update denied: missing prev_hash");
         return Err(ServerRpcError::AccessDenied);
     }
 
     let mut tx = DATABASE.begin().await.map_err(fatal_retry_later)?;
-    let Some(latest_rotation) = latest_rotation(&mut tx, rotation.group_id).await? else {
+    let Some((latest_index, latest_rotation)) =
+        latest_rotation_with_index(&mut tx, rotation.group_id).await?
+    else {
         tracing::debug!(group = %rotation.group_id, "group update denied: unknown group");
         return Err(ServerRpcError::AccessDenied);
     };
 
-    let expected_index = latest_rotation
-        .index
+    let new_index = latest_index
         .checked_add(1)
         .ok_or(ServerRpcError::AccessDenied)?;
-    if rotation.index != expected_index {
-        tracing::debug!(
-            group = %rotation.group_id,
-            expected_index,
-            actual_index = rotation.index,
-            "group update denied: wrong index"
-        );
-        return Err(ServerRpcError::AccessDenied);
-    }
 
     if !latest_rotation.new_admin_set.contains(&rotation.signer) {
-        tracing::debug!(group = %rotation.group_id, index = rotation.index, "group update denied: signer is not an admin");
+        tracing::debug!(group = %rotation.group_id, index = new_index, "group update denied: signer is not an admin");
         return Err(ServerRpcError::AccessDenied);
     }
     rotation
         .verify(rotation.signer)
         .map_err(|_| ServerRpcError::AccessDenied)?;
 
-    insert_rotation_row(&mut tx, &rotation).await?;
+    insert_rotation_row(&mut tx, new_index, &rotation).await?;
 
     tx.commit().await.map_err(fatal_retry_later)?;
-    tracing::debug!(group = %rotation.group_id, index = rotation.index, "group update accepted");
+    tracing::debug!(group = %rotation.group_id, index = new_index, "group update accepted");
     Ok(())
 }
 
@@ -124,12 +116,12 @@ async fn auth_token_device_pk(
     row.map(|bytes| bytes_to_signing_public(&bytes)).transpose()
 }
 
-async fn latest_rotation(
+async fn latest_rotation_with_index(
     tx: &mut Transaction<'_, Sqlite>,
     group_id: GroupId,
-) -> Result<Option<GroupRotation>, ServerRpcError> {
-    let row = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT entry FROM group_rotations \
+) -> Result<Option<(u64, GroupRotation)>, ServerRpcError> {
+    let row = sqlx::query_as::<_, (i64, Vec<u8>)>(
+        "SELECT rotation_index, entry FROM group_rotations \
          WHERE group_id = ? \
          ORDER BY rotation_index DESC \
          LIMIT 1",
@@ -139,15 +131,19 @@ async fn latest_rotation(
     .await
     .map_err(fatal_retry_later)?;
 
-    row.map(|entry| bcs::from_bytes(&entry).map_err(fatal_retry_later))
-        .transpose()
+    row.map(|(idx, entry)| {
+        let rotation = bcs::from_bytes(&entry).map_err(fatal_retry_later)?;
+        Ok((idx as u64, rotation))
+    })
+    .transpose()
 }
 
 async fn insert_rotation_row(
     tx: &mut Transaction<'_, Sqlite>,
+    index: u64,
     rotation: &GroupRotation,
 ) -> Result<(), ServerRpcError> {
-    let index = i64::try_from(rotation.index).map_err(|_| ServerRpcError::AccessDenied)?;
+    let index = i64::try_from(index).map_err(|_| ServerRpcError::AccessDenied)?;
     let entry_bytes = bcs::to_bytes(rotation).map_err(fatal_retry_later)?;
     sqlx::query(
         "INSERT INTO group_rotations (group_id, rotation_index, entry) \

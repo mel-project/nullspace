@@ -38,3 +38,8 @@ When editing code, edit the documentation **MINIMALLY** to fix any documentation
 ## cargo check
 
 Always run cargo check after making significant changes to make sure things compile.
+
+## module/mod.rs vs module.rs
+
+use module/mod.rs when *all* it does is reexport things, but use module.rs when the root has its own logic and its submodules are    
+helpers for this logic.         

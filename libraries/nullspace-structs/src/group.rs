@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::e2ee::HeaderEncrypted;
 use crate::mailbox::MailboxKey;
 use crate::server::ServerName;
+use crate::username::UserName;
 
 /// A unique group identifier, wrapping a v4 UUID.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
@@ -56,22 +57,34 @@ impl FromStr for GroupId {
     }
 }
 
-/// A signed group key rotation entry bound to a group and log index.
+/// A signed group key rotation entry.
+///
+/// Entries form a hash chain: each entry (except the first) includes the hash
+/// of the previous entry, preventing the server from reordering, inserting,
+/// or silently replacing entries. Position in the log is implicit; clients
+/// track it locally.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GroupRotation {
     pub group_id: GroupId,
-    pub index: u64,
+    pub prev_hash: Option<Hash>,
     pub signer: SigningPublic,
     pub new_admin_set: BTreeSet<SigningPublic>,
     pub gbk_rotation: HeaderEncrypted,
     pub signature: Signature,
 }
 
+impl GroupRotation {
+    /// Compute the hash of this rotation entry (covers all fields including signature).
+    pub fn hash(&self) -> Hash {
+        Hash::digest(&bcs::to_bytes(self).unwrap())
+    }
+}
+
 impl Signable for GroupRotation {
     fn signed_value(&self) -> Vec<u8> {
         bcs::to_bytes(&(
             &self.group_id,
-            &self.index,
+            &self.prev_hash,
             &self.signer,
             &self.new_admin_set,
             &self.gbk_rotation,
@@ -126,4 +139,44 @@ impl GroupBearerKey {
         let digest = Hash::keyed_digest(b"ns-group-symmetric", &bcs::to_bytes(self).unwrap());
         AeadKey::from_bytes(digest.to_bytes())
     }
+}
+
+/// The plaintext payload inside `GroupRotation::gbk_rotation`.
+///
+/// HeaderEncrypted to all members' medium-term keys, so every member can
+/// decrypt and learn both the current GBK and the full group roster.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupRotationPayload {
+    pub gbk: GroupBearerKey,
+    pub roster: GroupRoster,
+}
+
+/// Complete group membership state, embedded in every rotation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupRoster {
+    pub members: BTreeMap<UserName, MemberState>,
+    pub banned: BTreeSet<UserName>,
+    pub metadata: GroupMetadata,
+    pub settings: GroupRosterSettings,
+}
+
+/// Per-member flags within a group roster.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MemberState {
+    pub is_admin: bool,
+    pub is_muted: bool,
+}
+
+/// Group title and description.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMetadata {
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Group-wide settings carried in the roster.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupRosterSettings {
+    pub new_members_muted: bool,
+    pub allow_new_members_to_see_history: bool,
 }

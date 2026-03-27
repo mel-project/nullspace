@@ -15,7 +15,7 @@ use tracing::warn;
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::identity::Identity;
-use crate::users::{UserInfo, get_user_info};
+use crate::users::{UserInfo, get_user_dm_mailbox, get_user_info};
 
 use super::device_crypt::sign_and_encrypt;
 
@@ -44,7 +44,7 @@ async fn send_dm_once(
 ) -> anyhow::Result<NanoTimestamp> {
     let peer = get_user_info(ctx, target).await?;
     let recipients = recipients_from_peer(peer.as_ref())?;
-    let target_mailbox = fetch_peer_mailbox_id(peer.as_ref()).await?;
+    let target_mailbox = fetch_peer_mailbox_id(ctx, peer.as_ref()).await?;
 
     let event_bytes = bcs::to_bytes(event)?;
     let body = sign_and_encrypt(identity, &event_bytes, recipients)?;
@@ -57,23 +57,10 @@ async fn send_dm_once(
     Ok(received_at)
 }
 
-async fn fetch_peer_mailbox_id(peer: &UserInfo) -> anyhow::Result<MailboxId> {
-    let profile = peer
-        .server
-        .profile(peer.username.clone())
-        .await?
-        .map_err(|err| anyhow::anyhow!(err.to_string()))?
-        .context("target profile not found")?;
-
-    if !peer
-        .devices
-        .iter()
-        .any(|device_pk| profile.verify(*device_pk).is_ok())
-    {
-        anyhow::bail!("target profile signature is invalid");
-    }
-
-    Ok(profile.dm_mailbox)
+async fn fetch_peer_mailbox_id(ctx: &AnyCtx<Config>, peer: &UserInfo) -> anyhow::Result<MailboxId> {
+    get_user_dm_mailbox(ctx, peer)
+        .await
+        .context("target profile not found")
 }
 
 fn collect_recipients(

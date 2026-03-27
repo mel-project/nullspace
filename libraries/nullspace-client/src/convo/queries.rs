@@ -1,0 +1,184 @@
+use nullspace_structs::timestamp::NanoTimestamp;
+use nullspace_structs::username::UserName;
+use tracing::warn;
+
+use super::{
+    ConvoHistoryRow, ConvoId, ConvoItem, ConvoListRow, ConvoSummary, decode_convo_item_kind,
+    display_title_for_convo, parse_convo_id,
+};
+
+pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<ConvoSummary>> {
+    let rows = sqlx::query_as::<_, ConvoListRow>(
+        "SELECT t.thread_kind, t.thread_counterparty, \
+                (SELECT COUNT(*) FROM thread_events ue \
+                 JOIN client_identity ci ON ci.id = 1 \
+                 LEFT JOIN message_reads mr ON mr.message_id = ue.id \
+                 WHERE ue.thread_id = t.id \
+                   AND ue.received_at IS NOT NULL \
+                   AND ue.sender_username != ci.username \
+                   AND mr.message_id IS NULL) AS unread_count, \
+                e.id AS msg_id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
+         FROM event_threads t \
+         LEFT JOIN thread_events e \
+           ON e.id = (SELECT MAX(id) FROM thread_events WHERE thread_id = t.id) \
+         LEFT JOIN message_reads mr ON mr.message_id = e.id \
+         ORDER BY (e.received_at IS NULL) DESC, e.received_at DESC, t.created_at DESC, t.id DESC",
+    )
+    .fetch_all(&mut *db)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let convo_id = parse_convo_id(&row.thread_kind, &row.thread_counterparty)
+            .ok_or_else(|| anyhow::anyhow!("invalid convo row"))?;
+        let last_item = match (
+            row.msg_id,
+            row.sender_username,
+            row.event_tag,
+            row.event_body,
+        ) {
+            (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
+                let sender = UserName::parse(sender_username)?;
+                let kind = match decode_convo_item_kind(u16::try_from(event_tag)?, &body, id) {
+                    Ok(kind) => Some(kind),
+                    Err(err) => {
+                        warn!(error = %err, "failed to decode message payload in convo_list");
+                        None
+                    }
+                };
+                kind.map(|kind| {
+                    ConvoItem {
+                        id,
+                        convo_id: convo_id.clone(),
+                        sender,
+                        sent_at: NanoTimestamp(0),
+                        send_error: row.send_error.clone(),
+                        received_at: row.received_at.map(|ts| NanoTimestamp(ts as u64)),
+                        read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+                        kind,
+                    }
+                    .preview()
+                })
+            }
+            _ => None,
+        };
+        let display_title = display_title_for_convo(&convo_id);
+        out.push(ConvoSummary {
+            convo_id,
+            display_title,
+            last_item,
+            unread_count: row.unread_count as u64,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn convo_history(
+    db: &mut sqlx::SqliteConnection,
+    convo_id: ConvoId,
+    before: Option<i64>,
+    after: Option<i64>,
+    limit: u16,
+) -> anyhow::Result<Vec<ConvoItem>> {
+    let before = before.unwrap_or(i64::MAX);
+    let after = after.unwrap_or(i64::MIN);
+    let thread_kind = convo_id.convo_type();
+    let counterparty = convo_id.counterparty();
+    let mut rows = sqlx::query_as::<_, ConvoHistoryRow>(
+        "SELECT e.*, mr.read_at \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         LEFT JOIN message_reads mr ON mr.message_id = e.id \
+         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.id <= ? AND e.id >= ? \
+         ORDER BY e.id DESC \
+         LIMIT ?",
+    )
+    .bind(thread_kind)
+    .bind(counterparty)
+    .bind(before)
+    .bind(after)
+    .bind(limit as i64)
+    .fetch_all(&mut *db)
+    .await?;
+    rows.reverse();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let sender = UserName::parse(row.event.sender_username)?;
+        let kind = match decode_convo_item_kind(
+            u16::try_from(row.event.event_tag)?,
+            &row.event.event_body,
+            row.event.id,
+        ) {
+            Ok(kind) => kind,
+            Err(err) => {
+                warn!(error = %err, "failed to decode message payload in convo_history");
+                continue;
+            }
+        };
+        out.push(ConvoItem {
+            id: row.event.id,
+            convo_id: convo_id.clone(),
+            sender,
+            sent_at: NanoTimestamp(row.event.sent_at as u64),
+            send_error: row.event.send_error,
+            received_at: row.event.received_at.map(|ts| NanoTimestamp(ts as u64)),
+            read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+            kind,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn mark_convo_read(
+    db: &mut sqlx::SqliteConnection,
+    convo_id: &ConvoId,
+    up_to_id: i64,
+) -> anyhow::Result<u64> {
+    let read_at = NanoTimestamp::now().0 as i64;
+    let affected = sqlx::query(
+        "INSERT OR IGNORE INTO message_reads (message_id, read_at) \
+         SELECT e.id, ? \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         JOIN client_identity ci ON ci.id = 1 \
+         WHERE t.thread_kind = ? \
+           AND t.thread_counterparty = ? \
+           AND e.id <= ? \
+           AND e.received_at IS NOT NULL \
+           AND e.sender_username != ci.username",
+    )
+    .bind(read_at)
+    .bind(convo_id.convo_type())
+    .bind(convo_id.counterparty())
+    .bind(up_to_id)
+    .execute(&mut *db)
+    .await?
+    .rows_affected();
+    Ok(affected)
+}
+
+pub async fn last_dm_received_at(
+    db: &mut sqlx::SqliteConnection,
+    local_username: &UserName,
+    other_username: &UserName,
+) -> anyhow::Result<Option<NanoTimestamp>> {
+    let convo_id = ConvoId::Direct {
+        peer: other_username.clone(),
+    };
+    let thread_kind = convo_id.convo_type();
+    let counterparty = convo_id.counterparty();
+    let received_at = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT e.received_at \
+         FROM thread_events e \
+         JOIN event_threads t ON e.thread_id = t.id \
+         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.sender_username != ? \
+         ORDER BY e.id DESC \
+         LIMIT 1",
+    )
+    .bind(thread_kind)
+    .bind(counterparty)
+    .bind(local_username.as_str())
+    .fetch_optional(&mut *db)
+    .await?
+    .flatten();
+    Ok(received_at.map(|ts| NanoTimestamp(ts as u64)))
+}

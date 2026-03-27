@@ -9,12 +9,12 @@ use nullspace_structs::server::{
     AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest,
 };
 
+use super::server::own_server_name;
 use crate::DIR_CLIENT;
 use crate::RPC_POOL;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
 use crate::identity::Identity;
-use super::server::own_server_name;
 
 const AUTH_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
 

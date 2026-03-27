@@ -1,10 +1,9 @@
 use anyctx::AnyCtx;
 use async_channel::Receiver as AsyncReceiver;
 use async_trait::async_trait;
-use bytes::Bytes;
 use nanorpc::nanorpc_derive;
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::event::{MessagePayload, TAG_MESSAGE};
+use nullspace_structs::event::MessagePayload;
 use nullspace_structs::fragment::{Attachment, ImageAttachment};
 use nullspace_structs::group::GroupId;
 use nullspace_structs::server::ServerName;
@@ -20,17 +19,13 @@ use uuid::Uuid;
 
 use crate::attachments::{self, AttachmentStatus};
 use crate::config::Config;
+use crate::convo;
 pub use crate::convo::{
     ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, SystemItem,
 };
-use crate::convo::{convo_history, convo_list, mark_convo_read, queue_message};
-use crate::database::{DATABASE, DbNotify};
-use crate::events::emit_event;
-use crate::identity::Identity;
-use crate::identity::identity_exists;
-use crate::users::own_profile_set as set_own_profile;
+use crate::identity;
 use crate::identity::provisioning::{self, HostProvisioning};
-use crate::users::user_details_data;
+use crate::users;
 
 /// The client's full RPC interface.
 ///
@@ -558,16 +553,6 @@ impl InternalImpl {
             host_provisioning: Arc::new(HostProvisioning::new()),
         }
     }
-
-    async fn conn(&self) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, InternalRpcError> {
-        self.ctx.get(DATABASE).acquire().await.map_err(internal_err)
-    }
-
-    async fn load_identity(&self) -> Result<Identity, InternalRpcError> {
-        Identity::load(&mut *self.conn().await?)
-            .await
-            .map_err(internal_err)
-    }
 }
 
 #[async_trait]
@@ -604,9 +589,7 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn convo_list(&self) -> Result<Vec<ConvoSummary>, InternalRpcError> {
-        convo_list(&mut *self.conn().await?)
-            .await
-            .map_err(internal_err)
+        convo::convo_list_impl(&self.ctx).await
     }
 
     async fn convo_history(
@@ -616,9 +599,7 @@ impl InternalProtocol for InternalImpl {
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<ConvoItem>, InternalRpcError> {
-        convo_history(&mut *self.conn().await?, convo_id, before, after, limit)
-            .await
-            .map_err(internal_err)
+        convo::convo_history_impl(&self.ctx, convo_id, before, after, limit).await
     }
 
     async fn convo_send(
@@ -626,18 +607,7 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         message: MessagePayload,
     ) -> Result<i64, InternalRpcError> {
-        let identity = self
-            .load_identity()
-            .await
-            .map_err(|_| InternalRpcError::NotReady)?;
-        let body = Bytes::from(bcs::to_bytes(&message).map_err(internal_err)?);
-        let mut conn = self.conn().await?;
-        let id = queue_message(&mut conn, &convo_id, &identity.username, TAG_MESSAGE, &body)
-            .await
-            .map_err(internal_err)?;
-        DbNotify::touch();
-        emit_event(&self.ctx, Event::ConvoUpdated { convo_id });
-        Ok(id)
+        convo::convo_send_impl(&self.ctx, convo_id, message).await
     }
 
     async fn convo_mark_read(
@@ -645,38 +615,19 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         up_to_id: i64,
     ) -> Result<(), InternalRpcError> {
-        let affected = mark_convo_read(&mut *self.conn().await?, &convo_id, up_to_id)
-            .await
-            .map_err(internal_err)?;
-        if affected > 0 {
-            emit_event(&self.ctx, Event::ConvoUpdated { convo_id });
-        }
-        Ok(())
+        convo::convo_mark_read_impl(&self.ctx, convo_id, up_to_id).await
     }
 
     async fn group_create(&self, request: GroupCreateRequest) -> Result<GroupId, InternalRpcError> {
-        let group_id = crate::convo::group_create(&self.ctx, request)
-            .await
-            .map_err(internal_err)?;
-        emit_event(
-            &self.ctx,
-            Event::ConvoUpdated {
-                convo_id: ConvoId::Group { group_id },
-            },
-        );
-        Ok(group_id)
+        convo::group_create_impl(&self.ctx, request).await
     }
 
     async fn own_server(&self) -> Result<ServerName, InternalRpcError> {
-        self.load_identity()
-            .await?
-            .server_name
-            .ok_or_else(|| InternalRpcError::Other("server name not available".into()))
+        identity::own_server_impl(&self.ctx).await
     }
 
     async fn group_view(&self, group: GroupId) -> Result<GroupView, InternalRpcError> {
-        let _ = group;
-        Err(groups_disabled_error())
+        convo::group_view_impl(&self.ctx, group).await
     }
 
     async fn group_action(
@@ -684,20 +635,18 @@ impl InternalProtocol for InternalImpl {
         group: GroupId,
         action: GroupAction,
     ) -> Result<(), InternalRpcError> {
-        let _ = (group, action);
-        Err(groups_disabled_error())
+        convo::group_action_impl(&self.ctx, group, action).await
     }
 
     async fn group_invitation_list(&self) -> Result<Vec<GroupInvitationSummary>, InternalRpcError> {
-        Err(groups_disabled_error())
+        convo::group_invitation_list_impl(&self.ctx).await
     }
 
     async fn group_invitation_accept(
         &self,
         invitation_id: i64,
     ) -> Result<GroupId, InternalRpcError> {
-        let _ = invitation_id;
-        Err(groups_disabled_error())
+        convo::group_invitation_accept_impl(&self.ctx, invitation_id).await
     }
 
     async fn attachment_upload(
@@ -750,35 +699,11 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn user_details(&self, username: UserName) -> Result<UserDetails, InternalRpcError> {
-        if !identity_exists(&mut *self.conn().await?)
-            .await
-            .map_err(internal_err)?
-        {
-            return Err(InternalRpcError::NotReady);
-        }
-        let identity = self.load_identity().await?;
-        let details = user_details_data(&self.ctx, &identity.username, &username)
-            .await
-            .map_err(map_anyhow_err)?;
-
-        Ok(UserDetails {
-            username,
-            display_name: details.display_name,
-            avatar: details.avatar,
-            server_name: Some(details.server_name),
-            common_groups: Vec::new(),
-            last_dm_message: details.last_dm_received_at.map(|received_at| {
-                UserLastMessageSummary {
-                    received_at: Some(received_at),
-                    direction: MessageDirection::Incoming,
-                    preview: String::new(),
-                }
-            }),
-        })
+        users::user_details_impl(&self.ctx, username).await
     }
 
     async fn own_username(&self) -> Result<UserName, InternalRpcError> {
-        Ok(self.load_identity().await?.username)
+        identity::own_username_impl(&self.ctx).await
     }
 
     async fn own_profile_set(
@@ -786,7 +711,7 @@ impl InternalProtocol for InternalImpl {
         display_name: Option<String>,
         avatar: Option<ImageAttachment>,
     ) -> Result<(), InternalRpcError> {
-        set_own_profile(&self.ctx, display_name, avatar).await
+        users::own_profile_set(&self.ctx, display_name, avatar).await
     }
 }
 
@@ -794,14 +719,10 @@ pub fn internal_err(err: impl std::fmt::Display) -> InternalRpcError {
     InternalRpcError::Other(err.to_string())
 }
 
-fn map_anyhow_err(err: anyhow::Error) -> InternalRpcError {
+pub fn map_anyhow_err(err: anyhow::Error) -> InternalRpcError {
     if let Some(rpc_err) = err.downcast_ref::<InternalRpcError>() {
         rpc_err.clone()
     } else {
         InternalRpcError::Other(err.to_string())
     }
-}
-
-fn groups_disabled_error() -> InternalRpcError {
-    InternalRpcError::Other("groups are disabled".into())
 }

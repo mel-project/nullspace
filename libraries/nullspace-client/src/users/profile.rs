@@ -4,13 +4,13 @@ use nullspace_structs::profile::UserProfile;
 use nullspace_structs::timestamp::Timestamp;
 use nullspace_structs::username::UserName;
 
+use super::info::get_user_info;
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::identity::Identity;
 use crate::identity::identity_exists;
 use crate::internal::{InternalRpcError, internal_err};
 use crate::net::{get_server_client, own_server_name};
-use super::info::get_user_info;
 
 pub async fn get_profile(
     ctx: &anyctx::AnyCtx<Config>,
@@ -75,8 +75,9 @@ pub async fn own_profile_set(
         signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
     };
     profile.sign(&identity.device_secret);
+    let username = identity.username.clone();
     server
-        .profile_set(identity.username, profile)
+        .profile_set(username.clone(), profile)
         .await
         .map_err(internal_err)?
         .map_err(internal_err)?;

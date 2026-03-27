@@ -10,6 +10,12 @@ use crate::username::UserName;
 
 pub const TAG_MESSAGE: u16 = 1;
 pub const TAG_ROTATION_HINT: u16 = 2;
+pub const TAG_GROUP_INVITATION: u16 = 3;
+pub const TAG_LEAVE_REQUEST: u16 = 4;
+pub const TAG_GROUP_ADMIN_CHANGE: u16 = 5;
+pub const TAG_GROUP_MUTE_CHANGE: u16 = 6;
+pub const TAG_GROUP_METADATA_CHANGE: u16 = 7;
+pub const TAG_GROUP_SETTINGS_CHANGE: u16 = 8;
 
 /// Distinguishes whether an event targets a DM or a group conversation.
 ///
@@ -55,4 +61,46 @@ impl Event {
         let bytes = bcs::to_bytes(self).expect("event bcs serialization");
         Hash::digest(&bytes)
     }
+}
+
+use crate::group::GroupBearerKey;
+
+/// Body of a `TAG_GROUP_INVITATION` DM event. Contains the GBK so the
+/// invitee can immediately start polling the group mailbox, plus a
+/// rotation_index hint for fetching the roster snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupInvitationBody {
+    pub group_id: GroupId,
+    pub gbk: GroupBearerKey,
+    pub rotation_index: u64,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Body of a `TAG_GROUP_ADMIN_CHANGE` group mailbox event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupAdminChangeBody {
+    pub username: UserName,
+    pub is_admin: bool,
+}
+
+/// Body of a `TAG_GROUP_MUTE_CHANGE` group mailbox event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMuteChangeBody {
+    pub username: UserName,
+    pub muted: bool,
+}
+
+/// Body of a `TAG_GROUP_METADATA_CHANGE` group mailbox event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMetadataChangeBody {
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Body of a `TAG_GROUP_SETTINGS_CHANGE` group mailbox event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupSettingsChangeBody {
+    pub new_members_muted: bool,
+    pub allow_new_members_to_see_history: bool,
 }

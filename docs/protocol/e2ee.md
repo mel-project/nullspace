@@ -24,16 +24,16 @@ First of all, *deniability complicates protocol design* and is effectively impos
 
 So the best we can do is have DMs be deniable, but groups be on a spectrum from not-deniable to sorta-deniable. But that brings us to the second point: *varying deniability between groups and DMs is really bad UX*. Users will be surprised if group chat transcripts can't be faked, but people can fake chat transcripts in DMs. "Can I ask for cryptographic proof for this scandalous Nullspace convo going viral" should have a uniform answer either way.
 
-Finally, in practice, deniability minimally affects the most problematic forms of non-repudiation that it defends against in theory, while actually disabling some some *more user-empowering* forms of non-repudiation. 
+Finally, in practice, deniability minimally affects the most problematic forms of non-repudiation that it defends against in theory, while actually disabling some some *more user-empowering* forms of non-repudiation.
 
-Powerful third parties have really good ways of getting proof that somebody said something, like subpoenaing server logs and confiscating devices, that don't require cryptographic non-repudiation. Put it another way, deniable systems don't prevent providers from offering non-repudiable "abuse report" features, i.e. users snitching each other out to the server (a unique server-side ID of the message and a copy of the unique symmetric key used to encrypt that message is enough to prove to the server that somebody said something). 
+Powerful third parties have really good ways of getting proof that somebody said something, like subpoenaing server logs and confiscating devices, that don't require cryptographic non-repudiation. Put it another way, deniable systems don't prevent providers from offering non-repudiable "abuse report" features, i.e. users snitching each other out to the server (a unique server-side ID of the message and a copy of the unique symmetric key used to encrypt that message is enough to prove to the server that somebody said something).
 
 On the other hand, deniability means that we cannot offer certain features securely, like quote-forwarding messages purporting to be from other users. If forging "message quotes" is done by server-side logic or some other non-cryptogrpahic mechanism, then it's even worse, since malicious servers can easily fool users who are accustomed to trusting the "original author" field displayed in the UI.
 
 ### On compromise blast radii
 
 - **We use periodic rekeying rather than ratcheting**. Yes, this does mean we give up message-level FS/PCS.
-    - Real-world compromise blast radii are *far* bigger than compromising a single key. There just isn't a realistic scenario where 1. all the keys on a device get compromised 2. no previous message history gets compromised 3. the attacker can't impersonate the user to download more messages, participate in further ratcheting, etc, at least for a small amount of time. 
+    - Real-world compromise blast radii are *far* bigger than compromising a single key. There just isn't a realistic scenario where 1. all the keys on a device get compromised 2. no previous message history gets compromised 3. the attacker can't impersonate the user to download more messages, participate in further ratcheting, etc, at least for a small amount of time.
     - This means that a *cryptographic* compromise blast radius of smaller than a few hours is unlikely to improve security. Message-granularity FS/PCS is way overkill. Periodic rekeying is a perfectly reasonable way of getting coarse-grained FS/PCS, where compromising all keys on a device allows decrypting messages within a few hours in the future and the past, but nothing further.
     - In return, we get totally game-changing implementation and performance benefits:
         - Huge group sizes are possible. "Discord server"-sized communites that are entirely E2EE are now realistic.
@@ -46,29 +46,13 @@ Before we discuss the specific protocols, it's useful to outline a few primitive
 
 ### Events
 
-An event is the plaintext payload carried inside encrypted messages. It is BCS-encoded as:
+An [event](events.md) is the plaintext payload carried inside encrypted messages. It is BCS-encoded as:
 
 ```
-[recipient, sent_at, mime, body]
+[sender, recipient, sent_at, after, tag, body]
 ```
 
-- `recipient`: `["user", username]` (for DMs) or `["group", group_id]` (for group chats)
-- `sent_at`: Unix timestamp (nanoseconds)
-- `mime`: a MIME type string
-- `body`: opaque bytes
-
-### Tagged blobs
-
-Many places in the protocol carry opaque, tagged payloads as a **tagged blob**:
-
-```
-[kind, inner]
-```
-
-- `kind`: a string tag like `v1.message_content` or `v1.group_message`
-- `inner`: raw bytes whose interpretation depends on `kind`
-
-Tagged blobs are BCS-encoded.
+See [events](events.md) for the full specification including all tags and body formats.
 
 ### Header encryption
 
@@ -122,7 +106,7 @@ Notes:
 
 ### Device signing
 
-Device signing signs an arbitrary message in such a way that proves that it's signed by a device belonging to a particular username, as long as the recipient has access to directory lookups for that username. 
+Device signing signs an arbitrary message in such a way that proves that it's signed by a device belonging to a particular username, as long as the recipient has access to directory lookups for that username.
 
 Structure:
 - A device-signed message is a BCS-encoded tuple `[sender, sender_device_pk, body, signature]`.
@@ -150,21 +134,30 @@ The signature is over the full tuple `(sender, sender_device_pk, body)` rather t
 
 ## DM encryption
 
-If Alice wants to send a plaintext [event](events.md) as a DM to Bob:
+DMs are encrypted with header encryption and authenticated with device signing. There is no tagged blob wrapper — the event bytes are signed and encrypted directly.
 
-- A DM is sent as a mailbox entry whose `kind` is `v1.direct_message`.
-- The mailbox `body` is a header-encrypted payload (see "Header encryption").
-- The header-encrypted plaintext is a device-signed payload (see "Device signing").
-- The device-signed `body` is a tagged blob whose `kind` is `v1.message_content`, and whose `inner` is a BCS-encoded [event](events.md).
+If Alice wants to send an [event](events.md) as a DM to Bob:
+
+1. BCS-encode the event.
+2. Device-sign the encoded event (see [device signing](#device-signing)).
+3. Header-encrypt the signed bytes to the medium-term keys of **all of Bob's devices** (see [header encryption](#header-encryption)).
+4. Send the resulting ciphertext to Bob's DM mailbox (advertised in Bob's [profile](../rpc/server.md#v1_profileusername---user_profile--null)).
+5. Also send the same ciphertext to Alice's own DM mailbox (for multi-device sync).
 
 ```
 send_dm(to_username, event):
     event_bytes = bcs_encode(event)
-    msg_blob_bytes = bcs_encode(["v1.message_content", event_bytes])
-    signed_bytes = device_sign(my_username, my_device_pk, my_device_signing_sk, msg_blob_bytes)
+    signed_bytes = device_sign(my_username, my_device_pk, my_device_signing_sk, event_bytes)
     recipients_mpk = fetch_all_medium_public_keys(to_username)
     he_bytes = header_encrypt(recipients_mpk, signed_bytes)
-    mailbox_send(mailbox=direct_mailbox(to_username), kind="v1.direct_message", body=he_bytes)
+
+    target_mailbox = fetch_profile(to_username).dm_mailbox
+    mailbox_send(mailbox=target_mailbox, body=he_bytes)
+
+    // multi-device sync: also deliver to own mailbox
+    if to_username != my_username:
+        my_mailbox = fetch_profile(my_username).dm_mailbox
+        mailbox_send(mailbox=my_mailbox, body=he_bytes)
 ```
 
 On receive, Bob does:
@@ -173,10 +166,10 @@ On receive, Bob does:
 recv_dm(he_bytes):
     signed_bytes = header_decrypt(my_medium_sk_current, he_bytes)
         or header_decrypt(my_medium_sk_previous, he_bytes)
-    (sender_username, msg_blob_bytes) = device_verify(signed_bytes)
-    [kind, inner] = bcs_decode(msg_blob_bytes)
-    assert kind == "v1.message_content"
-    event = bcs_decode(inner)
+    (sender_username, event_bytes) = device_verify(signed_bytes)
+    event = bcs_decode(event_bytes)
+    assert event.sender == sender_username
+    assert event.recipient is ["dm", my_username] or ["dm", sender_username]
     return event
 ```
 
@@ -186,24 +179,52 @@ This ensures FS/PCS within 2 hours.
 
 ## Group encryption
 
-Group messages are encrypted with a symmetric group key shared by all active members. The exact group message format and the group management semantics are specified in [groups.md](groups.md).
+Group messages are symmetrically encrypted with a key derived from the [group bearer key (GBK)](groups.md#group-bearer-key-gbk), and authenticated with device signing. The GBK also determines which mailbox the group uses for a given epoch.
 
-### Group rekeys
+### Sending a group message
 
-- A group rekey is sent as a mailbox entry whose `kind` is `v1.group_rekey`.
-- The mailbox `body` is a header-encrypted payload (see "Header encryption").
-- The header-encrypted plaintext is a device-signed payload (see "Device signing").
-- The device-signed `body` is a BCS-encoded tuple `[group_id, new_group_key_bytes]`.
-
-Group rekeys are distributed with header encryption:
+1. BCS-encode the event (with `recipient` set to `["group", group_id]`).
+2. Device-sign the encoded event.
+3. Generate a random 24-byte nonce.
+4. Encrypt the signed bytes with XChaCha20-Poly1305 using the GBK-derived symmetric key.
+5. Prepend the nonce to the ciphertext.
+6. Send `nonce || ciphertext` to the GBK-derived mailbox.
 
 ```
-send_group_rekey(group_id, new_group_key_bytes):
-    payload_bytes = bcs_encode([group_id, new_group_key_bytes])
-    signed_bytes = device_sign(my_username, my_device_pk, my_device_signing_sk, payload_bytes)
-    recipients_mpk = fetch_all_medium_public_keys_of_active_members(group_id)
-    he_bytes = header_encrypt(recipients_mpk, signed_bytes)
-    mailbox_send(mailbox=group_messages_mailbox(group_id), kind="v1.group_rekey", body=he_bytes)
+send_group_message(group_id, event):
+    event_bytes = bcs_encode(event)
+    signed = device_sign(my_username, my_device_pk, my_device_signing_sk, event_bytes)
+
+    sym_key = current_gbk.symmetric_key()
+    nonce = random_bytes(24)
+    ct = xchacha20_poly1305_encrypt(key=sym_key, nonce=nonce, plaintext=signed)
+
+    mailbox_id = current_gbk.mailbox_key().mailbox_id()
+    mailbox_send(mailbox=mailbox_id, body=nonce || ct)
 ```
 
-Group membership, invites, bans, admins, and management messages are specified in [groups.md](groups.md). Ultimately, these messages make sure everybody has the same understanding of the **roster** (who's in the group and who has what permissions), which is important for rekeys to be decryptable by the correct set of participants.
+### Receiving a group message
+
+```
+recv_group_message(body_bytes):
+    nonce = body_bytes[0..24]
+    ct = body_bytes[24..]
+    sym_key = current_gbk.symmetric_key()
+    signed_bytes = xchacha20_poly1305_decrypt(key=sym_key, nonce=nonce, ciphertext=ct)
+
+    (sender, event_bytes) = device_verify(signed_bytes)
+    event = bcs_decode(event_bytes)
+    assert event.recipient == ["group", group_id]
+    assert event.sender == sender
+    return event
+```
+
+Clients poll the mailboxes for both the current and previous GBK to handle messages sent during a rotation transition.
+
+### Group key rotation
+
+Group keys are rotated through the server-side [group rotation registry](groups.md#group-rotation-registry). Each rotation entry contains a new GBK (and roster snapshot) header-encrypted to all members' medium-term keys. This replaces the old in-mailbox rekey mechanism — rotations are now out-of-band via the registry, not posted as mailbox messages.
+
+When a rotation occurs, a ROTATION_HINT event (tag 2, empty body) is posted to the *old* mailbox to notify polling clients. On receiving this hint, clients check the registry for the next rotation entry and adopt the new GBK.
+
+See [groups](groups.md) for the full rotation protocol, epoch model, and what triggers rotations.

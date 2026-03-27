@@ -12,8 +12,8 @@ use crate::identity::identity_exists;
 
 use crate::convo::convo_loop;
 
-use crate::internal::InternalImpl;
 use crate::identity::medium_keys::medium_key_loop;
+use crate::internal::InternalImpl;
 
 pub async fn main_loop(
     cfg: Config,

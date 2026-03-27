@@ -7,17 +7,23 @@ use moka::future::Cache;
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_crypt::signing::{Signable, SigningPublic};
 use nullspace_structs::fragment::ImageAttachment;
+use nullspace_structs::mailbox::MailboxId;
 use nullspace_structs::server::{ServerClient, ServerName, SignedMediumPk};
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::{UserDescriptor, UserName};
 use tracing::warn;
 
+use super::profile::get_profile;
 use crate::DIR_CLIENT;
 use crate::attachments::store_attachment_root;
 use crate::config::{Config, Ctx};
 use crate::convo::last_dm_received_at;
 use crate::database::DATABASE;
-use super::profile::get_profile;
+use crate::identity::{Identity, identity_exists};
+use crate::internal::{
+    InternalRpcError, MessageDirection, UserDetails, UserLastMessageSummary, internal_err,
+    map_anyhow_err,
+};
 use crate::net::get_server_client;
 
 pub struct UserInfo {
@@ -42,6 +48,14 @@ static DESCRIPTOR_CACHE: Ctx<Cache<UserName, UserDescriptor>> =
 
 static USER_INFO_CACHE: Ctx<Cache<UserName, Arc<UserInfo>>> =
     |_| Cache::builder().time_to_live(CACHE_TTL).build();
+
+static USER_DM_MAILBOX_CACHE: Ctx<Cache<UserMailboxKey, MailboxId>> = |_| Cache::builder().build();
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct UserMailboxKey {
+    username: UserName,
+    server_name: ServerName,
+}
 
 pub async fn get_user_descriptor(
     ctx: &anyctx::AnyCtx<Config>,
@@ -83,6 +97,37 @@ pub async fn get_user_info(
                 devices,
                 medium_pks,
             }))
+        })
+        .await
+        .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
+}
+
+pub async fn get_user_dm_mailbox(
+    ctx: &anyctx::AnyCtx<Config>,
+    user: &UserInfo,
+) -> anyhow::Result<MailboxId> {
+    let cache_key = UserMailboxKey {
+        username: user.username.clone(),
+        server_name: user.server_name.clone(),
+    };
+    ctx.get(USER_DM_MAILBOX_CACHE)
+        .try_get_with(cache_key, async {
+            let profile = user
+                .server
+                .profile(user.username.clone())
+                .await?
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?
+                .context("target profile not found")?;
+
+            if !user
+                .devices
+                .iter()
+                .any(|device_pk| profile.verify(*device_pk).is_ok())
+            {
+                anyhow::bail!("target profile signature is invalid");
+            }
+
+            Ok(profile.dm_mailbox)
         })
         .await
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))
@@ -149,5 +194,41 @@ pub async fn user_details_data(
         avatar,
         server_name: user_info.server_name.clone(),
         last_dm_received_at,
+    })
+}
+
+// --- RPC impl delegate ---
+
+pub async fn user_details_impl(
+    ctx: &anyctx::AnyCtx<Config>,
+    username: UserName,
+) -> Result<UserDetails, InternalRpcError> {
+    let db = ctx.get(DATABASE);
+    if !identity_exists(&mut *db.acquire().await.map_err(internal_err)?)
+        .await
+        .map_err(internal_err)?
+    {
+        return Err(InternalRpcError::NotReady);
+    }
+    let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
+        .await
+        .map_err(internal_err)?;
+    let details = user_details_data(ctx, &identity.username, &username)
+        .await
+        .map_err(map_anyhow_err)?;
+
+    Ok(UserDetails {
+        username,
+        display_name: details.display_name,
+        avatar: details.avatar,
+        server_name: Some(details.server_name),
+        common_groups: Vec::new(),
+        last_dm_message: details
+            .last_dm_received_at
+            .map(|received_at| UserLastMessageSummary {
+                received_at: Some(received_at),
+                direction: MessageDirection::Incoming,
+                preview: String::new(),
+            }),
     })
 }

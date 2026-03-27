@@ -5,15 +5,15 @@ use nullspace_structs::event::{Event, EventRecipient};
 use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
 use nullspace_structs::server::ServerName;
 
-use crate::net::get_auth_token;
 use crate::config::Config;
 use crate::convo::{NewThreadEvent, THREAD_KIND_DIRECT, ensure_thread_id, insert_thread_event};
 use crate::database::DATABASE;
 use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::net::LONG_POLLER;
-use crate::net::{load_mailbox_after, update_mailbox_after};
+use crate::net::get_auth_token;
 use crate::net::{get_server_client, own_server_name};
+use crate::net::{load_mailbox_after, update_mailbox_after};
 
 use super::device_crypt::decrypt_and_verify;
 use super::send::store_message_attachments;
@@ -119,6 +119,62 @@ async fn process_mailbox_entry(
     } else {
         verified.sender.clone()
     };
+
+    // Handle group invitations specially
+    if event.tag == nullspace_structs::event::TAG_GROUP_INVITATION {
+        if let Ok(invitation) =
+            bcs::from_bytes::<nullspace_structs::event::GroupInvitationBody>(&event.body)
+        {
+            let mut conn = db.acquire().await?;
+            sqlx::query(
+                "INSERT OR IGNORE INTO group_invitations \
+                 (group_id, server_name, rotation_index, gbk, inviter_username, title, description, received_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(invitation.group_id.to_bytes().to_vec())
+            .bind(invitation.gbk.server.as_str())
+            .bind(invitation.rotation_index as i64)
+            .bind(bcs::to_bytes(&invitation.gbk)?)
+            .bind(verified.sender.as_str())
+            .bind(&invitation.title)
+            .bind(&invitation.description)
+            .bind(entry.received_at.0 as i64)
+            .execute(&mut *conn)
+            .await?;
+
+            // Also insert as a system event in the DM thread for UI display
+            let thread_id =
+                ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;
+            let display_title = invitation
+                .title
+                .clone()
+                .unwrap_or_else(|| format!("Group {}", invitation.group_id.short_id()));
+            let system_body = bcs::to_bytes(&super::SystemItem::GroupInvitationReceived {
+                invitation_id: 0, // will be filled by the query above's rowid
+                group_id: invitation.group_id,
+                display_title,
+            })?;
+            let event_hash = event.hash();
+            insert_thread_event(
+                &mut conn,
+                &NewThreadEvent {
+                    thread_id,
+                    sender: verified.sender.as_str(),
+                    event_tag: event.tag,
+                    event_body: &system_body,
+                    event_after: event.after.as_ref(),
+                    event_hash: &event_hash,
+                    sent_at: event.sent_at,
+                    received_at: Some(entry.received_at),
+                },
+            )
+            .await?;
+
+            return Ok(Some(super::ConvoId::Direct {
+                peer: peer_username,
+            }));
+        }
+    }
 
     let mut conn = db.acquire().await?;
     let thread_id = ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;

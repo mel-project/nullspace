@@ -21,7 +21,7 @@ where
 {
     let client = DirClient::new(transport, anchor_pk, pool).await?;
     let listing = client.query_raw("example-key").await?;
-    println!("owners: {}", listing.owners.len());
+    println!("present: {}", listing.is_some());
     Ok(())
 }
 ```

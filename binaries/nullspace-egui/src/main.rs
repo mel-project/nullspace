@@ -184,6 +184,7 @@ impl eframe::App for NullspaceApp {
 
         ctx.set_zoom_factor(self.state.prefs.zoom_percent as f32 / 100.0);
         apply_theme_preference(ctx, self.state.prefs.theme);
+        apply_debug_mode(ctx, self.state.prefs.debug_mode);
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
 
@@ -331,6 +332,9 @@ impl eframe::App for NullspaceApp {
                 None => {}
             }
         });
+        if self.state.prefs.debug_mode {
+            show_debug_ui(ctx);
+        }
         if self.state.prefs != self.state.last_saved_prefs {
             if let Err(err) = save_prefs(&crate::utils::folders::prefs_path(), &self.state.prefs) {
                 tracing::warn!(error = %err, "failed to save prefs");
@@ -463,6 +467,36 @@ fn configure_theme_styles(ctx: &egui::Context) {
 
 fn apply_theme_preference(ctx: &egui::Context, theme: AppTheme) {
     ctx.set_theme(theme.to_egui());
+}
+
+fn apply_debug_mode(ctx: &egui::Context, debug_mode: bool) {
+    #[cfg(debug_assertions)]
+    ctx.set_debug_on_hover(debug_mode);
+
+    #[cfg(not(debug_assertions))]
+    let _ = (ctx, debug_mode);
+}
+
+fn show_debug_ui(ctx: &egui::Context) {
+    egui::Window::new("egui Debug")
+        .default_width(420.0)
+        .vscroll(true)
+        .show(ctx, |ui| {
+            egui::warn_if_debug_build(ui);
+
+            ui.collapsing("Settings", |ui| {
+                ctx.settings_ui(ui);
+            });
+            ui.collapsing("Inspection", |ui| {
+                ctx.inspection_ui(ui);
+            });
+            ui.collapsing("Memory", |ui| {
+                ctx.memory_ui(ui);
+            });
+            ui.collapsing("Style", |ui| {
+                ctx.style_ui(ui, ctx.theme());
+            });
+        });
 }
 
 fn load_prefs(path: &PathBuf) -> Option<PrefData> {

@@ -7,11 +7,11 @@ use nullspace_crypt::signing::Signable;
 use nullspace_structs::server::SignedMediumPk;
 use nullspace_structs::timestamp::Timestamp;
 
+use super::Identity;
 use crate::Config;
 use crate::DIR_CLIENT;
-use crate::net::get_auth_token;
 use crate::database::DATABASE;
-use super::Identity;
+use crate::net::get_auth_token;
 use crate::net::get_server_client;
 
 const MEDIUM_ROTATE_INTERVAL: Duration = Duration::from_secs(60 * 60);

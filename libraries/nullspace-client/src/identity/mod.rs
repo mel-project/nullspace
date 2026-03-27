@@ -1,5 +1,8 @@
+mod identity_impl;
 pub mod medium_keys;
 pub mod provisioning;
+
+pub use identity_impl::*;
 
 use anyhow::Context;
 

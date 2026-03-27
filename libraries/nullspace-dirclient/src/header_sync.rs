@@ -5,7 +5,11 @@ use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
 use tracing::debug;
 
-const BATCH_LIMIT: u64 = 1_000;
+const BATCH_MIN: u64 = 1;
+const BATCH_MAX: u64 = 1_000;
+const BATCH_INC: u64 = 1;
+const BATCH_DEC_NUM: u64 = 8;
+const BATCH_DEC_DEN: u64 = 10;
 
 pub async fn max_stored_height(pool: &SqlitePool) -> anyhow::Result<Option<u64>> {
     let height = sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(height) FROM _dirclient_headers")
@@ -61,13 +65,53 @@ pub async fn sync_headers(
         Some(current) => current + 1,
         None => 0,
     };
+    let mut batch_len = BATCH_MIN;
     while next <= anchor.last_header_height {
-        let end = (next + BATCH_LIMIT - 1).min(anchor.last_header_height);
-        debug!(from = next, to = end, "syncing directory headers");
-        let headers = raw
-            .get_headers(next, end)
-            .await?
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let end = next
+            .saturating_add(batch_len.saturating_sub(1))
+            .min(anchor.last_header_height);
+        debug!(
+            from = next,
+            to = end,
+            batch_len,
+            "syncing directory headers"
+        );
+        let headers = match raw.get_headers(next, end).await {
+            Ok(Ok(headers)) => headers,
+            Ok(Err(err)) => {
+                let err = anyhow::anyhow!(err.to_string());
+                let next_batch_len = aimd_decrease(batch_len);
+                if next_batch_len == batch_len {
+                    return Err(err);
+                }
+                debug!(
+                    from = next,
+                    to = end,
+                    old_batch_len = batch_len,
+                    new_batch_len = next_batch_len,
+                    err = debug(&err),
+                    "directory header batch failed"
+                );
+                batch_len = next_batch_len;
+                continue;
+            }
+            Err(err) => {
+                let next_batch_len = aimd_decrease(batch_len);
+                if next_batch_len == batch_len {
+                    return Err(err.into());
+                }
+                debug!(
+                    from = next,
+                    to = end,
+                    old_batch_len = batch_len,
+                    new_batch_len = next_batch_len,
+                    err = debug(&err),
+                    "directory header batch failed"
+                );
+                batch_len = next_batch_len;
+                continue;
+            }
+        };
         let expected_len = (end - next + 1) as usize;
         if headers.len() != expected_len {
             anyhow::bail!(
@@ -107,8 +151,12 @@ pub async fn sync_headers(
             current = Some(height);
         }
         tx.commit().await?;
-        debug!(height = current, "synced directory headers batch");
+        debug!(
+            height = current,
+            batch_len, "synced directory headers batch"
+        );
         next = end + 1;
+        batch_len = aimd_increase(batch_len);
     }
 
     if prev_hash != anchor.last_header_hash {
@@ -120,4 +168,35 @@ pub async fn sync_headers(
         );
     }
     Ok(())
+}
+
+fn aimd_increase(current: u64) -> u64 {
+    current
+        .saturating_add(BATCH_INC)
+        .clamp(BATCH_MIN, BATCH_MAX)
+}
+
+fn aimd_decrease(current: u64) -> u64 {
+    current
+        .saturating_mul(BATCH_DEC_NUM)
+        .saturating_div(BATCH_DEC_DEN)
+        .clamp(BATCH_MIN, BATCH_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BATCH_MAX, BATCH_MIN, aimd_decrease, aimd_increase};
+
+    #[test]
+    fn aimd_increase_adds_one_until_cap() {
+        assert_eq!(aimd_increase(BATCH_MIN), BATCH_MIN + 1);
+        assert_eq!(aimd_increase(BATCH_MAX), BATCH_MAX);
+    }
+
+    #[test]
+    fn aimd_decrease_scales_down_and_floors_at_one() {
+        assert_eq!(aimd_decrease(100), 80);
+        assert_eq!(aimd_decrease(5), 4);
+        assert_eq!(aimd_decrease(BATCH_MIN), BATCH_MIN);
+    }
 }

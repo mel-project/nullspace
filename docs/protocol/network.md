@@ -18,10 +18,12 @@ Plaintext exists only on clients. Servers and the directory only see routing met
 Servers are untrusted concierge infrastructure.
 
 Servers:
-- host mailboxes (DM, group message, group management)
-- enforce ACLs using auth tokens
+- host mailboxes (DM and group)
+- maintain a group rotation registry (append-only log of group key rotations)
 - publish medium-term public keys for each authenticated device
 - proxy requests to other servers or to the directory (optional)
+
+Mailbox access is key-based: possession of a `mailbox_key` grants read access, and the corresponding `mailbox_id` (a hash of the key) is used for addressing. See [server RPC](../rpc/server.md) for details.
 
 Servers do **not** define identity membership. Device membership is validated against directory state.
 

@@ -1,6 +1,6 @@
 # Server RPC
 
-This document specifies the RPC API exposed by a Nullspace server, corresponding to the `ServerProtocol` trait.
+This document specifies the RPC API exposed by a Nullspace server.
 
 Servers provide:
 
@@ -15,81 +15,40 @@ For wire format, encoding conventions, and transport, see the [RPC overview](./)
 
 ## Server-specific primitives
 
-### Token hashes
-
-Mailbox ACLs are keyed by:
-
-```
-token_hash = H(token_bytes)
-```
-
-where:
-
-- `token_bytes` is the 20 raw bytes of the auth token
-- `H(...)` is BLAKE3
-
-The all-zero auth token is the **anonymous token**:
-
-```
-0000000000000000000000000000000000000000
-```
-
 ### Blobs
 
-Many server methods carry opaque payloads as a `blob`:
-
-```
-blob = { kind: string, inner: bytes }
-```
-
-- `kind`: string tag like `v1.direct_message` or `v1.group_message`
-- `inner`: raw bytes (base64url)
-
-`inner` is protocol payload bytes whose interpretation depends on `kind`. For message kinds and the BCS structures embedded in them, see [e2ee](../protocol/e2ee.md), [events](../protocol/events.md), and [groups](../protocol/groups.md).
+Server methods that carry opaque payloads use a `blob`: raw bytes (base64url in JSON). The interpretation of blob contents depends on context — see [e2ee](../protocol/e2ee.md), [events](../protocol/events.md), and [groups](../protocol/groups.md).
 
 ### Mailboxes
 
-A mailbox is identified by a 32-byte `mailbox_id` (hex string).
+A mailbox is identified by a 32-byte `mailbox_id`.
 
-#### Direct-message mailbox id
+Mailbox access is key-based:
+- A `mailbox_key` is a 20-byte secret. Possession of the key grants read access.
+- The `mailbox_id` is derived from the key: `mailbox_id = h_keyed("nullspace-mailbox", mailbox_key_bytes)`.
+- Sending to a mailbox requires only the `mailbox_id` (unauthenticated — anyone who knows the ID can send).
+- There are no ACLs or token-based permissions on mailboxes.
 
-For a username `u` (including the leading `@`), the direct-message mailbox id is:
+#### DM mailboxes
 
-```
-direct_mailbox_id(u) = h_keyed("direct-mailbox", utf8(u))
-```
+Each user advertises a DM mailbox in their [profile](#v1_profileusername---user_profile--null). The `mailbox_id` is included in the signed profile. Senders look up the recipient's profile to discover where to deliver DMs.
 
-#### Group mailbox ids
+#### Group mailboxes
 
-Group mailbox ids are specified in [groups](../protocol/groups.md).
+Group mailbox keys are derived from the [group bearer key](../protocol/groups.md#group-bearer-key-gbk). Each GBK rotation produces a new mailbox.
 
 ### Mailbox entries
 
 Mailbox receive returns `mailbox_entry` values:
 
 ```
-mailbox_entry = { message, received_at, sender_auth_token_hash }
+mailbox_entry = { body, received_at }
 ```
 
-- `message`: `blob`
+- `body`: `blob`
 - `received_at`: server-assigned timestamp (nanoseconds), unique per mailbox
-- `sender_auth_token_hash`: `token_hash` of the sender, or `null`
 
 Clients use `received_at` as a mailbox cursor.
-
-### Mailbox ACL entries
-
-Mailbox ACLs are edited using:
-
-```
-mailbox_acl = { token_hash, can_edit_acl, can_send, can_recv }
-```
-
-ACL lookup for an `auth_token`:
-
-1) If there is an entry for `H(auth_token_bytes)`, use it.
-2) Otherwise, if there is an entry for `H(anonymous_token_bytes)`, use it.
-3) Otherwise, treat permissions as all-false.
 
 ## Methods
 
@@ -185,7 +144,6 @@ Returns:
 Notes:
 
 - Servers MAY reuse an existing token for the same `(username, device_pk)` rather than issuing a fresh one.
-- Servers SHOULD ensure that the direct-message mailbox for `username` exists and is receivable by the returned `auth_token` (see "Mailboxes" methods).
 
 ### `v1_device_add_medium_pk(auth_token, signed_medium_pk) -> ()`
 
@@ -238,11 +196,12 @@ Returns `null` if no profile is stored.
 Otherwise returns:
 
 ```
-user_profile = { display_name, avatar, created, signature }
+user_profile = { display_name, avatar, dm_mailbox, created, signature }
 ```
 
 - `display_name`: string or `null`
 - `avatar`: image attachment object or `null` (see [attachments](../protocol/attachments.md))
+- `dm_mailbox`: the `mailbox_id` where DMs for this user should be delivered
 - `created`: Unix timestamp (seconds)
 - `signature`: Ed25519 signature (base64url)
 
@@ -258,29 +217,40 @@ Authorization and validation:
 - The server MUST verify `user_profile.signature` under at least one currently listed device key for `username`.
 - The server MUST reject updates where `user_profile.created` is not strictly greater than the stored profile's `created`.
 
-### `v1_mailbox_send(auth_token, mailbox_id, message, ttl_seconds) -> received_at`
+### `v1_mailbox_send(mailbox_id, message, ttl_seconds) -> received_at`
 
 Appends a message into a mailbox.
 
 Inputs:
 
-- `auth_token`: auth token (hex)
 - `mailbox_id`: 32-byte mailbox id (hex)
 - `message`: `blob`
 - `ttl_seconds`: unsigned integer; `0` means "no expiry"
 
 Authorization:
 
-- The server MUST resolve mailbox permissions using the ACL rules above and require `can_send == true`.
+- This method is unauthenticated. Anyone who knows the `mailbox_id` can send to it.
 
 Returns:
 
 - `received_at`: server-assigned timestamp (nanoseconds), unique per mailbox
 
+### `v1_mailbox_create(auth_token, mailbox_key) -> mailbox_id`
+
+Creates a mailbox owned by the authenticated user, or returns the existing `mailbox_id` if the mailbox already exists.
+
+Inputs:
+
+- `auth_token`: a valid device-authenticated token
+- `mailbox_key`: 20-byte mailbox key
+
+Returns:
+
+- `mailbox_id`: the 32-byte mailbox id derived from `mailbox_key`
+
 Notes:
 
-- The stored mailbox entry includes `sender_auth_token_hash = H(auth_token_bytes)`.
-- Servers commonly grant `can_send` to the anonymous token for direct-message mailboxes so that anyone can deliver a DM, but this is a server policy choice.
+- The `mailbox_key` is the read credential for the mailbox. It is included in `v1_mailbox_multirecv` args to prove read access.
 
 ### `v1_mailbox_multirecv(args, timeout_ms) -> { mailbox_id: [mailbox_entry, ...], ... }`
 
@@ -289,16 +259,17 @@ Receives one or more messages from one or more mailboxes. This call is intended 
 Inputs:
 
 ```
-args = [ { auth_token, mailbox_id, after }, ... ]
+args = [ { mailbox, mailbox_key, after }, ... ]
 ```
 
+- `mailbox`: the `mailbox_id` to poll
+- `mailbox_key`: the 20-byte key proving read access
 - `after`: mailbox cursor (nanoseconds). Only entries with `received_at > after` are eligible.
 - `timeout_ms`: maximum time to wait
 
 Authorization:
 
-- For each mailbox, the server MUST resolve mailbox permissions using the ACL rules above and require `can_recv == true`.
-- Clients MUST only include mailboxes they are authorized to receive from; otherwise the call may fail with `access_denied`.
+- For each mailbox, the server MUST verify that `h_keyed("nullspace-mailbox", mailbox_key_bytes)` equals the provided `mailbox_id`.
 
 Return value:
 
@@ -310,102 +281,64 @@ Notes:
 - The server MAY return only a subset of the requested mailboxes (including just one) to implement "first mailbox that becomes ready" semantics.
 - The server MAY cap the number of returned entries per mailbox. Clients should repeat calls, advancing `after` to the last returned `received_at`.
 
-### `v1_mailbox_acl_edit(auth_token, mailbox_id, acl) -> ()`
+### `v1_group_create(auth_token, rotation) -> ()`
 
-Edits the mailbox ACL entry for a specific `token_hash`.
-
-Inputs:
-
-- `auth_token`: auth token used as the caller capability
-- `mailbox_id`: 32-byte mailbox id (hex)
-- `acl`: `mailbox_acl` object
-
-Authorization:
-
-- If the caller's effective ACL has `can_edit_acl == true`, the edit is permitted.
-- Otherwise, the edit is permitted only if:
-  - there is no existing ACL entry for `acl.token_hash`, and
-  - the requested permissions are a subset of the caller's effective permissions.
-
-Self-removal:
-
-- If `acl.token_hash == H(auth_token_bytes)` and all requested permissions are false, the server SHOULD delete the ACL entry for that token hash.
-
-### `v1_group_create(auth_token, group_id, registry_nonce, initial_admin_set) -> ()`
-
-Creates an empty group registry.
+Creates a new group registry with the provided rotation as the initial entry.
 
 Inputs:
 
-- `group_id`: group identifier
-- `registry_nonce`: 32-byte opaque lookup nonce (hex)
-- `initial_admin_set`: list of device signing public keys
+- `auth_token`: a valid device-authenticated token
+- `rotation`: a signed [group rotation entry](../protocol/groups.md#group-rotation-registry)
 
 Authorization and validation:
 
 - `auth_token` MUST be a valid device-authenticated token.
-- `initial_admin_set` MUST be non-empty.
-- The authenticated device key MUST appear in `initial_admin_set`.
+- `rotation.prev_hash` MUST be `null` (no predecessor for the first entry).
+- `rotation.signer` MUST match the authenticated device.
+- `rotation.signer` MUST be in `rotation.new_admin_set`.
+- `rotation.new_admin_set` MUST be non-empty.
+- `rotation.signature` MUST verify under `rotation.signer`.
 
 Effect:
 
-- Creates a registry keyed by `group_id`, readable via `registry_nonce`.
-- Stores `initial_admin_set` as the current admin set.
-- If the same `(group_id, registry_nonce, initial_admin_set)` already exists, the call is treated as idempotent.
+- Creates a new group registry keyed by `rotation.group_id`, storing the rotation at index 0.
 
-### `v1_group_update(signed_rotation_entry) -> ()`
+### `v1_group_update(rotation) -> ()`
 
 Appends the next rotation entry to a group registry.
 
 Input:
 
-```
-signed_rotation_entry = {
-  group_id,
-  index,
-  signer,
-  entry,
-  signature
-}
-
-entry = {
-  new_admin_set,
-  gbk_rotation
-}
-```
-
-- `new_admin_set`: list of device signing public keys
-- `gbk_rotation`: opaque header-encrypted blob
-- `signature` is over:
-
-```
-BCS([group_id, index, signer, entry])
-```
+- `rotation`: a signed [group rotation entry](../protocol/groups.md#group-rotation-registry)
 
 Validation:
 
-- `new_admin_set` MUST be non-empty.
-- `index` MUST equal the current log length.
-- `signer` MUST be in the current admin set for `group_id`.
-- `signature` MUST verify under `signer`.
+- `rotation.prev_hash` MUST be non-null.
+- `rotation.new_admin_set` MUST be non-empty.
+- `rotation.signer` MUST be in the previous entry's `new_admin_set`.
+- `rotation.signature` MUST verify under `rotation.signer`.
 
 Effect:
 
-- Appends the entry at `index`.
-- Replaces the current admin set with `new_admin_set`.
+- Appends the entry at the next sequential index.
+- The previous entry's `new_admin_set` becomes the authorized set for the following update.
 
-### `v1_group_get(registry_nonce, index) -> signed_rotation_entry | null`
+Notes:
 
-Returns the rotation entry at `index` for the registry identified by `registry_nonce`.
+- This method does not require an `auth_token`. The rotation's signature, validated against the previous admin set, serves as authorization.
+
+### `v1_group_get(group_id, index) -> rotation | null`
+
+Returns the rotation entry at `index` for the group identified by `group_id`.
 
 Returns `null` if:
 
-- the registry nonce is unknown, or
+- no registry exists for `group_id`, or
 - no entry exists at `index`
 
 This method is intentionally unauthenticated and stateless so it can be cached aggressively.
 
-### `v1_upload_frag(auth_token, fragment, ttl_seconds) -> ()`
+### `v1_frag_upload(auth_token, fragment, ttl_seconds) -> ()`
 
 Uploads a fragment into the content-addressed store (see [attachments](../protocol/attachments.md)).
 
@@ -428,7 +361,7 @@ fragment_id = H(BCS(fragment))
 
 - If the fragment already exists, the server MAY extend its expiry but MUST NOT shorten it.
 
-### `v1_download_frag(fragment_id) -> fragment | null`
+### `v1_frag_download(fragment_id) -> fragment | null`
 
 Downloads a fragment by content hash.
 

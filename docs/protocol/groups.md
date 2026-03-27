@@ -1,253 +1,360 @@
 # Groups
 
-This document specifies Nullspace group chats: identifiers, mailboxes, invites, membership semantics, management messages, and rekeying. 
+This document specifies Nullspace group chats: identifiers, the group bearer key, the rotation registry, roster management, and all group-related flows.
 
-## Group identifiers and descriptor
+## Design principles
 
-A group is described by a **group descriptor**. The descriptor is BCS-encoded as:
+### Security
+
+The server is explicitly untrusted. The group design provides the following guarantees against a malicious server:
+
+**Confidentiality.** The server cannot read group messages or learn who the members are.
+
+**Message authenticity.** Members can verify that a message genuinely came from the device it claims to be from. The server cannot forge or inject messages.
+
+**Membership control.** Only admins can add or remove members. The server cannot grant access to outsiders, cannot unilaterally revoke access, and cannot change who has admin authority.
+
+**Bounded key-compromise blast radius.** Keys rotate on membership changes and roughly daily. Compromising the keys from one period does not expose messages from other periods.
+
+**What the design does not protect against:**
+- *Liveness*: the server can delay or withhold messages.
+- *Traffic metadata*: the server observes which IP addresses access which mailboxes, though this is not directly tied to user identity.
+- *Malicious admins*: admins are fully trusted and have unlimited power over the group.
+
+### Scalability
+
+The design is built to support very large groups without degrading UX. Sending a message costs the same regardless of group size — one encryption, one mailbox post. Inviting a new member requires a single DM; there is no work that scales with the number of existing members at join time. See [Scalability](#scalability) at the end of this document for a detailed comparison with other approaches.
+
+## Group identifiers
+
+A group is identified by a random 16-byte **group id** (UUID v4). Group IDs are generated client-side when a group is created.
+
+## Group bearer key (GBK)
+
+The GBK is the central capability for group membership. Possession of a GBK grants the ability to read from and write to the group's mailbox, and to encrypt and decrypt group messages.
+
+A GBK is BCS-encoded as:
 
 ```
-[nonce, init_admin, created_at, server, management_key]
+[group_id, server, registry_nonce, random_nonce]
 ```
 
-- `nonce`: 32 random bytes
-- `init_admin`: username of the initial admin
-- `created_at`: Unix timestamp (seconds)
+- `group_id`: the group identifier
 - `server`: the server name hosting the group
-- `management_key`: 32-byte XChaCha20-Poly1305 key (used for management messages)
+- `registry_nonce`: derived from the group id as `H(group_id_bytes)` where `H` is BLAKE3
+- `random_nonce`: 32 random bytes (changed on every rotation)
 
-The **group id** is:
+### Derived keys
 
+From the GBK, two keys are derived:
+
+**Mailbox key** (20 bytes):
 ```
-group_id = h(bcs_encode(group_descriptor))
-```
-
-where `h` is BLAKE3.
-
-## Mailboxes and access tokens
-
-Each group has two mailboxes on the group’s server:
-
-- **Group messages mailbox**: carries normal group chat messages and rekeys
-- **Group management mailbox**: carries management messages (invites, bans, admin changes, leave)
-
-Mailbox identifiers are derived from the group id as keyed hashes:
-
-```
-group_messages_mailbox_id   = h_keyed("group-messages",    group_id_bytes)
-group_management_mailbox_id = h_keyed("group-management",  group_id_bytes)
+mailbox_key = h_keyed("ns-group-mailbox", bcs_encode(gbk))[0..20]
 ```
 
-Servers enforce mailbox access using opaque **auth tokens** (shared secrets). A token grants permissions via an ACL entry keyed by `h(token_bytes)`. The initial admin has a “group token” that can edit ACLs; invited members receive tokens that can send/receive.
+The `mailbox_key` is used to create and read from the group's mailbox. The corresponding `mailbox_id` is derived from the key as `h_keyed("nullspace-mailbox", mailbox_key_bytes)`.
 
-## Cryptographic keys
-
-Groups use two symmetric keys:
-
-- **Group message key**: 32-byte XChaCha20-Poly1305 key used to encrypt regular group chat messages. This key is periodically rotated (“rekeyed”).
-- **Management key**: 32-byte XChaCha20-Poly1305 key used to encrypt management messages. This key is distributed in invites as part of the group descriptor.
-
-Clients keep both a current and previous group message key to tolerate out-of-order delivery.
-
-## Message formats in group mailboxes
-
-Mailbox entries in the group mailboxes are [tagged blobs](e2ee.md#tagged-blobs). Both regular group messages and group rekeys share this outer structure; they differ only in the `kind` tag and how the `inner` bytes are interpreted.
-
-### Regular group message (`v1.group_message`)
-
-The mailbox entry uses `kind = v1.group_message`, and the `inner` bytes are BCS-encoded as:
-
+**Symmetric encryption key** (32 bytes):
 ```
-[nonce, ciphertext]
+symmetric_key = h_keyed("ns-group-symmetric", bcs_encode(gbk))
 ```
 
-- `nonce`: 24 random bytes
-- `ciphertext`: XChaCha20-Poly1305 ciphertext of a [device-signed](e2ee.md#device-signing) event.
+Used as the XChaCha20-Poly1305 key for encrypting and decrypting group messages. See [e2ee — group encryption](e2ee.md#group-encryption) for the message format.
 
-The decrypted plaintext is a device-signed event. The event’s recipient (`event[0]`) must be the group id.
+## Epochs
 
-### Group rekey (`v1.group_rekey`)
+Each GBK defines a **mailbox epoch**. When the GBK changes (via a rotation), a new mailbox is created with new derived keys, starting a new epoch.
 
-The mailbox entry uses `kind = v1.group_rekey`, and the `inner` bytes are a header-encrypted, device-signed payload that carries the new 32-byte group message key.
+Within an epoch:
+- The **roster snapshot** (embedded in the rotation entry) is the starting state for membership.
+- **Admin action events** (tags 4–8) posted to the mailbox are deltas applied on top of the snapshot.
 
-The device-signed `body` is BCS-encoded as:
+Clients poll the mailboxes for both the current and previous GBK (the last two epochs) to handle messages sent during a rotation transition.
+
+## Group rotation registry
+
+The rotation registry is a server-side append-only log, one per group. Each entry records a GBK rotation along with the new roster state.
+
+A rotation entry is BCS-encoded as:
 
 ```
-[group_id, new_group_key_bytes]
+[group_id, prev_hash, signer, new_admin_set, gbk_rotation, signature]
 ```
 
-Recipients must accept a rekey only if the sender is an active admin according to the locally-derived roster.
+- `group_id`: the group identifier
+- `prev_hash`: hash of the previous rotation entry, or `null` for the first entry. Forms a hash chain that prevents the server from reordering, inserting, or silently replacing entries. Position in the log is implicit and tracked locally by clients.
+- `signer`: the device signing public key of the admin submitting the rotation
+- `new_admin_set`: set of device signing public keys for all admin devices (used to validate the next rotation's `signer`)
+- `gbk_rotation`: a header-encrypted payload containing the [rotation payload](#rotation-payload)
+- `signature`: Ed25519 signature over `bcs_encode([group_id, prev_hash, signer, new_admin_set, gbk_rotation])`
 
-## Management messages
+The **rotation hash** of an entry is `H(bcs_encode(rotation))` (covering all fields including the signature).
 
-Management messages are delivered as `v1.group_message` entries posted to the **management mailbox**, but encrypted using the **management key** rather than the group message key.
+Server validation rules:
+- `prev_hash` MUST be `null` for the first entry, non-null for all subsequent entries
+- `signer` MUST be in the previous entry's `new_admin_set`
+- `signature` MUST verify under `signer`
+- `new_admin_set` MUST be non-empty
 
-After decrypting and verifying the device-signed event, clients interpret it with these requirements:
+Client validation rules (defense-in-depth — do not trust the server alone):
+- `signature` MUST verify under `signer`
+- `signer` MUST be in the locally stored `new_admin_set` from the previous rotation
+- `prev_hash` MUST equal the locally stored hash of the previous rotation
+- `prev_hash` MUST be `null` for the first entry
+- When walking a chain of rotations (e.g., during invite acceptance), each entry's `prev_hash` and `signer` MUST be validated against the preceding entry
 
-- `recipient` is the group id
-- `mime` is `application/vnd.nullspace.v1.group_manage`
-- `body` is JSON
+### Rotation payload
 
-### Roster
+The `gbk_rotation` field is header-encrypted to all members' medium-term keys, so every member can decrypt it. The plaintext is BCS-encoded as:
 
-Clients maintain a local **roster** for each group. The roster is a deterministic, derived data structure computed by replaying management messages in order.
+```
+[gbk, roster]
+```
 
-The roster contains, for each username that is currently tracked:
+- `gbk`: the new [group bearer key](#group-bearer-key-gbk)
+- `roster`: the complete [roster snapshot](#roster-snapshot)
 
-- a **membership state**: `pending`, `accepted`, or `banned`
-- an **admin flag** (boolean), meaningful only for non-banned members
+## Roster snapshot
 
-Note that users who are not in the roster at all are treated differently from banned users, because the former can join the group, while the latter cannot join the group until they are unbanned.
+The roster is a complete snapshot of group membership state, embedded in every rotation. BCS-encoded as:
 
-Initialization:
+```
+[members, banned, metadata, settings]
+```
 
-- The roster starts with `init_admin` as `accepted` with `admin = true`.
+- `members`: map of `{username: [is_admin, is_muted], ...}`
+- `banned`: list of `[username, ...]`
+- `metadata`: `[title, description]` where both are optional strings
+- `settings`: `[new_members_muted, allow_new_members_to_see_history]`
 
-Derivation rules:
+The roster snapshot is correctness-critical: it carries accumulated state across epoch boundaries so that new members (and members recovering from missed rotations) don't need access to previous epochs to reconstruct group state.
 
-- Process management messages in the order they are observed from the management mailbox.
-- Each message updates the roster according to the authorization rules and the variant-specific effects described below.
+## What causes a new rotation (new epoch)
 
-### JSON schema
+A rotation (and therefore a new GBK and mailbox epoch) is required when:
 
-The management message body is a JSON tagged value (externally tagged, snake_case) with one of these forms:
+- **Group creation** — the initial rotation establishes the group.
+- **Admin set change** — granting or revoking admin status requires a rotation so that `new_admin_set` in the chain stays consistent with actual admin authority.
+- **Banning a member** — the banned member's access must be revoked by changing the GBK.
+- **Admin leaving** — admin departure requires a rotation to update the admin set.
+- **Periodic key rotation** — probabilistic, targeting ~1 rotation per day. Each hour, each admin independently rolls the dice with probability `1 / (24 * n_admins)`, so the expected aggregate interval is ~24 hours regardless of admin count.
 
-| Variant | JSON form | Meaning |
-| --- | --- | --- |
-| Invite sent | `{"invite_sent":"@user"}` | Marks `@user` as pending |
-| Invite accepted | `"invite_accepted"` | Marks sender as accepted |
-| Ban | `{"ban":"@user"}` | Marks `@user` as banned |
-| Unban | `{"unban":"@user"}` | Moves `@user` from banned → pending |
-| Leave | `"leave"` | Removes sender from roster |
-| Add admin | `{"add_admin":"@user"}` | Grants admin to an active member |
-| Remove admin | `{"remove_admin":"@user"}` | Revokes admin from an active member |
+Actions that do **not** require a rotation:
+- Non-admin member leaving (sends a LEAVE_REQUEST event instead)
+- Unbanning a member (local roster update only)
+- Mute changes, metadata changes, settings changes (sent as in-epoch events)
 
-### Authorization rules
+## Admin action events
 
-Clients apply these rules when updating the roster:
+Within an epoch, admins (and non-admin leavers) can modify group state by posting [events](events.md) to the group mailbox. These are processed as roster deltas on top of the epoch's snapshot.
 
-- **invite_sent(target)**: sender must be active (pending or accepted). Target becomes pending unless already accepted or banned.
-- **invite_accepted**: applies to the sender. If the sender is banned, ignore; otherwise mark accepted.
-- **leave**: if sender is not banned, remove sender from roster.
-- **ban / unban / add_admin / remove_admin (target)**: sender must be an active admin.
+| Tag | Name | Authorization | Body | Effect |
+|-----|------|---------------|------|--------|
+| 6 | GROUP_MUTE_CHANGE | admin only | `[username, muted]` | sets `is_muted` for the named member |
+| 7 | GROUP_METADATA_CHANGE | admin only | `[title, description]` | updates group title and/or description |
+| 8 | GROUP_SETTINGS_CHANGE | admin only | `[new_members_muted, allow_history]` | updates group-wide settings |
+| 4 | LEAVE_REQUEST | any member | empty | removes sender from the roster |
+| 2 | ROTATION_HINT | any member | empty | signals clients to check registry for a new rotation (not a roster change) |
 
-The roster is initialized with `init_admin` as accepted + admin.
+Clients MUST verify that the event sender is an admin before applying tags 6–8. LEAVE_REQUEST (tag 4) is accepted from any member. ROTATION_HINT (tag 2) does not modify the roster.
+
+Admin set changes (tag 5, GROUP_ADMIN_CHANGE) are not delivered as in-epoch events — they go through the rotation registry instead, keeping `new_admin_set` authoritative and up to date.
 
 ## Flows
 
 ### Create a group
 
 ```
-create_group():
-    descriptor = [random32, my_username, now_seconds, my_server_name, random32]
-    group_id = h(bcs_encode(descriptor))
-    group_message_key = random32
-    group_token = random20
+create_group(title, description):
+    group_id = random_uuid()
+    gbk = [group_id, my_server, H(group_id_bytes), random32]
 
-    server.register_group(group_id)
-    server.set_mailbox_acl(group_messages_mailbox_id,   group_token, can_send=true, can_recv=true, can_edit_acl=true)
-    server.set_mailbox_acl(group_management_mailbox_id, group_token, can_send=true, can_recv=true, can_edit_acl=true)
+    roster = {
+        members: {my_username: [is_admin=true, is_muted=false]},
+        banned: [],
+        metadata: [title, description],
+        settings: [new_members_muted=false, allow_history=false]
+    }
 
-    persist(descriptor, group_message_key_current=group_message_key, group_message_key_previous=group_message_key, group_token)
+    payload = [gbk, roster]
+    payload_encrypted = header_encrypt(my_medium_keys, bcs_encode(payload))
+
+    rotation = [group_id, index=0, signer=my_device_pk, admin_set={my_device_pk}, payload_encrypted, signature]
+    sign(rotation)
+
+    server.group_create(auth_token, rotation)
+    server.mailbox_create(auth_token, gbk.mailbox_key())
+    persist(gbk, roster)
 ```
 
-### Send a group chat message
+### Send a group message
+
+See [e2ee — sending a group message](e2ee.md#sending-a-group-message).
+
+### Receive a group message
 
 ```
-send_group_message(group_id, event):
-    // sign the event
-    signed = device_sign(my_username, my_device_pk, my_device_signing_sk, bcs_encode(event))
+recv_group_message(body_bytes, gbk, group_id):
+    nonce = body_bytes[0..24]
+    ct = body_bytes[24..]
+    signed_bytes = xchacha20_poly1305_decrypt(key=gbk.symmetric_key(), nonce=nonce, ciphertext=ct)
 
-    // encrypt under current group message key
-    nonce = random_bytes(24)
-    ct = xchacha20_poly1305_encrypt(key=group_message_key_current, nonce=nonce, plaintext=signed)
+    (sender, event_bytes) = device_verify(signed_bytes)
+    event = bcs_decode(event_bytes)
+    assert event.recipient == ["group", group_id]
+    assert event.sender == sender
 
-    mailbox_send(mailbox=group_messages_mailbox_id, kind="v1.group_message", body=bcs_encode([nonce, ct]))
-```
+    if event.tag == ROTATION_HINT:
+        check_and_adopt_rotation(group_id)
+        return
 
-On receive from the group messages mailbox, clients do:
+    if event.tag in [ADMIN_CHANGE, MUTE_CHANGE, METADATA_CHANGE, SETTINGS_CHANGE, LEAVE_REQUEST]:
+        apply_admin_action(event)
+        return
 
-```
-recv_group_message_entry(body_bytes):
-    [nonce, ct] = bcs_decode(body_bytes)
-    signed_bytes = xchacha20_poly1305_decrypt(key=group_message_key_current, nonce=nonce, ciphertext=ct)
-        or xchacha20_poly1305_decrypt(key=group_message_key_previous, nonce=nonce, ciphertext=ct)
-
-    (sender, payload_bytes) = device_verify(signed_bytes)
-    event = bcs_decode(payload_bytes)
-    assert event[0] == group_id
-    return event
+    // Regular message
+    store_message(event)
 ```
 
 ### Invite a user
 
-Invites have two parts:
-
-1) A management message to update the roster, posted to the management mailbox.
-2) A direct message to deliver the secret material (group key + token + descriptor) to the invitee.
+An admin DMs the current GBK to the invitee. No rotation is needed — the GBK is the capability.
 
 ```
 invite_user(group_id, invitee_username):
-    invite_token = random20
-    server.set_mailbox_acl(group_messages_mailbox_id,   invite_token, can_send=true, can_recv=true)
-    server.set_mailbox_acl(group_management_mailbox_id, invite_token, can_send=true, can_recv=true)
+    assert am_admin
+    assert invitee not banned
 
-    // roster signal (management mailbox)
-    send_group_management(group_id, {"invite_sent": invitee_username})
-
-    // secret delivery (DM)
-    dm_body_json = { descriptor, group_key: group_message_key_current, token: invite_token, created_at: now_nanos }
-    invite_event = [invitee_username, now_nanos, "application/vnd.nullspace.v1.group_invite", dm_body_json]
-    send_dm(invitee_username, invite_event)
+    invitation = [group_id, current_gbk, current_rotation_index, title, description]
+    event = [my_username, ["dm", invitee_username], now_nanos, after, TAG_GROUP_INVITATION, bcs_encode(invitation)]
+    send_dm(invitee_username, event)
 ```
 
 ### Accept an invite
 
 ```
-accept_invite(invite):
-    persist(invite.descriptor, group_message_key_current=invite.group_key, group_message_key_previous=invite.group_key, token=invite.token)
+accept_invite(invitation):
+    gbk = invitation.gbk
+    persist(gbk)
 
-    // start reading management from the beginning; start reading messages from invite.created_at
-    set_mailbox_cursor(group_management_mailbox_id, after=0)
-    set_mailbox_cursor(group_messages_mailbox_id,   after=invite.created_at)
+    // Forward-walk the rotation registry to the latest rotation
+    index = invitation.rotation_index
+    loop:
+        next = server.group_get(gbk.group_id, index + 1)
+        if next is null:
+            break
+        adopt_rotation(next)
+        index = next.index
 
-    send_group_management(group_id, "invite_accepted")
+    // Start polling the current GBK's mailbox
+    start_polling(gbk.mailbox_key())
 ```
 
-## Invite payload encoding
+### Ban a user
 
-The group invite event body is a JSON object with fields:
-
-- `descriptor`: a JSON object containing the group descriptor fields (`nonce`, `init_admin`, `created_at`, `server`, `management_key`)
-- `group_key`: 32-byte group message key
-- `token`: 20-byte auth token for group mailbox access
-- `created_at`: Unix timestamp (nanoseconds)
-
-JSON encoding rules for binary values:
-
-- 32-byte keys (like `management_key` and `group_key`) are encoded as URL-safe base64 without padding.
-- 20-byte auth tokens are encoded as lowercase hex.
-- Hashes (like `nonce` and `group_id`) are encoded as lowercase hex.
-
-### Send a management message
+Banning requires a rotation because the banned member must lose access to the GBK.
 
 ```
-send_group_management(group_id, manage_json):
-    manage_event = [group_id, now_nanos, "application/vnd.nullspace.v1.group_manage", manage_json]
-
-    signed = device_sign(my_username, my_device_pk, my_device_signing_sk, bcs_encode(manage_event))
-    nonce = random_bytes(24)
-    ct = xchacha20_poly1305_encrypt(key=management_key, nonce=nonce, plaintext=signed)
-    mailbox_send(mailbox=group_management_mailbox_id, kind="v1.group_message", body=bcs_encode([nonce, ct]))
+ban_user(group_id, target_username):
+    assert am_admin
+    roster.members.remove(target_username)
+    roster.banned.add(target_username)
+    submit_rotation(group_id, roster)
 ```
 
-### Leave / ban / admin changes
+### Admin leave
 
-These are all management messages with the JSON forms listed above, sent via `send_group_management`.
+Admin departure requires a rotation to update the admin set.
 
-### Rekey
+```
+admin_leave(group_id):
+    assert am_admin
+    roster.members.remove(my_username)
+    submit_rotation(group_id, roster)
+    delete_local_group_state(group_id)
+```
 
-Rekeying is specified cryptographically in [e2ee.md](e2ee.md). Semantically:
+### Non-admin leave
 
-- Only active admins’ rekeys are accepted.
-- Rekeys are addressed to the medium-term keys of all active members (pending or accepted) and exclude banned/inactive members.
+Non-admins post a LEAVE_REQUEST event and clean up locally. No rotation is needed.
+
+```
+non_admin_leave(group_id):
+    event = [my_username, ["group", group_id], now_nanos, after, TAG_LEAVE_REQUEST, empty]
+    send_group_message(group_id, event)
+    delete_local_group_state(group_id)
+```
+
+### Periodic rotation
+
+```
+periodic_rotation():
+    // Runs once per hour for each group where this device is an admin
+    for each group where am_admin:
+        n_admins = count of admins
+        p = 1 / (24 * n_admins)
+        if random() < p:
+            submit_rotation(group_id, current_roster)
+```
+
+### Submit rotation (shared helper)
+
+Used by ban, admin leave, and periodic rotation:
+
+```
+submit_rotation(group_id, roster):
+    new_gbk = [group_id, server, H(group_id_bytes), random32]
+    all_medium_keys = fetch_medium_keys(roster.members)
+    admin_device_keys = fetch_device_keys(admins in roster.members)
+
+    payload = [new_gbk, roster]
+    payload_encrypted = header_encrypt(all_medium_keys, bcs_encode(payload))
+
+    rotation = [group_id, index=current+1, signer=my_device_pk, admin_set=admin_device_keys, payload_encrypted, signature]
+    sign(rotation)
+
+    server.group_update(rotation)
+    server.mailbox_create(auth_token, new_gbk.mailbox_key())
+
+    // Notify members polling the old mailbox
+    send_rotation_hint(group_id, old_gbk)
+
+    persist(new_gbk, roster)
+```
+
+The rotation hint is a regular group message (encrypted with the *old* GBK's symmetric key) containing an event with tag ROTATION_HINT and empty body. It tells clients polling the old mailbox to check the registry for the new rotation.
+
+## Scalability
+
+Nullspace groups are designed to scale to very large membership — tens or hundreds of thousands of members — without hitting fundamental protocol limits. This is in deliberate contrast to approaches like Signal's (and WhatsApp's) Sender Keys, which impose O(n) costs on operations that happen frequently.
+
+### Signal's Sender Keys
+
+Signal's group protocol gives each member a personal "sender key": a symmetric signing key used to encrypt that member's outgoing messages. The scheme achieves efficient O(1) message sending (encrypt once, server fans out), but creates severe scaling problems for membership operations:
+
+- **Join**: the new member must receive a sender key from every existing member, requiring O(n) individual DMs. In practice, Signal caps groups at 1,000 members partly for this reason.
+- **Member removal**: to maintain forward secrecy after someone leaves or is removed, all remaining members must redistribute their sender keys — again O(n) DMs.
+- **State complexity**: each member must track a separate sender key per group member, which creates substantial per-device state and opportunities for "decryption failed" failures when keys fall out of sync.
+
+### Nullspace's shared-key approach
+
+Nullspace uses a single shared group key per epoch. This means:
+
+- **Message send**: O(1). Encrypt once with the shared symmetric key, post to one mailbox.
+- **Join**: O(1). The inviting admin sends one DM containing the current key.
+- **Key rotation** (bans, admin changes, periodic): O(n). The rotating admin must encrypt the new key to every member's medium-term public key. This is the only operation that scales with group size.
+
+Rotations are infrequent — bans and admin changes are rare, and periodic rotation happens roughly once per day per group regardless of how many messages are sent.
+
+Importantly, the O(n) rotation cost is a single upload, not O(n) individual messages. The new key is header-encrypted to all members' public keys and packed into one blob posted to the server, avoiding "O(n) DMs" patterns. This means that at ~32 bytes of ciphertext overhead per member, a 100,000-member group — an absurdly large group — produces a rotation payload of roughly 3 MB, comparable to uploading and fanning out a single photo. Furthermore, this is a cost imposed on the admin, not on every single user.
+
+So for large groups, the overhead of Nullspace encryption (versus a traditional unencrypted chat like Telegram) is effectively one admin sending a photo every time the admin set changes or somebody gets banned. This seems to be an intuitively small overhead; reasonably active groups have photos sent in them more frequently than people get banned!
+
+### Why not ratcheting?
+
+MLS (the IETF standard for scalable E2EE groups) reduces rotation cost from O(n) to O(log n) via a ratchet tree. 
+
+But even setting aside MLS's significant protocol complexity, the O(n) rotation cost in Nullspace is already cheap enough in absolute terms — a single blob upload, not O(n) network round-trips — that the asymptotic improvement is not really meaningful. 
+
+Furthermore, the Nullspace E2EE design deliberately avoids ratcheting for reasons that go beyond scalability. See [End-to-end encryption](e2ee.md) for the full rationale.

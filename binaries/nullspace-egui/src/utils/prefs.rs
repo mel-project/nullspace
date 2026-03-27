@@ -20,9 +20,9 @@ impl ConvoRowStyle {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppTheme {
+    #[default]
     Light,
     Dark,
-    #[default]
     Auto,
 }
 
@@ -48,6 +48,7 @@ impl AppTheme {
 #[serde(default)]
 pub struct PrefData {
     pub theme: AppTheme,
+    pub debug_mode: bool,
     pub zoom_percent: u16,
     pub max_auto_image_download_bytes: Option<u64>,
     pub convo_row_style: ConvoRowStyle,
@@ -56,7 +57,8 @@ pub struct PrefData {
 impl Default for PrefData {
     fn default() -> Self {
         Self {
-            theme: AppTheme::Auto,
+            theme: AppTheme::Light,
+            debug_mode: false,
             zoom_percent: 100,
             max_auto_image_download_bytes: Some(1_000_000),
             convo_row_style: ConvoRowStyle::Friendly,
@@ -69,15 +71,21 @@ mod tests {
     use super::{AppTheme, PrefData};
 
     #[test]
-    fn prefs_default_to_auto_theme() {
-        assert_eq!(PrefData::default().theme, AppTheme::Auto);
+    fn prefs_default_to_light_theme() {
+        assert_eq!(PrefData::default().theme, AppTheme::Light);
     }
 
     #[test]
-    fn missing_theme_deserializes_as_auto() {
+    fn prefs_default_to_debug_mode_off() {
+        assert!(!PrefData::default().debug_mode);
+    }
+
+    #[test]
+    fn missing_theme_deserializes_as_light() {
         let prefs: PrefData =
             serde_json::from_str(r#"{"zoom_percent":125,"convo_row_style":"text"}"#).unwrap();
-        assert_eq!(prefs.theme, AppTheme::Auto);
+        assert_eq!(prefs.theme, AppTheme::Light);
+        assert!(!prefs.debug_mode);
     }
 
     #[test]

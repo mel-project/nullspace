@@ -13,8 +13,8 @@ use nullspace_structs::server::{ServerName, ServerRpcError};
 use nullspace_structs::timestamp::NanoTimestamp;
 use tokio::sync::oneshot;
 
-use crate::config::{Config, Ctx};
 use super::server::get_server_client;
+use crate::config::{Config, Ctx};
 
 const LONG_POLL_MIN_MS: u64 = 15_000;
 const LONG_POLL_MAX_MS: u64 = 30 * 60 * 1000;

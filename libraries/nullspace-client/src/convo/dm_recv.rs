@@ -6,7 +6,10 @@ use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
 use nullspace_structs::server::ServerName;
 
 use crate::config::Config;
-use crate::convo::{NewThreadEvent, THREAD_KIND_DIRECT, ensure_thread_id, insert_thread_event};
+use crate::convo::{
+    NewThreadEvent, THREAD_KIND_DIRECT, ensure_thread_id, insert_thread_event,
+    thread_accepts_event_link,
+};
 use crate::database::DATABASE;
 use crate::events::emit_event;
 use crate::identity::Identity;
@@ -145,6 +148,14 @@ async fn process_mailbox_entry(
             // Also insert as a system event in the DM thread for UI display
             let thread_id =
                 ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;
+            if !thread_accepts_event_link(&mut conn, thread_id, event.after.as_ref()).await? {
+                tracing::warn!(
+                    sender = %verified.sender,
+                    event_after = ?event.after,
+                    "dropping DM invitation with unknown event parent",
+                );
+                return Ok(None);
+            }
             let display_title = invitation
                 .title
                 .clone()
@@ -178,13 +189,13 @@ async fn process_mailbox_entry(
 
     let mut conn = db.acquire().await?;
     let thread_id = ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;
-    let is_valid_link = validate_event_link(&mut conn, thread_id, event.after).await?;
-    if !is_valid_link {
+    if !thread_accepts_event_link(&mut conn, thread_id, event.after.as_ref()).await? {
         tracing::warn!(
             sender = %verified.sender,
             event_after = ?event.after,
-            "could not find the event this event is supposed to be after, but accepting regardless",
+            "dropping DM event with unknown event parent",
         );
+        return Ok(None);
     }
 
     let event_hash = event.hash();
@@ -210,33 +221,5 @@ async fn process_mailbox_entry(
         }))
     } else {
         Ok(None)
-    }
-}
-
-async fn validate_event_link(
-    conn: &mut sqlx::SqliteConnection,
-    thread_id: i64,
-    event_after: Option<nullspace_crypt::hash::Hash>,
-) -> anyhow::Result<bool> {
-    match event_after {
-        Some(prev_hash) => {
-            let exists = sqlx::query_scalar::<_, i64>(
-                "SELECT 1 FROM thread_events WHERE thread_id = ? AND event_hash = ? LIMIT 1",
-            )
-            .bind(thread_id)
-            .bind(prev_hash.to_bytes().to_vec())
-            .fetch_optional(&mut *conn)
-            .await?;
-            Ok(exists.is_some())
-        }
-        None => {
-            let has_any = sqlx::query_scalar::<_, i64>(
-                "SELECT 1 FROM thread_events WHERE thread_id = ? LIMIT 1",
-            )
-            .bind(thread_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-            Ok(has_any.is_none())
-        }
     }
 }

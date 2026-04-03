@@ -112,7 +112,7 @@ pub trait ServerProtocol {
     /// Appends the next signed rotation entry to a group registry.
     async fn group_update(&self, entry: GroupRotation) -> Result<(), ServerRpcError>;
 
-    /// Reads a single rotation entry by registry nonce and index.
+    /// Reads a single rotation entry by group id and index.
     async fn group_get(
         &self,
         group_id: GroupId,

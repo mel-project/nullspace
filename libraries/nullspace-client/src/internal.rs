@@ -395,7 +395,6 @@ pub enum ProvisionHostState {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GroupCreateRequest {
-    pub server: ServerName,
     pub title: Option<String>,
     pub description: Option<String>,
     pub new_members_muted: bool,

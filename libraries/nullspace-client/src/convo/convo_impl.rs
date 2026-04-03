@@ -371,7 +371,7 @@ pub async fn group_invitation_accept_impl(
     .await
     .map_err(internal_err)?;
     if let Some(roster) = &final_roster {
-        super::groups::store_roster(&mut tx, group_id, final_index, roster)
+        super::groups::replace_current_roster(&mut tx, group_id, final_index, roster)
             .await
             .map_err(internal_err)?;
     }
@@ -380,6 +380,7 @@ pub async fn group_invitation_accept_impl(
         .await
         .map_err(internal_err)?;
     tx.commit().await.map_err(internal_err)?;
+    DbNotify::touch();
 
     // Mark invitation as accepted
     sqlx::query("UPDATE group_invitations SET accepted = 1 WHERE id = ?")

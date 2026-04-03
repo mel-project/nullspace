@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use anyctx::AnyCtx;
 use bytes::Bytes;
@@ -17,7 +18,8 @@ use nullspace_structs::group::{
 use nullspace_structs::server::ServerName;
 
 use crate::config::Config;
-use crate::database::DATABASE;
+use crate::database::{DATABASE, DbNotify};
+use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::internal::{GroupAction, GroupCreateRequest};
 use crate::net::{get_auth_token, get_server_client, own_server_name};
@@ -38,7 +40,6 @@ pub async fn group_create(
     let group_id = GroupId::random();
     let gbk = GroupBearerKey::generate(group_id, server_name.clone());
 
-    // Build initial roster with creator as sole admin
     let mut members = BTreeMap::new();
     members.insert(
         identity.username.clone(),
@@ -95,7 +96,6 @@ pub async fn group_create(
         .await?
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    // Store GBK, roster, and create thread atomically
     let mut tx = db.begin().await?;
     store_gbk(
         &mut tx,
@@ -107,11 +107,12 @@ pub async fn group_create(
         &rotation_hash,
     )
     .await?;
-    store_roster(&mut tx, group_id, 0, &roster).await?;
+    replace_current_roster(&mut tx, group_id, 0, &roster).await?;
     let convo_id = ConvoId::Group { group_id };
     ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
     tx.commit().await?;
 
+    DbNotify::touch();
     Ok(group_id)
 }
 
@@ -125,16 +126,10 @@ pub async fn store_gbk(
     rotation_hash: &Hash,
 ) -> anyhow::Result<()> {
     let gid = group_id.to_bytes().to_vec();
-
-    // Delete all but the most recent row so we keep at most 2 (prev + new)
-    sqlx::query(
-        "DELETE FROM group_keys WHERE group_id = ? AND rotation_index < \
-         (SELECT MAX(rotation_index) FROM group_keys WHERE group_id = ?)",
-    )
-    .bind(&gid)
-    .bind(&gid)
-    .execute(&mut *conn)
-    .await?;
+    sqlx::query("DELETE FROM group_keys WHERE group_id = ?")
+        .bind(&gid)
+        .execute(&mut *conn)
+        .await?;
 
     sqlx::query(
         "INSERT INTO group_keys (group_id, rotation_index, gbk, server_name, admin_set, rotation_hash) \
@@ -151,26 +146,68 @@ pub async fn store_gbk(
     Ok(())
 }
 
-pub async fn store_roster(
+pub async fn replace_current_roster(
     conn: &mut sqlx::SqliteConnection,
     group_id: GroupId,
     rotation_index: u64,
     roster: &GroupRoster,
 ) -> anyhow::Result<()> {
     let gid = group_id.to_bytes().to_vec();
-    let roster_bytes = bcs::to_bytes(roster)?;
+
     sqlx::query(
-        "INSERT INTO group_rosters (group_id, rotation_index, roster) \
-         VALUES (?, ?, ?) \
+        "INSERT INTO group_state_current \
+         (group_id, rotation_index, title, description, new_members_muted, allow_new_members_to_see_history) \
+         VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT(group_id) DO UPDATE SET \
            rotation_index = excluded.rotation_index, \
-           roster = excluded.roster",
+           title = excluded.title, \
+           description = excluded.description, \
+           new_members_muted = excluded.new_members_muted, \
+           allow_new_members_to_see_history = excluded.allow_new_members_to_see_history",
     )
-    .bind(gid)
+    .bind(&gid)
     .bind(rotation_index as i64)
-    .bind(roster_bytes)
+    .bind(&roster.metadata.title)
+    .bind(&roster.metadata.description)
+    .bind(roster.settings.new_members_muted)
+    .bind(roster.settings.allow_new_members_to_see_history)
     .execute(&mut *conn)
     .await?;
+
+    sqlx::query("DELETE FROM group_members_current WHERE group_id = ?")
+        .bind(&gid)
+        .execute(&mut *conn)
+        .await?;
+
+    for (username, state) in &roster.members {
+        sqlx::query(
+            "INSERT INTO group_members_current \
+             (group_id, username, is_admin, is_muted, is_banned) VALUES (?, ?, ?, ?, 0)",
+        )
+        .bind(&gid)
+        .bind(username.as_str())
+        .bind(state.is_admin)
+        .bind(state.is_muted)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    for username in &roster.banned {
+        sqlx::query(
+            "INSERT INTO group_members_current \
+             (group_id, username, is_admin, is_muted, is_banned) VALUES (?, ?, 0, 0, 1)",
+        )
+        .bind(&gid)
+        .bind(username.as_str())
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    sqlx::query("DELETE FROM group_rosters WHERE group_id = ?")
+        .bind(gid)
+        .execute(&mut *conn)
+        .await?;
+
     Ok(())
 }
 
@@ -178,15 +215,93 @@ pub async fn load_roster(
     conn: &mut sqlx::SqliteConnection,
     group_id: GroupId,
 ) -> anyhow::Result<(u64, GroupRoster)> {
-    let row = sqlx::query_as::<_, (i64, Vec<u8>)>(
+    if let Some(row) = sqlx::query_as::<_, (i64, Option<String>, Option<String>, bool, bool)>(
+        "SELECT rotation_index, title, description, new_members_muted, allow_new_members_to_see_history \
+         FROM group_state_current WHERE group_id = ?",
+    )
+    .bind(group_id.to_bytes().to_vec())
+    .fetch_optional(&mut *conn)
+    .await?
+    {
+        let member_rows = sqlx::query_as::<_, (String, bool, bool, bool)>(
+            "SELECT username, is_admin, is_muted, is_banned \
+             FROM group_members_current WHERE group_id = ?",
+        )
+        .bind(group_id.to_bytes().to_vec())
+        .fetch_all(&mut *conn)
+        .await?;
+
+        let mut members = BTreeMap::new();
+        let mut banned = BTreeSet::new();
+        for (username, is_admin, is_muted, is_banned) in member_rows {
+            let username = nullspace_structs::username::UserName::parse(username)?;
+            if is_banned {
+                banned.insert(username);
+            } else {
+                members.insert(
+                    username,
+                    MemberState {
+                        is_admin,
+                        is_muted,
+                    },
+                );
+            }
+        }
+
+        return Ok((
+            row.0 as u64,
+            GroupRoster {
+                members,
+                banned,
+                metadata: GroupMetadata {
+                    title: row.1,
+                    description: row.2,
+                },
+                settings: GroupRosterSettings {
+                    new_members_muted: row.3,
+                    allow_new_members_to_see_history: row.4,
+                },
+            },
+        ));
+    }
+
+    let Some((rotation_index, roster_bytes)) = sqlx::query_as::<_, (i64, Vec<u8>)>(
         "SELECT rotation_index, roster FROM group_rosters WHERE group_id = ?",
     )
     .bind(group_id.to_bytes().to_vec())
     .fetch_optional(&mut *conn)
     .await?
-    .ok_or_else(|| anyhow::anyhow!("no roster found for group {group_id}"))?;
-    let roster: GroupRoster = bcs::from_bytes(&row.1)?;
-    Ok((row.0 as u64, roster))
+    else {
+        anyhow::bail!("no roster found for group {group_id}");
+    };
+
+    let roster: GroupRoster = bcs::from_bytes(&roster_bytes)?;
+    replace_current_roster(conn, group_id, rotation_index as u64, &roster).await?;
+    Ok((rotation_index as u64, roster))
+}
+
+pub async fn remove_local_group_state(
+    conn: &mut sqlx::SqliteConnection,
+    group_id: GroupId,
+) -> anyhow::Result<()> {
+    let gid = group_id.to_bytes().to_vec();
+    sqlx::query("DELETE FROM group_keys WHERE group_id = ?")
+        .bind(&gid)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM group_state_current WHERE group_id = ?")
+        .bind(&gid)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM group_members_current WHERE group_id = ?")
+        .bind(&gid)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM group_rosters WHERE group_id = ?")
+        .bind(gid)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 /// Loaded state for the most recent GBK of a group.
@@ -203,8 +318,8 @@ pub async fn load_gbk(
     group_id: GroupId,
 ) -> anyhow::Result<LoadedGbk> {
     let row = sqlx::query_as::<_, (i64, Vec<u8>, String, Vec<u8>, Vec<u8>)>(
-        "SELECT rotation_index, gbk, server_name, admin_set, rotation_hash FROM group_keys \
-         WHERE group_id = ? ORDER BY rotation_index DESC LIMIT 1",
+        "SELECT rotation_index, gbk, server_name, admin_set, rotation_hash \
+         FROM group_keys WHERE group_id = ? ORDER BY rotation_index DESC LIMIT 1",
     )
     .bind(group_id.to_bytes().to_vec())
     .fetch_optional(&mut *conn)
@@ -227,6 +342,134 @@ pub async fn load_gbk(
     })
 }
 
+pub async fn refresh_group_state(
+    ctx: &AnyCtx<Config>,
+    group_id: GroupId,
+) -> anyhow::Result<bool> {
+    let db = ctx.get(DATABASE);
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
+    let auth = get_auth_token(ctx).await?;
+    let mut loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
+    let server = get_server_client(ctx, &loaded.server_name).await?;
+    let mut changed = false;
+
+    loop {
+        let rotation = match server.group_get(group_id, loaded.rotation_index + 1).await? {
+            Ok(Some(rotation)) => rotation,
+            Ok(None) => break,
+            Err(err) => anyhow::bail!("group_get failed: {err}"),
+        };
+
+        rotation
+            .verify(rotation.signer)
+            .map_err(|_| anyhow::anyhow!("rotation signature verification failed"))?;
+
+        if !loaded.admin_set.contains(&rotation.signer) {
+            anyhow::bail!("rotation signer {:?} not in previous admin set", rotation.signer);
+        }
+        match &rotation.prev_hash {
+            Some(hash) if *hash == loaded.rotation_hash => {}
+            Some(_) => anyhow::bail!("rotation prev_hash does not match stored rotation hash"),
+            None => anyhow::bail!("rotation has no prev_hash"),
+        }
+
+        let payload_bytes = match rotation
+            .gbk_rotation
+            .decrypt_bytes(&identity.medium_sk_current)
+            .or_else(|_| rotation.gbk_rotation.decrypt_bytes(&identity.medium_sk_prev))
+        {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let mut tx = db.begin().await?;
+                remove_local_group_state(&mut tx, group_id).await?;
+                tx.commit().await?;
+                DbNotify::touch();
+                return Ok(true);
+            }
+        };
+
+        let payload: GroupRotationPayload = bcs::from_bytes(&payload_bytes)?;
+        if payload.gbk.group_id != group_id {
+            anyhow::bail!("rotation payload group id mismatch");
+        }
+        if payload.gbk.server != loaded.server_name {
+            anyhow::bail!("rotation payload server mismatch");
+        }
+
+        server
+            .mailbox_create(auth, payload.gbk.mailbox_key())
+            .await?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        let rotation_hash = rotation.hash();
+        let next_index = loaded.rotation_index + 1;
+        let mut tx = db.begin().await?;
+        store_gbk(
+            &mut tx,
+            group_id,
+            &payload.gbk,
+            &payload.gbk.server,
+            next_index,
+            &rotation.new_admin_set,
+            &rotation_hash,
+        )
+        .await?;
+        replace_current_roster(&mut tx, group_id, next_index, &payload.roster).await?;
+        let convo_id = ConvoId::Group { group_id };
+        ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
+        tx.commit().await?;
+
+        loaded = LoadedGbk {
+            rotation_index: next_index,
+            gbk: payload.gbk,
+            server_name: loaded.server_name.clone(),
+            admin_set: rotation.new_admin_set,
+            rotation_hash,
+        };
+        changed = true;
+    }
+
+    if changed {
+        DbNotify::touch();
+    }
+    Ok(changed)
+}
+
+pub(super) async fn group_refresh_loop(ctx: &AnyCtx<Config>) {
+    loop {
+        if let Err(err) = group_refresh_loop_once(ctx).await {
+            tracing::error!(error = %err, "group refresh loop error");
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+async fn group_refresh_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
+    let db = ctx.get(DATABASE);
+    let group_ids = sqlx::query_scalar::<_, Vec<u8>>("SELECT group_id FROM group_keys")
+        .fetch_all(&*db)
+        .await?;
+
+    for gid_bytes in group_ids {
+        let gid_arr: [u8; 16] = gid_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid group_id length"))?;
+        let group_id = GroupId::from_bytes(gid_arr);
+        match refresh_group_state(ctx, group_id).await {
+            Ok(true) => emit_event(
+                ctx,
+                crate::internal::Event::ConvoUpdated {
+                    convo_id: ConvoId::Group { group_id },
+                },
+            ),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(group = %group_id, error = %err, "failed to refresh group state"),
+        }
+    }
+
+    Ok(())
+}
+
 /// Dispatch a group action. Rotation-requiring actions (ban, admin leave) submit
 /// a new rotation. Mailbox-event actions (admin changes, mutes, metadata) are
 /// queued as events through the normal send path. ShareInvite DMs the GBK.
@@ -235,18 +478,19 @@ pub async fn group_action(
     group_id: GroupId,
     action: GroupAction,
 ) -> anyhow::Result<()> {
+    let _ = refresh_group_state(ctx, group_id).await?;
+
     let db = ctx.get(DATABASE);
     let identity = Identity::load(&mut *db.acquire().await?).await?;
     let (rotation_index, mut roster) = load_roster(&mut *db.acquire().await?, group_id).await?;
     let loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
-    let gbk_rotation_index = loaded.rotation_index;
     let prev_rotation_hash = loaded.rotation_hash;
     let gbk = loaded.gbk;
 
     let am_admin = roster
         .members
         .get(&identity.username)
-        .map_or(false, |m| m.is_admin);
+        .is_some_and(|member| member.is_admin);
 
     let group_convo = ConvoId::Group { group_id };
 
@@ -257,7 +501,7 @@ pub async fn group_action(
             let invitation = GroupInvitationBody {
                 group_id: gbk.group_id,
                 gbk: gbk.clone(),
-                rotation_index: gbk_rotation_index,
+                rotation_index: loaded.rotation_index,
                 title: roster.metadata.title.clone(),
                 description: roster.metadata.description.clone(),
             };
@@ -281,9 +525,6 @@ pub async fn group_action(
             if let Some(member) = roster.members.get_mut(&username) {
                 member.is_admin = is_admin;
             }
-            // Admin set changes require a rotation: the rotation's new_admin_set is the
-            // authoritative record of who may sign the next rotation, so it must be updated
-            // immediately rather than via an in-epoch event.
             submit_rotation(ctx, &identity, group_id, prev_rotation_hash, &roster, &gbk).await?;
         }
 
@@ -361,7 +602,8 @@ pub async fn group_action(
                     .await?;
             } else {
                 roster.banned.remove(&username);
-                store_roster(&mut *db.acquire().await?, group_id, rotation_index, &roster).await?;
+                replace_current_roster(&mut *db.acquire().await?, group_id, rotation_index, &roster)
+                    .await?;
             }
         }
 
@@ -381,19 +623,12 @@ pub async fn group_action(
                     &body,
                 )
                 .await?;
-                // Delete local group state
-                sqlx::query("DELETE FROM group_keys WHERE group_id = ?")
-                    .bind(group_id.to_bytes().to_vec())
-                    .execute(&mut *conn)
-                    .await?;
-                sqlx::query("DELETE FROM group_rosters WHERE group_id = ?")
-                    .bind(group_id.to_bytes().to_vec())
-                    .execute(&mut *conn)
-                    .await?;
+                roster.members.remove(&identity.username);
+                replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
             }
         }
     }
 
-    crate::database::DbNotify::touch();
+    DbNotify::touch();
     Ok(())
 }

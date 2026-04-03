@@ -1,5 +1,13 @@
 # Mailboxes
 
+Implementation note: the only cleanup item in scope for the current implementation is removing `registry_nonce` from the GBK shape. Other cleanup ideas, such as removing `Blob`, changing `MessagePayload`, or collapsing group admin tags, are out of scope for this pass.
+
+Out of scope for this implementation:
+- removing `Blob`
+- changing `MessagePayload`
+- collapsing split group admin-action tags
+- any other cleanup beyond removing `registry_nonce`
+
 Mailboxes are now a much "dumber" primitive. A mailbox is a pair `(mailbox_id, mailbox_key)`, where `mailbox_id = H_keyed(key="nullspace-mailbox", mailbox_id)`. Mailboxes are created dynamically by authenticated clients on their proper server; this makes "blame" for server-side rate limiting and such possible.
 
 Mailboxes are also changed to directly work with raw bytes, not a `Blob` abstraction, which is removed. We generally don't need to expose any sort of message type distinction at the mailbox level; this simplifies implementation as well as hiding a bit more metadata from servers.
@@ -39,14 +47,13 @@ Groups use two server primitives: **mailboxes** for message delivery and a **gro
 At the client-to-client level, we introduce a new concept, a **group bearer key (GBK)**, containing:
 - an opaque Group ID
 - the server that the group is hosted on
-- the group registry nonce (see below)
 - a random nonce
 
 Then, we derive the **group mailbox key** (and thus its ID) as well as the **group symmetric key** using a KDF on the GBK.
 
 Thus, the GBK is truly a *bearer credential for read/write access to the group*, that bundles server and cryptographic enforcement in one object.
 
-The entire history of a group under a single GBK is a single event thread for the purposes of the `after` field. Group events are signed then encrypted with the GBK.
+The entire history of a group across all GBKs is a single event thread for the purposes of the `after` field. Group events are signed then encrypted with the current GBK.
 
 Of course, only using GBKs doesn't allow people to be kicked from groups. We also don't have any forward secrecy. Both of these problems are solved by **GBK rotation**, which is managed through the group registry.
 
@@ -64,7 +71,7 @@ Each `RotationEntry` contains:
 
 **Server behavior on append:** verify that the signature on the entry comes from a key in the current `admin_set`. If valid, accept the entry, append it to the log, and replace `admin_set` with `new_admin_set`. The server must reject appends where `new_admin_set` is empty (to prevent permanently freezing the group).
 
-**Server behavior on read:** expose an endpoint that, given the registry nonce and a rotation index `i`, returns the `i`th rotation entry. This is stateless and cacheable.
+**Server behavior on read:** expose an endpoint that, given the group id and a rotation index `i`, returns the `i`th rotation entry. This is stateless and cacheable.
 
 Concurrent admin appends are resolved by natural optimistic concurrency: the server accepts whichever arrives first, which updates the `admin_set`, potentially invalidating the second append's signature. 
 
@@ -73,14 +80,12 @@ Concurrent admin appends are resolved by natural optimistic concurrency: the ser
 GBK rotation is managed entirely through the group registry, not through the group mailbox. 
 
 When an admin rotates the GBK:
-1. They construct a new GBK (with a fresh random nonce, same Group ID, same server, same registry nonce).
+1. They construct a new GBK (with a fresh random nonce, same Group ID, same server).
 2. They construct the `gbk_rotation`: a header-encrypted blob, encrypted to all members of the group, containing the new GBK, as well as the entire roster (sorted map from username to bitflag)
 3. They construct the `new_admin_set` reflecting any admin changes.
 4. They sign and submit the rotation entry to the group registry.
 
-**Client polling:** each client tracks the latest rotation index it has processed for each group. To check for rotations, it requests `get_rotation(nonce, last_index + 1)`. If a new entry exists, the client decrypts the GBK rotation message, derives the new mailbox key, and starts polling the new mailbox. This is simple, reliable, and gap-free — just a monotonic integer.
-
-After processing a GBK rotation, clients should briefly (for a few hours) continue polling the old mailbox to catch messages from members who sent under the old GBK before they processed the rotation.
+**Client polling:** each client tracks the latest rotation index it has processed for each group. To check for rotations, it requests `get_rotation(group_id, last_index + 1)`. If a new entry exists, the client decrypts the GBK rotation message, derives the new mailbox key, and switches to polling the new mailbox. Clients refresh rotations before sending and may also refresh periodically in the background so missed hints do not permanently strand them on an old GBK.
 
 When an admin bans a user, they must also rotate the GBK (the banned user is simply excluded from the encrypted rotation message). Admins should also periodically rotate GBKs for forward secrecy purposes.
 
@@ -92,12 +97,12 @@ The group roster for these soft permissions is reconstructed by processing inlin
 
 ## Inviting people to groups
 
-Anybody with an up-to-date GBK can join a group by starting to poll the mailbox. This is "lurking" and does not reveal membership until the user sends something.
+Anybody with an up-to-date GBK can join a group by starting to poll the current mailbox. This is "lurking" and does not reveal membership until the user sends something.
 
 When the user sends something, then the roster on every device changes to include that user and the message, unless the roster contains the "new users are muted" flag.
 
 There is inherently no way of implementing a "new users must be approved by an admin to **read** the group" system. Existing users can always spy for other people, so you must allow users to freely invite others at least in a read only capacity. Otherwise it's pure security theater.
 
-When you invite a person using a GBK, you only reveal messages sent under that and later GBKs. If you want to share previous history, you must keep previous GBKs.
+When you invite a person using a GBK, you only reveal messages sent under that and later GBKs. If you want to share previous history, you must keep previous GBKs available locally.
 
-But that would break forward secrecy. Thus, the group roster contains an advisory bit for "allow new users to see old messages" that can be set by admins. This advises (honest) clients whether or not to keep previous GBKs. (Dishonest clients can break FS anyway.)
+But that would break forward secrecy. Thus, the group roster contains an advisory bit for "allow new users to see old messages" that can be set by admins. This advises honest clients whether or not to keep previous GBKs available locally. It does not require any other cleanup work in this implementation beyond removing `registry_nonce`.

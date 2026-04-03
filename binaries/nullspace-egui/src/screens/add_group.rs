@@ -1,5 +1,4 @@
 use eframe::egui::{Button, Modal, Response, Spinner, Widget};
-use egui_hooks::UseHookExt;
 use nullspace_client::GroupCreateRequest;
 use nullspace_structs::group::GroupId;
 
@@ -15,43 +14,20 @@ pub struct AddGroup<'a> {
 impl Widget for AddGroup<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let create = ui.use_async_slot::<Result<GroupId, String>>(());
-        let server = ui.use_memo(
-            || {
-                let result = pollster::block_on(get_rpc().own_server());
-                flatten_rpc(result)
-            },
-            self.app.state.msg_updates,
-        );
 
         if *self.open {
             Modal::new("add_group_modal".into()).show(ui.ctx(), |ui| {
                 ui.heading("New group");
                 let busy = create.is_busy();
-                match &server {
-                    Ok(name) => {
-                        ui.horizontal(|ui| {
-                            ui.label("Server");
-                            ui.label(name.as_str());
-                        });
-                    }
-                    Err(err) => {
-                        ui.label(format!("Server lookup failed: {err}"));
-                    }
-                }
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!busy, Button::new("Cancel")).clicked() {
                         *self.open = false;
                     }
-                    let can_create = !busy && server.is_ok();
-                    if ui.add_enabled(can_create, Button::new("Create")).clicked() {
-                        let server = server.clone().unwrap_or_else(|_| {
-                            unreachable!("server must be available when create is enabled")
-                        });
+                    if ui.add_enabled(!busy, Button::new("Create")).clicked() {
                         create.start(async move {
                             flatten_rpc(
                                 get_rpc()
                                     .group_create(GroupCreateRequest {
-                                        server,
                                         title: None,
                                         description: None,
                                         new_members_muted: false,

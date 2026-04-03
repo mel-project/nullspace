@@ -109,18 +109,15 @@ impl Signable for GroupRotation {
 pub struct GroupBearerKey {
     pub group_id: GroupId,
     pub server: ServerName,
-    pub registry_nonce: Hash,
     pub random_nonce: [u8; 32],
 }
 
 impl GroupBearerKey {
     /// Create a new GBK with a fresh random nonce.
     pub fn generate(group_id: GroupId, server: ServerName) -> Self {
-        let registry_nonce = Hash::digest(&group_id.to_bytes());
         Self {
             group_id,
             server,
-            registry_nonce,
             random_nonce: rand::random(),
         }
     }

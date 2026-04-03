@@ -1,31 +1,29 @@
 use std::time::Duration;
 
 use anyctx::AnyCtx;
-use nullspace_crypt::signing::Signable;
 use nullspace_structs::e2ee::DeviceSigned;
 use nullspace_structs::event::{
     Event, EventRecipient, GroupAdminChangeBody, GroupMetadataChangeBody, GroupMuteChangeBody,
     GroupSettingsChangeBody, TAG_GROUP_ADMIN_CHANGE, TAG_GROUP_METADATA_CHANGE,
     TAG_GROUP_MUTE_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
 };
-use nullspace_structs::group::{GroupBearerKey, GroupId};
+use nullspace_structs::group::{GroupBearerKey, GroupId, MemberState};
 use nullspace_structs::mailbox::MailboxEntry;
 use nullspace_structs::server::ServerName;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
-use crate::convo::{ConvoId, NewThreadEvent, ensure_thread_id, insert_thread_event};
+use crate::convo::{
+    ConvoId, NewThreadEvent, ensure_thread_id, insert_thread_event, thread_accepts_event_link,
+};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use crate::net::get_auth_token;
-use nullspace_structs::group::{GroupRoster, GroupRotationPayload};
-
-use super::groups::{load_roster, store_gbk, store_roster};
-use crate::identity::Identity;
 use crate::net::LONG_POLLER;
+use crate::net::get_auth_token;
 use crate::net::get_server_client;
 use crate::net::{load_mailbox_after, update_mailbox_after};
 
+use super::groups::{load_roster, refresh_group_state, replace_current_roster};
 use super::send::store_message_attachments;
 
 pub(super) async fn group_recv_loop(ctx: &AnyCtx<Config>) {
@@ -37,7 +35,6 @@ pub(super) async fn group_recv_loop(ctx: &AnyCtx<Config>) {
     }
 }
 
-/// A row from the group_keys table representing an active GBK to poll.
 #[derive(Clone, PartialEq, Eq, sqlx::FromRow)]
 struct ActiveGroupKey {
     group_id: Vec<u8>,
@@ -46,14 +43,11 @@ struct ActiveGroupKey {
     server_name: String,
 }
 
-/// Load the last 2 GBKs per group (current + previous for overlap).
 async fn load_active_keys(
     conn: &mut sqlx::SqliteConnection,
 ) -> anyhow::Result<Vec<ActiveGroupKey>> {
     Ok(sqlx::query_as::<_, ActiveGroupKey>(
-        "SELECT group_id, rotation_index, gbk, server_name FROM group_keys k \
-         WHERE rotation_index >= \
-           (SELECT MAX(k2.rotation_index) - 1 FROM group_keys k2 WHERE k2.group_id = k.group_id)",
+        "SELECT group_id, rotation_index, gbk, server_name FROM group_keys",
     )
     .fetch_all(&mut *conn)
     .await?)
@@ -85,7 +79,6 @@ async fn group_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         });
     }
 
-    // Restart only when the group_keys table actually changes
     let ctx_notify = ctx.clone();
     join_set.spawn(async move {
         let db = ctx_notify.get(DATABASE);
@@ -99,10 +92,8 @@ async fn group_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         }
     });
 
-    // Wait for any task to complete — JoinSet aborts the rest on drop
-    let result = join_set.join_next().await;
-    match result {
-        Some(Ok(inner)) => inner,
+    match join_set.join_next().await {
+        Some(Ok(result)) => result,
         Some(Err(err)) => Err(err.into()),
         None => Ok(()),
     }
@@ -146,14 +137,24 @@ async fn poll_single_group(
                 emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
             }
             Ok(ProcessResult::RotationHint) => {
-                // Check registry for the new rotation and adopt it inline
-                if let Err(err) =
-                    check_and_adopt_rotation(ctx, group_id, rotation_index, &server_name).await
-                {
-                    tracing::warn!(error = %err, group = %group_id, "failed to adopt rotation after hint");
+                match refresh_group_state(ctx, group_id).await {
+                    Ok(true) => emit_event(
+                        ctx,
+                        crate::internal::Event::ConvoUpdated {
+                            convo_id: ConvoId::Group { group_id },
+                        },
+                    ),
+                    Ok(false) => tracing::debug!(
+                        group = %group_id,
+                        rotation_index,
+                        "rotation hint received but no newer rotation found"
+                    ),
+                    Err(err) => tracing::warn!(
+                        error = %err,
+                        group = %group_id,
+                        "failed to refresh group state after hint"
+                    ),
                 }
-                // Restart the loop regardless — DbNotify from store_gbk will
-                // wake group_recv_loop_once if adoption succeeded
                 return Ok(());
             }
             Ok(ProcessResult::Skip) => {}
@@ -164,94 +165,16 @@ async fn poll_single_group(
     }
 }
 
-/// After receiving a rotation hint, check the server for the next rotation
-/// index and adopt it if present.
-async fn check_and_adopt_rotation(
-    ctx: &AnyCtx<Config>,
-    group_id: GroupId,
-    current_index: u64,
-    server_name: &ServerName,
-) -> anyhow::Result<()> {
-    let server = get_server_client(ctx, server_name).await?;
-
-    let new_rotation = match server.group_get(group_id, current_index + 1).await? {
-        Ok(Some(rot)) => rot,
-        Ok(None) => {
-            tracing::debug!(group = %group_id, "hint received but no new rotation found yet");
-            return Ok(());
-        }
-        Err(e) => anyhow::bail!("group_get failed: {e}"),
-    };
-
-    let new_index = current_index + 1;
-    tracing::info!(group = %group_id, index = new_index, "adopting new rotation");
-
-    // Verify signature
-    new_rotation
-        .verify(new_rotation.signer)
-        .map_err(|_| anyhow::anyhow!("rotation signature verification failed"))?;
-
-    // Verify signer is in the previous rotation's admin set and hash chain
-    let db = ctx.get(DATABASE);
-    let prev = super::groups::load_gbk(&mut *db.acquire().await?, group_id).await?;
-    if !prev.admin_set.contains(&new_rotation.signer) {
-        anyhow::bail!(
-            "rotation signer {:?} not in previous admin set",
-            new_rotation.signer
-        );
-    }
-    match &new_rotation.prev_hash {
-        Some(h) if *h != prev.rotation_hash => {
-            anyhow::bail!("rotation prev_hash does not match stored rotation hash");
-        }
-        None => {
-            anyhow::bail!("rotation has no prev_hash");
-        }
-        _ => {}
-    }
-
-    let identity = Identity::load(&mut *db.acquire().await?).await?;
-
-    let payload_bytes = new_rotation
-        .gbk_rotation
-        .decrypt_bytes(&identity.medium_sk_current)
-        .or_else(|_| {
-            new_rotation
-                .gbk_rotation
-                .decrypt_bytes(&identity.medium_sk_prev)
-        })
-        .map_err(|_| anyhow::anyhow!("failed to decrypt rotation payload (not a recipient?)"))?;
-
-    let payload: GroupRotationPayload = bcs::from_bytes(&payload_bytes)?;
-
-    let auth = get_auth_token(ctx).await?;
-    server
-        .mailbox_create(auth, payload.gbk.mailbox_key())
-        .await?
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-    let rotation_hash = new_rotation.hash();
-    let mut conn = db.acquire().await?;
-    store_gbk(
-        &mut conn,
-        group_id,
-        &payload.gbk,
-        server_name,
-        new_index,
-        &new_rotation.new_admin_set,
-        &rotation_hash,
-    )
-    .await?;
-    store_roster(&mut conn, group_id, new_index, &payload.roster).await?;
-
-    tracing::info!(group = %group_id, index = new_index, "adopted new rotation");
-    Ok(())
-}
-
 enum ProcessResult {
     Message(ConvoId),
     RotationHint,
     Skip,
+}
+
+enum MessageAuthorization {
+    Accept,
+    Skip,
+    SkipAndNotify,
 }
 
 async fn process_group_entry(
@@ -271,7 +194,6 @@ async fn process_group_entry(
     )
     .await?;
 
-    // Strip 24-byte nonce prefix, then AEAD decrypt
     let raw = &entry.body.0;
     if raw.len() < 24 {
         anyhow::bail!("group message too short (no nonce)");
@@ -285,7 +207,6 @@ async fn process_group_entry(
         .decrypt(nonce, ciphertext, &[])
         .map_err(|_| anyhow::anyhow!("group message decryption failed"))?;
 
-    // Verify device signature
     let signed: DeviceSigned = bcs::from_bytes(&signed_bytes)?;
     let sender = signed.sender().clone();
     let descriptor = crate::users::get_user_descriptor(ctx, &sender).await?;
@@ -297,8 +218,6 @@ async fn process_group_entry(
         .map_err(|_| anyhow::anyhow!("group message device signature failed"))?;
 
     let event: Event = bcs::from_bytes(&event_bytes)?;
-
-    // Validate context — must target this exact group
     match &event.recipient {
         EventRecipient::Group(gid) if *gid == group_id => {}
         EventRecipient::Group(gid) => {
@@ -318,24 +237,42 @@ async fn process_group_entry(
         return Ok(ProcessResult::Skip);
     }
 
-    // Handle rotation hints — don't insert, just signal restart
     if event.tag == TAG_ROTATION_HINT {
         tracing::info!(group = %group_id, "received rotation hint");
         return Ok(ProcessResult::RotationHint);
-    }
-
-    // Handle admin action events — apply roster deltas
-    if let Some(result) =
-        try_apply_admin_action(ctx, group_id, &sender, &event, entry.received_at).await?
-    {
-        return Ok(result);
     }
 
     let convo_id = ConvoId::Group { group_id };
     let mut conn = db.acquire().await?;
     let thread_id =
         ensure_thread_id(&mut conn, convo_id.convo_type(), &convo_id.counterparty()).await?;
+    if !thread_accepts_event_link(&mut conn, thread_id, event.after.as_ref()).await? {
+        tracing::warn!(
+            sender = %sender,
+            event_after = ?event.after,
+            group = %group_id,
+            "dropping group event with unknown event parent",
+        );
+        return Ok(ProcessResult::Skip);
+    }
+    drop(conn);
 
+    if let Some(result) =
+        try_apply_admin_action(ctx, group_id, thread_id, &sender, &event, entry.received_at).await?
+    {
+        return Ok(result);
+    }
+
+    match authorize_regular_event(ctx, group_id, &sender).await? {
+        MessageAuthorization::Accept => {}
+        MessageAuthorization::Skip => return Ok(ProcessResult::Skip),
+        MessageAuthorization::SkipAndNotify => {
+            emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
+            return Ok(ProcessResult::Skip);
+        }
+    }
+
+    let mut conn = db.acquire().await?;
     let event_hash = event.hash();
     let inserted = insert_thread_event(
         &mut conn,
@@ -360,11 +297,55 @@ async fn process_group_entry(
     }
 }
 
-/// If the event is an admin action, apply the roster delta and return a result.
-/// Returns `None` if the event is not an admin action tag.
+async fn authorize_regular_event(
+    ctx: &AnyCtx<Config>,
+    group_id: GroupId,
+    sender: &nullspace_structs::username::UserName,
+) -> anyhow::Result<MessageAuthorization> {
+    let db = ctx.get(DATABASE);
+    let mut conn = db.acquire().await?;
+    let (rotation_index, mut roster) = match load_roster(&mut conn, group_id).await {
+        Ok(roster) => roster,
+        Err(err) => {
+            tracing::warn!(group = %group_id, error = %err, "no roster for received group event");
+            return Ok(MessageAuthorization::Skip);
+        }
+    };
+
+    if roster.banned.contains(sender) {
+        tracing::warn!(group = %group_id, sender = %sender, "banned user sent group event");
+        return Ok(MessageAuthorization::Skip);
+    }
+
+    match roster.members.get(sender) {
+        Some(member) if member.is_muted => {
+            tracing::warn!(group = %group_id, sender = %sender, "muted user sent group event");
+            Ok(MessageAuthorization::Skip)
+        }
+        Some(_) => Ok(MessageAuthorization::Accept),
+        None => {
+            let is_muted = roster.settings.new_members_muted;
+            roster.members.insert(
+                sender.clone(),
+                MemberState {
+                    is_admin: false,
+                    is_muted,
+                },
+            );
+            replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
+            if is_muted {
+                Ok(MessageAuthorization::SkipAndNotify)
+            } else {
+                Ok(MessageAuthorization::Accept)
+            }
+        }
+    }
+}
+
 async fn try_apply_admin_action(
     ctx: &AnyCtx<Config>,
     group_id: GroupId,
+    thread_id: i64,
     sender: &nullspace_structs::username::UserName,
     event: &Event,
     received_at: nullspace_structs::timestamp::NanoTimestamp,
@@ -382,32 +363,31 @@ async fn try_apply_admin_action(
     }
 
     let db = ctx.get(DATABASE);
-    let (rotation_index, mut roster) = match load_roster(&mut *db.acquire().await?, group_id).await
-    {
-        Ok(r) => r,
+    let mut conn = db.acquire().await?;
+    let (rotation_index, mut roster) = match load_roster(&mut conn, group_id).await {
+        Ok(roster) => roster,
         Err(err) => {
             tracing::warn!(group = %group_id, error = %err, "no roster to apply admin action");
             return Ok(Some(ProcessResult::Skip));
         }
     };
 
-    // Only admins can issue admin actions (except leave requests)
-    let sender_is_admin = roster.members.get(sender).map_or(false, |m| m.is_admin);
-    if tag != TAG_LEAVE_REQUEST && !sender_is_admin {
-        tracing::warn!(group = %group_id, sender = %sender, "non-admin sent admin action, ignoring");
+    let sender_is_admin = roster.members.get(sender).is_some_and(|member| member.is_admin);
+    let sender_is_member = roster.members.contains_key(sender);
+    if tag == TAG_LEAVE_REQUEST {
+        if !sender_is_member {
+            tracing::warn!(group = %group_id, sender = %sender, "non-member sent leave request");
+            return Ok(Some(ProcessResult::Skip));
+        }
+    } else if !sender_is_admin {
+        tracing::warn!(group = %group_id, sender = %sender, "non-admin sent admin action");
         return Ok(Some(ProcessResult::Skip));
     }
 
-    let convo_id = ConvoId::Group { group_id };
     let system_item = apply_roster_delta(&mut roster, tag, sender, &event.body)?;
+    replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
 
-    store_roster(&mut *db.acquire().await?, group_id, rotation_index, &roster).await?;
-
-    // Insert as a system event in the thread
     if let Some(system_item) = system_item {
-        let mut conn = db.acquire().await?;
-        let thread_id =
-            ensure_thread_id(&mut conn, convo_id.convo_type(), &convo_id.counterparty()).await?;
         let body_bytes = bcs::to_bytes(&system_item)?;
         let event_hash = event.hash();
         insert_thread_event(
@@ -426,12 +406,17 @@ async fn try_apply_admin_action(
         .await?;
     }
 
-    emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
+    emit_event(
+        ctx,
+        crate::internal::Event::ConvoUpdated {
+            convo_id: ConvoId::Group { group_id },
+        },
+    );
     Ok(Some(ProcessResult::Skip))
 }
 
 fn apply_roster_delta(
-    roster: &mut GroupRoster,
+    roster: &mut nullspace_structs::group::GroupRoster,
     tag: u16,
     sender: &nullspace_structs::username::UserName,
     body: &[u8],
@@ -469,10 +454,22 @@ fn apply_roster_delta(
         }
         TAG_GROUP_SETTINGS_CHANGE => {
             let change: GroupSettingsChangeBody = bcs::from_bytes(body)?;
+            let old_new_members_muted = roster.settings.new_members_muted;
+            let old_allow_history = roster.settings.allow_new_members_to_see_history;
             roster.settings.new_members_muted = change.new_members_muted;
             roster.settings.allow_new_members_to_see_history =
                 change.allow_new_members_to_see_history;
-            Ok(None)
+            if change.new_members_muted != old_new_members_muted {
+                Ok(Some(super::SystemItem::GroupNewMembersMutedChanged {
+                    muted: change.new_members_muted,
+                }))
+            } else if change.allow_new_members_to_see_history != old_allow_history {
+                Ok(Some(super::SystemItem::GroupHistorySharingChanged {
+                    allow_new_members_to_see_history: change.allow_new_members_to_see_history,
+                }))
+            } else {
+                Ok(None)
+            }
         }
         TAG_LEAVE_REQUEST => {
             roster.members.remove(sender);

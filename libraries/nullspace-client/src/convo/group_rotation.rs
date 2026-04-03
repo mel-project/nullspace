@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::database::DATABASE;
+use crate::database::{DATABASE, DbNotify};
+use crate::events::emit_event;
 use crate::identity::Identity;
 use crate::net::{get_auth_token, get_server_client};
 use crate::users::get_user_info;
@@ -19,7 +20,8 @@ use nullspace_structs::group::{
 };
 use nullspace_structs::timestamp::NanoTimestamp;
 
-use super::groups::load_roster;
+use super::groups::{load_roster, replace_current_roster, store_gbk};
+use super::{ConvoId, ensure_thread_id};
 
 /// Admin rotation submit loop.
 ///
@@ -115,7 +117,7 @@ pub async fn submit_rotation(
     let new_gbk = GroupBearerKey::generate(group_id, server_name.clone());
 
     // Collect medium keys for all members and admin device keys
-    let (all_medium_keys, new_admin_set) = collect_member_keys(ctx, roster).await?;
+    let (all_medium_keys, new_admin_set) = member_devices(ctx, roster).await?;
 
     let payload = GroupRotationPayload {
         gbk: new_gbk.clone(),
@@ -134,10 +136,11 @@ pub async fn submit_rotation(
         signature: Signature::from_bytes([0u8; 64]),
     };
     rotation.sign(&identity.device_secret);
+    let rotation_hash = rotation.hash();
 
     let server = get_server_client(ctx, server_name).await?;
 
-    match server.group_update(rotation).await? {
+    match server.group_update(rotation.clone()).await? {
         Ok(()) => {}
         Err(e) => {
             tracing::debug!(group = %group_id, error = %e, "rotation rejected (likely race)");
@@ -151,6 +154,31 @@ pub async fn submit_rotation(
         .await?
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
+    let db = ctx.get(DATABASE);
+    let mut tx = db.begin().await?;
+    let next_index = load_roster(&mut tx, group_id).await?.0 + 1;
+    store_gbk(
+        &mut tx,
+        group_id,
+        &new_gbk,
+        server_name,
+        next_index,
+        &rotation.new_admin_set,
+        &rotation_hash,
+    )
+    .await?;
+    replace_current_roster(&mut tx, group_id, next_index, roster).await?;
+    let convo_id = ConvoId::Group { group_id };
+    ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
+    tx.commit().await?;
+    DbNotify::touch();
+    emit_event(
+        ctx,
+        crate::internal::Event::ConvoUpdated {
+            convo_id: ConvoId::Group { group_id },
+        },
+    );
+
     send_rotation_hint(ctx, identity, group_id, old_gbk).await?;
 
     Ok(())
@@ -159,7 +187,7 @@ pub async fn submit_rotation(
 /// Look up all members' medium-term DH keys and derive the admin device key set.
 ///
 /// Returns (all_medium_keys, admin_device_keys).
-pub async fn collect_member_keys(
+async fn member_devices(
     ctx: &AnyCtx<Config>,
     roster: &GroupRoster,
 ) -> anyhow::Result<(Vec<DhPublic>, BTreeSet<SigningPublic>)> {

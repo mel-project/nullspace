@@ -9,7 +9,9 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use crate::config::Config;
 use crate::database::DATABASE;
 use crate::identity::Identity;
-use crate::net::{get_server_client, own_server_name};
+use crate::net::get_server_client;
+
+use super::groups;
 
 pub(super) async fn send_group(
     ctx: &AnyCtx<Config>,
@@ -18,10 +20,9 @@ pub(super) async fn send_group(
 ) -> anyhow::Result<NanoTimestamp> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(&mut *db.acquire().await?).await?;
+    groups::refresh_group_state(ctx, *group_id).await?;
     let gbk = load_gbk(&mut *db.acquire().await?, group_id).await?;
-
-    let server_name = own_server_name(ctx, &identity).await?;
-    let server = get_server_client(ctx, &server_name).await?;
+    let server = get_server_client(ctx, &gbk.server).await?;
 
     // Sign the event bytes with the device key
     let event_bytes = bcs::to_bytes(&event)?;

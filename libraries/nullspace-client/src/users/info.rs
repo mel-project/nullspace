@@ -19,7 +19,7 @@ use crate::attachments::store_attachment_root;
 use crate::config::{Config, Ctx};
 use crate::convo::last_dm_received_at;
 use crate::database::DATABASE;
-use crate::identity::{Identity, identity_exists};
+use crate::identity::{identity_exists, Identity};
 use crate::internal::{
     InternalRpcError, MessageDirection, UserDetails, UserLastMessageSummary, internal_err,
     map_anyhow_err,
@@ -218,11 +218,30 @@ pub async fn user_details_impl(
         .map_err(map_anyhow_err)?;
 
     Ok(UserDetails {
-        username,
+        username: username.clone(),
         display_name: details.display_name,
         avatar: details.avatar,
         server_name: Some(details.server_name),
-        common_groups: Vec::new(),
+        common_groups: sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT DISTINCT self.group_id \
+             FROM group_members_current self \
+             JOIN group_members_current other ON other.group_id = self.group_id \
+             WHERE self.username = ? AND other.username = ? \
+               AND self.is_banned = 0 AND other.is_banned = 0",
+        )
+        .bind(identity.username.as_str())
+        .bind(username.as_str())
+        .fetch_all(&mut *db.acquire().await.map_err(internal_err)?)
+        .await
+        .map_err(internal_err)?
+        .into_iter()
+        .map(|bytes| {
+            let arr: [u8; 16] = bytes
+                .try_into()
+                .map_err(|_| internal_err("invalid group_id"))?;
+            Ok(nullspace_structs::group::GroupId::from_bytes(arr))
+        })
+        .collect::<Result<Vec<_>, _>>()?,
         last_dm_message: details
             .last_dm_received_at
             .map(|received_at| UserLastMessageSummary {

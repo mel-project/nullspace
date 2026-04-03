@@ -36,12 +36,11 @@ The GBK is the central capability for group membership. Possession of a GBK gran
 A GBK is BCS-encoded as:
 
 ```
-[group_id, server, registry_nonce, random_nonce]
+[group_id, server, random_nonce]
 ```
 
 - `group_id`: the group identifier
 - `server`: the server name hosting the group
-- `registry_nonce`: derived from the group id as `H(group_id_bytes)` where `H` is BLAKE3
 - `random_nonce`: 32 random bytes (changed on every rotation)
 
 ### Derived keys
@@ -66,11 +65,13 @@ Used as the XChaCha20-Poly1305 key for encrypting and decrypting group messages.
 
 Each GBK defines a **mailbox epoch**. When the GBK changes (via a rotation), a new mailbox is created with new derived keys, starting a new epoch.
 
+The group remains one logical event thread across all epochs. The `after` field always links within that one group thread, not to a per-epoch thread.
+
 Within an epoch:
 - The **roster snapshot** (embedded in the rotation entry) is the starting state for membership.
 - **Admin action events** (tags 4–8) posted to the mailbox are deltas applied on top of the snapshot.
 
-Clients poll the mailboxes for both the current and previous GBK (the last two epochs) to handle messages sent during a rotation transition.
+Clients poll only the current GBK mailbox. To avoid getting stuck on a stale GBK, they refresh the rotation registry before sending and may also refresh it periodically in the background. Rotation hints are an optimization, not the only recovery path.
 
 ## Group rotation registry
 
@@ -168,7 +169,7 @@ Admin set changes (tag 5, GROUP_ADMIN_CHANGE) are not delivered as in-epoch even
 ```
 create_group(title, description):
     group_id = random_uuid()
-    gbk = [group_id, my_server, H(group_id_bytes), random32]
+    gbk = [group_id, my_server, random32]
 
     roster = {
         members: {my_username: [is_admin=true, is_muted=false]},
@@ -304,7 +305,7 @@ Used by ban, admin leave, and periodic rotation:
 
 ```
 submit_rotation(group_id, roster):
-    new_gbk = [group_id, server, H(group_id_bytes), random32]
+    new_gbk = [group_id, server, random32]
     all_medium_keys = fetch_medium_keys(roster.members)
     admin_device_keys = fetch_device_keys(admins in roster.members)
 
@@ -317,13 +318,13 @@ submit_rotation(group_id, roster):
     server.group_update(rotation)
     server.mailbox_create(auth_token, new_gbk.mailbox_key())
 
-    // Notify members polling the old mailbox
+    // Notify members to refresh the registry promptly
     send_rotation_hint(group_id, old_gbk)
 
     persist(new_gbk, roster)
 ```
 
-The rotation hint is a regular group message (encrypted with the *old* GBK's symmetric key) containing an event with tag ROTATION_HINT and empty body. It tells clients polling the old mailbox to check the registry for the new rotation.
+The rotation hint is a regular group message (encrypted with the old GBK's symmetric key) containing an event with tag ROTATION_HINT and empty body. It prompts clients to refresh the registry for the new rotation sooner than their next background or send-time refresh.
 
 ## Scalability
 

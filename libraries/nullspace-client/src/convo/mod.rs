@@ -333,6 +333,7 @@ pub async fn convo_loop(ctx: &AnyCtx<Config>) {
         send::send_loop(ctx),
         dm_recv::dm_recv_loop(ctx),
         group_recv::group_recv_loop(ctx),
+        groups::group_refresh_loop(ctx),
         group_rotation::group_rotation_loop(ctx),
     )
         .race()
@@ -354,7 +355,39 @@ fn decode_convo_item_kind(
     if event_tag == TAG_MESSAGE {
         return Ok(ConvoItemKind::Message(bcs::from_bytes(body)?));
     }
+    if let Ok(system_item) = bcs::from_bytes::<SystemItem>(body) {
+        return Ok(ConvoItemKind::System(system_item));
+    }
     Ok(ConvoItemKind::System(SystemItem::Notice {
         text: format!("Unsupported item #{local_id}"),
     }))
+}
+
+pub(super) async fn thread_accepts_event_link(
+    conn: &mut sqlx::SqliteConnection,
+    thread_id: i64,
+    event_after: Option<&Hash>,
+) -> anyhow::Result<bool> {
+    let Some(prev_hash) = event_after else {
+        return Ok(true);
+    };
+
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM thread_events WHERE thread_id = ? AND event_hash = ? LIMIT 1",
+    )
+    .bind(thread_id)
+    .bind(prev_hash.to_bytes().to_vec())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if exists.is_some() {
+        return Ok(true);
+    }
+
+    let has_any = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM thread_events WHERE thread_id = ? LIMIT 1",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(has_any.is_none())
 }

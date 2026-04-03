@@ -35,7 +35,7 @@ pub async fn queue_message(
     let thread_id = ensure_thread_id(&mut *tx, convo_id.convo_type(), &counterparty).await?;
     let sent_at = NanoTimestamp::now();
 
-    let event_after = load_latest_thread_hash(&mut *tx, thread_id).await?;
+    let event_after = load_latest_committed_thread_hash(&mut *tx, thread_id, None).await?;
     let event = Event {
         sender: sender.clone(),
         recipient,
@@ -88,14 +88,16 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             None => {
                 let err = anyhow::anyhow!("invalid convo entry");
                 let mut conn = db.acquire().await?;
-                mark_message_failed(&mut conn, pending.id, &err).await?;
+                mark_message_failed(&mut conn, &pending, &err).await?;
                 continue;
             }
         };
 
         let convo_id_emit = convo_id.clone();
         let send_ctx = ctx.clone();
-        let pending_for_send = pending.clone();
+        let mut pending_for_send = pending.clone();
+        let mut conn = db.acquire().await?;
+        prepare_pending_message_for_send(&mut conn, &convo_id, &mut pending_for_send).await?;
         match retry_backoff(async move || {
             send_message(&send_ctx, &convo_id, &pending_for_send).await
         })
@@ -108,7 +110,7 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             Err(err) => {
                 tracing::warn!(error = %err, "failed to send convo message");
                 let mut conn = db.acquire().await?;
-                mark_message_failed(&mut conn, pending.id, &err).await?;
+                mark_message_failed(&mut conn, &pending, &err).await?;
             }
         }
         emit_event(
@@ -123,6 +125,7 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
 #[derive(Clone)]
 struct PendingMessage {
     id: i64,
+    thread_id: i64,
     thread_kind: String,
     counterparty: String,
     sender: UserName,
@@ -159,6 +162,7 @@ async fn next_pending_message(
 
     Ok(Some(PendingMessage {
         id: row.event.id,
+        thread_id: row.event.thread_id,
         thread_kind: row.thread_kind,
         counterparty: row.thread_counterparty,
         sender: UserName::parse(&row.event.sender_username).context("invalid sender username")?,
@@ -200,6 +204,36 @@ async fn send_message(
     }
 }
 
+async fn prepare_pending_message_for_send(
+    tx: &mut sqlx::SqliteConnection,
+    convo_id: &ConvoId,
+    pending: &mut PendingMessage,
+) -> anyhow::Result<()> {
+    let event_after =
+        load_latest_committed_thread_hash(&mut *tx, pending.thread_id, Some(pending.id)).await?;
+    let recipient = match convo_id {
+        ConvoId::Direct { peer } => EventRecipient::Dm(peer.clone()),
+        ConvoId::Group { group_id } => EventRecipient::Group(*group_id),
+    };
+    let event = Event {
+        sender: pending.sender.clone(),
+        recipient,
+        sent_at: pending.sent_at,
+        after: event_after,
+        tag: pending.event_tag,
+        body: pending.event_body.clone(),
+    };
+    let event_hash = event.hash();
+    sqlx::query("UPDATE thread_events SET event_after = ?, event_hash = ? WHERE id = ?")
+        .bind(event.after.map(|hash| hash.to_bytes().to_vec()))
+        .bind(event_hash.to_bytes().to_vec())
+        .bind(pending.id)
+        .execute(&mut *tx)
+        .await?;
+    pending.event_after = event.after;
+    Ok(())
+}
+
 async fn mark_message_sent(
     tx: &mut sqlx::SqliteConnection,
     id: i64,
@@ -213,17 +247,20 @@ async fn mark_message_sent(
     Ok(())
 }
 
-async fn load_latest_thread_hash(
+async fn load_latest_committed_thread_hash(
     tx: &mut sqlx::SqliteConnection,
     thread_id: i64,
+    exclude_id: Option<i64>,
 ) -> anyhow::Result<Option<Hash>> {
     let row = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT event_hash FROM thread_events \
-         WHERE thread_id = ? AND send_error IS NULL \
-         ORDER BY id DESC \
+         WHERE thread_id = ? AND send_error IS NULL AND received_at IS NOT NULL AND (? IS NULL OR id != ?) \
+         ORDER BY received_at DESC, id DESC \
          LIMIT 1",
     )
     .bind(thread_id)
+    .bind(exclude_id)
+    .bind(exclude_id)
     .fetch_optional(&mut *tx)
     .await?;
     row.map(bytes_to_hash).transpose()
@@ -231,14 +268,25 @@ async fn load_latest_thread_hash(
 
 async fn mark_message_failed(
     tx: &mut sqlx::SqliteConnection,
-    id: i64,
+    pending: &PendingMessage,
     err: &anyhow::Error,
 ) -> anyhow::Result<()> {
     let synth_received_at = NanoTimestamp::now();
     sqlx::query("UPDATE thread_events SET send_error = ?, received_at = ? WHERE id = ?")
         .bind(err.to_string())
         .bind(synth_received_at.0 as i64)
-        .bind(id)
+        .bind(pending.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE thread_events \
+         SET send_error = ?, received_at = ? \
+         WHERE thread_id = ? AND id > ? AND received_at IS NULL AND send_error IS NULL",
+    )
+        .bind(format!("earlier draft send failed: {err}"))
+        .bind(synth_received_at.0 as i64)
+        .bind(pending.thread_id)
+        .bind(pending.id)
         .execute(&mut *tx)
         .await?;
     Ok(())

@@ -4969,6 +4969,7 @@ dependencies = [
  "chrono",
  "criterion",
  "derivative",
+ "derive_setters",
  "nanorpc",
  "nullspace-crypt",
  "rand 0.9.2",

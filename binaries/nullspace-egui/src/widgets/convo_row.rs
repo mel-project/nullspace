@@ -5,7 +5,7 @@ use eframe::egui::{Response, RichText, Widget};
 use egui::{ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use fast_thumbhash::thumb_hash_from_b91;
-use nullspace_client::{ConvoItem, ConvoItemKind};
+use nullspace_client::{ConvoItem, ConvoItemKind, SystemItem};
 use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::MessageText;
@@ -54,6 +54,16 @@ impl ConvoRow<'_> {
                         .color(weak_text_color)
                         .italics(),
                 );
+                if let SystemItem::GroupInvitationReceived { invitation_id, .. } = system {
+                    if ui.small_button("Accept").clicked() {
+                        let result = flatten_rpc(
+                            get_rpc().group_invitation_accept(*invitation_id).block_on(),
+                        );
+                        if let Err(e) = result {
+                            self.app.state.error_dialog = Some(e.to_string());
+                        }
+                    }
+                }
             });
             return ui.response();
         }
@@ -85,6 +95,16 @@ impl ConvoRow<'_> {
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
+                if let SystemItem::GroupInvitationReceived { invitation_id, .. } = system {
+                    if ui.small_button("Accept").clicked() {
+                        let result = flatten_rpc(
+                            get_rpc().group_invitation_accept(*invitation_id).block_on(),
+                        );
+                        if let Err(e) = result {
+                            self.app.state.error_dialog = Some(e.to_string());
+                        }
+                    }
+                }
             });
             if self.is_end {
                 ui.add_space(8.0);
@@ -373,10 +393,11 @@ impl Widget for ImageAttachmentContent<'_> {
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() / 2.0 - 40.0);
+                let [r, g, b, _] = ui.visuals().window_fill().to_srgba_unmultiplied();
                 ui.painter().rect_filled(
                     rect,
                     egui::CornerRadius::same(8),
-                    ui.visuals().window_fill(),
+                    egui::Color32::from_rgba_unmultiplied(r, g, b, 200),
                 );
                 if let Some((downloaded, total)) = dl_progress {
                     ui.label(format!("{:.2}%", downloaded as f32 / total as f32 * 100.0));

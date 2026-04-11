@@ -3,9 +3,8 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use nullspace_structs::e2ee::DeviceSigned;
 use nullspace_structs::event::{
-    Event, EventRecipient, GroupAdminChangeBody, GroupMetadataChangeBody, GroupMuteChangeBody,
-    GroupSettingsChangeBody, TAG_GROUP_ADMIN_CHANGE, TAG_GROUP_METADATA_CHANGE,
-    TAG_GROUP_MUTE_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
+    Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, TAG_GROUP_PERMISSION_CHANGE,
+    TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
 };
 use nullspace_structs::group::{GroupBearerKey, GroupId, MemberState};
 use nullspace_structs::mailbox::MailboxEntry;
@@ -19,8 +18,6 @@ use crate::convo::{
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::net::LONG_POLLER;
-use crate::net::get_auth_token;
-use crate::net::get_server_client;
 use crate::net::{load_mailbox_after, update_mailbox_after};
 
 use super::groups::{load_roster, refresh_group_state, replace_current_roster};
@@ -107,15 +104,8 @@ async fn poll_single_group(
     server_name: ServerName,
 ) -> anyhow::Result<()> {
     let db = ctx.get(DATABASE);
-    let server = get_server_client(ctx, &server_name).await?;
-    let auth = get_auth_token(ctx).await?;
     let mailbox_key = gbk.mailbox_key();
     let mailbox_id = mailbox_key.mailbox_id();
-
-    server
-        .mailbox_create(auth, mailbox_key)
-        .await?
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     let mut after = load_mailbox_after(&mut *db.acquire().await?, &server_name, mailbox_id).await?;
     let poller = ctx.get(LONG_POLLER);
@@ -353,11 +343,7 @@ async fn try_apply_admin_action(
     let tag = event.tag;
     if !matches!(
         tag,
-        TAG_GROUP_ADMIN_CHANGE
-            | TAG_GROUP_MUTE_CHANGE
-            | TAG_GROUP_METADATA_CHANGE
-            | TAG_GROUP_SETTINGS_CHANGE
-            | TAG_LEAVE_REQUEST
+        TAG_GROUP_PERMISSION_CHANGE | TAG_GROUP_SETTINGS_CHANGE | TAG_LEAVE_REQUEST
     ) {
         return Ok(None);
     }
@@ -372,7 +358,10 @@ async fn try_apply_admin_action(
         }
     };
 
-    let sender_is_admin = roster.members.get(sender).is_some_and(|member| member.is_admin);
+    let sender_is_admin = roster
+        .members
+        .get(sender)
+        .is_some_and(|member| member.is_admin);
     let sender_is_member = roster.members.contains_key(sender);
     if tag == TAG_LEAVE_REQUEST {
         if !sender_is_member {
@@ -384,7 +373,7 @@ async fn try_apply_admin_action(
         return Ok(Some(ProcessResult::Skip));
     }
 
-    let system_item = apply_roster_delta(&mut roster, tag, sender, &event.body)?;
+    let system_item = apply_roster_delta(&mut roster, sender, event)?;
     replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
 
     if let Some(system_item) = system_item {
@@ -417,23 +406,12 @@ async fn try_apply_admin_action(
 
 fn apply_roster_delta(
     roster: &mut nullspace_structs::group::GroupRoster,
-    tag: u16,
     sender: &nullspace_structs::username::UserName,
-    body: &[u8],
+    event: &Event,
 ) -> anyhow::Result<Option<super::SystemItem>> {
-    match tag {
-        TAG_GROUP_ADMIN_CHANGE => {
-            let change: GroupAdminChangeBody = bcs::from_bytes(body)?;
-            if let Some(member) = roster.members.get_mut(&change.username) {
-                member.is_admin = change.is_admin;
-            }
-            Ok(Some(super::SystemItem::GroupAdminChanged {
-                username: change.username,
-                is_admin: change.is_admin,
-            }))
-        }
-        TAG_GROUP_MUTE_CHANGE => {
-            let change: GroupMuteChangeBody = bcs::from_bytes(body)?;
+    match event.tag {
+        TAG_GROUP_PERMISSION_CHANGE => {
+            let change: GroupPermissionChange = event.decode_body()?;
             if let Some(member) = roster.members.get_mut(&change.username) {
                 member.is_muted = change.muted;
             }
@@ -442,24 +420,23 @@ fn apply_roster_delta(
                 muted: change.muted,
             }))
         }
-        TAG_GROUP_METADATA_CHANGE => {
-            let change: GroupMetadataChangeBody = bcs::from_bytes(body)?;
-            let item = super::SystemItem::GroupMetadataChanged {
-                title: change.title.clone(),
-                description: change.description.clone(),
-            };
-            roster.metadata.title = change.title;
-            roster.metadata.description = change.description;
-            Ok(Some(item))
-        }
         TAG_GROUP_SETTINGS_CHANGE => {
-            let change: GroupSettingsChangeBody = bcs::from_bytes(body)?;
+            let change: GroupSettingsChange = event.decode_body()?;
+            let old_title = roster.metadata.title.clone();
+            let old_description = roster.metadata.description.clone();
             let old_new_members_muted = roster.settings.new_members_muted;
             let old_allow_history = roster.settings.allow_new_members_to_see_history;
+            roster.metadata.title = change.title.clone();
+            roster.metadata.description = change.description.clone();
             roster.settings.new_members_muted = change.new_members_muted;
             roster.settings.allow_new_members_to_see_history =
                 change.allow_new_members_to_see_history;
-            if change.new_members_muted != old_new_members_muted {
+            if change.title != old_title || change.description != old_description {
+                Ok(Some(super::SystemItem::GroupMetadataChanged {
+                    title: change.title,
+                    description: change.description,
+                }))
+            } else if change.new_members_muted != old_new_members_muted {
                 Ok(Some(super::SystemItem::GroupNewMembersMutedChanged {
                     muted: change.new_members_muted,
                 }))

@@ -2,26 +2,24 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::database::{DATABASE, DbNotify};
-use crate::events::emit_event;
+use crate::database::DATABASE;
 use crate::identity::Identity;
 use crate::net::{get_auth_token, get_server_client};
 use crate::users::get_user_info;
 use anyctx::AnyCtx;
 use bytes::Bytes;
 use nullspace_crypt::dh::DhPublic;
-use nullspace_crypt::hash::{BcsHashExt, Hash};
+use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use nullspace_structs::Blob;
 use nullspace_structs::e2ee::{DeviceSigned, HeaderEncrypted};
 use nullspace_structs::event::{Event, EventRecipient, TAG_ROTATION_HINT};
 use nullspace_structs::group::{
-    GroupBearerKey, GroupId, GroupRoster, GroupRotation, GroupRotationPayload,
+    GroupBearerKey, GroupId, GroupRoster, GroupRotation, GroupRotationPayload, encrypt_roster,
 };
 use nullspace_structs::timestamp::NanoTimestamp;
 
-use super::groups::{load_roster, replace_current_roster, store_gbk};
-use super::{ConvoId, ensure_thread_id};
+use super::groups::{load_gbk, load_roster};
 
 /// Admin rotation submit loop.
 ///
@@ -42,22 +40,21 @@ async fn group_rotation_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
     let identity = Identity::load(&mut *db.acquire().await?).await?;
     let device_pk = identity.device_secret.public().signing_public();
 
-    let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>(
-        "SELECT group_id, gbk, admin_set, rotation_hash \
+    let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT group_id, admin_set \
          FROM group_keys k WHERE rotation_index = \
            (SELECT MAX(rotation_index) FROM group_keys WHERE group_id = k.group_id)",
     )
     .fetch_all(&mut *db.acquire().await?)
     .await?;
 
-    for (gid_bytes, gbk_bytes, admin_set_bytes, rot_hash_bytes) in rows {
+    for (gid_bytes, admin_set_bytes) in rows {
         let gid_arr: [u8; 16] = gid_bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid group_id length"))?;
         let group_id = GroupId::from_bytes(gid_arr);
 
         let admin_set: BTreeSet<SigningPublic> = bcs::from_bytes(&admin_set_bytes)?;
-        let old_gbk: GroupBearerKey = bcs::from_bytes(&gbk_bytes)?;
         if !admin_set.contains(&device_pk) {
             continue;
         }
@@ -69,11 +66,6 @@ async fn group_rotation_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             continue;
         }
 
-        let rot_hash_arr: [u8; 32] = rot_hash_bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("invalid rotation_hash length"))?;
-        let prev_rotation_hash = Hash::from_bytes(rot_hash_arr);
-
         // Load the roster and submit rotation with full payload
         let roster = match load_roster(&mut *db.acquire().await?, group_id).await {
             Ok((_, roster)) => roster,
@@ -83,16 +75,7 @@ async fn group_rotation_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
             }
         };
 
-        if let Err(err) = submit_rotation(
-            ctx,
-            &identity,
-            group_id,
-            prev_rotation_hash,
-            &roster,
-            &old_gbk,
-        )
-        .await
-        {
+        if let Err(err) = submit_rotation(ctx, &identity, group_id, &roster).await {
             tracing::warn!(group = %group_id, error = %err, "failed to submit rotation");
         }
     }
@@ -105,11 +88,13 @@ pub async fn submit_rotation(
     ctx: &AnyCtx<Config>,
     identity: &Identity,
     group_id: GroupId,
-    prev_rotation_hash: Hash,
     roster: &GroupRoster,
-    old_gbk: &GroupBearerKey,
 ) -> anyhow::Result<()> {
-    let server_name = &old_gbk.server;
+    let db = ctx.get(DATABASE);
+    let loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
+    let prev_rotation_hash = loaded.rotation_hash;
+    let old_gbk = loaded.gbk;
+    let server_name = &loaded.server_name;
     let device_pk = identity.device_secret.public().signing_public();
 
     tracing::info!(group = %group_id, "submitting GBK rotation");
@@ -121,11 +106,11 @@ pub async fn submit_rotation(
 
     let payload = GroupRotationPayload {
         gbk: new_gbk.clone(),
-        roster: roster.clone(),
     };
     let payload_bytes = bcs::to_bytes(&payload)?;
     let payload_encrypted = HeaderEncrypted::encrypt_bytes(&payload_bytes, all_medium_keys)
         .map_err(|e| anyhow::anyhow!(e))?;
+    let roster_encrypted = encrypt_roster(&new_gbk, roster)?;
 
     let mut rotation = GroupRotation {
         group_id,
@@ -133,10 +118,10 @@ pub async fn submit_rotation(
         signer: device_pk,
         new_admin_set,
         gbk_rotation: payload_encrypted,
+        roster_encrypted,
         signature: Signature::from_bytes([0u8; 64]),
     };
     rotation.sign(&identity.device_secret);
-    let rotation_hash = rotation.hash();
 
     let server = get_server_client(ctx, server_name).await?;
 
@@ -154,32 +139,7 @@ pub async fn submit_rotation(
         .await?
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    let db = ctx.get(DATABASE);
-    let mut tx = db.begin().await?;
-    let next_index = load_roster(&mut tx, group_id).await?.0 + 1;
-    store_gbk(
-        &mut tx,
-        group_id,
-        &new_gbk,
-        server_name,
-        next_index,
-        &rotation.new_admin_set,
-        &rotation_hash,
-    )
-    .await?;
-    replace_current_roster(&mut tx, group_id, next_index, roster).await?;
-    let convo_id = ConvoId::Group { group_id };
-    ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
-    tx.commit().await?;
-    DbNotify::touch();
-    emit_event(
-        ctx,
-        crate::internal::Event::ConvoUpdated {
-            convo_id: ConvoId::Group { group_id },
-        },
-    );
-
-    send_rotation_hint(ctx, identity, group_id, old_gbk).await?;
+    send_rotation_hint(ctx, identity, group_id, &old_gbk).await?;
 
     Ok(())
 }
@@ -228,14 +188,12 @@ async fn send_rotation_hint(
     group_id: GroupId,
     gbk: &GroupBearerKey,
 ) -> anyhow::Result<()> {
-    let event = Event {
-        sender: identity.username.clone(),
-        recipient: EventRecipient::Group(group_id),
-        sent_at: NanoTimestamp::now(),
-        after: None,
-        tag: TAG_ROTATION_HINT,
-        body: Bytes::new(),
-    };
+    let event = Event::default()
+        .sender(identity.username.clone())
+        .recipient(EventRecipient::Group(group_id))
+        .sent_at(NanoTimestamp::now())
+        .tag(TAG_ROTATION_HINT)
+        .body(Bytes::new());
     let event_bytes = bcs::to_bytes(&event)?;
     let signed = DeviceSigned::sign_bytes(
         Bytes::from(event_bytes),

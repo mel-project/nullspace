@@ -22,6 +22,10 @@ This is doubly so if the RPC call is in a `use_memo` or any other construct that
 
 `use_state` is already keyed by the current `ui.id()` and hook index. The `deps` argument only forces re-initialization *within the same widget id* when it changes. In most cases, pass `()` for deps. Only use deps when you explicitly want to reset state within a single widget instance. For distinct state scopes, prefer `ui.push_id(...)` or `use_hook_as(...)` rather than encoding IDs into deps.
 
+## nullspace-client group state
+
+In `nullspace-client`, local group state should advance through the normal receive/poll path rather than being written through immediately after a successful send. Local insertion of outgoing thread events is still allowed for UI presentation. Group ban and unban propagate by submitting a new GBK rotation.
+
 ## Docs maintenance
 
 Keep `docs/SUMMARY.md` in sync with the docs. When adding, removing, or renaming doc pages, update the summary accordingly.

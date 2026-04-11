@@ -113,6 +113,8 @@ impl NullspaceApp {
         smol::spawn(event_loop(ctx, event_tx, focused.clone(), audio_tx)).detach();
         egui_extras::install_image_loaders(&cc.egui_ctx);
         configure_theme_styles(&cc.egui_ctx);
+        cc.egui_ctx
+            .options_mut(|opt| opt.fallback_theme = egui::Theme::Light);
         apply_theme_preference(&cc.egui_ctx, prefs.theme);
 
         let fonts = egui::FontDefinitions::default();

@@ -36,14 +36,15 @@ pub async fn queue_message(
     let sent_at = NanoTimestamp::now();
 
     let event_after = load_latest_committed_thread_hash(&mut *tx, thread_id, None).await?;
-    let event = Event {
-        sender: sender.clone(),
-        recipient,
-        sent_at,
-        after: event_after,
-        tag: event_tag,
-        body: event_body.clone(),
-    };
+    let mut event = Event::default()
+        .sender(sender.clone())
+        .recipient(recipient)
+        .sent_at(sent_at)
+        .tag(event_tag)
+        .body(event_body.clone());
+    if let Some(after) = event_after {
+        event = event.after(after);
+    }
     let event_hash = event.hash();
 
     let id = insert_thread_event(
@@ -180,25 +181,27 @@ async fn send_message(
 ) -> anyhow::Result<NanoTimestamp> {
     match convo_id {
         ConvoId::Direct { peer } => {
-            let event = Event {
-                sender: pending.sender.clone(),
-                recipient: EventRecipient::Dm(peer.clone()),
-                sent_at: pending.sent_at,
-                after: pending.event_after,
-                tag: pending.event_tag,
-                body: pending.event_body.clone(),
-            };
+            let mut event = Event::default()
+                .sender(pending.sender.clone())
+                .recipient(EventRecipient::Dm(peer.clone()))
+                .sent_at(pending.sent_at)
+                .tag(pending.event_tag)
+                .body(pending.event_body.clone());
+            if let Some(after) = pending.event_after {
+                event = event.after(after);
+            }
             send_dm(ctx, peer, event).await
         }
         ConvoId::Group { group_id } => {
-            let event = Event {
-                sender: pending.sender.clone(),
-                recipient: EventRecipient::Group(*group_id),
-                sent_at: pending.sent_at,
-                after: pending.event_after,
-                tag: pending.event_tag,
-                body: pending.event_body.clone(),
-            };
+            let mut event = Event::default()
+                .sender(pending.sender.clone())
+                .recipient(EventRecipient::Group(*group_id))
+                .sent_at(pending.sent_at)
+                .tag(pending.event_tag)
+                .body(pending.event_body.clone());
+            if let Some(after) = pending.event_after {
+                event = event.after(after);
+            }
             send_group(ctx, group_id, event).await
         }
     }
@@ -215,14 +218,15 @@ async fn prepare_pending_message_for_send(
         ConvoId::Direct { peer } => EventRecipient::Dm(peer.clone()),
         ConvoId::Group { group_id } => EventRecipient::Group(*group_id),
     };
-    let event = Event {
-        sender: pending.sender.clone(),
-        recipient,
-        sent_at: pending.sent_at,
-        after: event_after,
-        tag: pending.event_tag,
-        body: pending.event_body.clone(),
-    };
+    let mut event = Event::default()
+        .sender(pending.sender.clone())
+        .recipient(recipient)
+        .sent_at(pending.sent_at)
+        .tag(pending.event_tag)
+        .body(pending.event_body.clone());
+    if let Some(after) = event_after {
+        event = event.after(after);
+    }
     let event_hash = event.hash();
     sqlx::query("UPDATE thread_events SET event_after = ?, event_hash = ? WHERE id = ?")
         .bind(event.after.map(|hash| hash.to_bytes().to_vec()))
@@ -300,7 +304,7 @@ pub(super) async fn store_message_attachments(
     if event_tag != TAG_MESSAGE {
         return Ok(());
     }
-    let payload: MessagePayload = bcs::from_bytes(event_body)?;
+    let payload: MessagePayload = super::decode_event_body(event_body)?;
     for attachment in payload.attachments {
         if let Err(err) = store_attachment_root(&mut *tx, &attachment).await {
             warn!(error = %err, "failed to store outgoing attachment root");

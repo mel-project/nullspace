@@ -2,10 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
+use bytes::Bytes;
 use nullspace_crypt::aead::AeadKey;
 use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use serde::{Deserialize, Serialize};
+use serde_with::base64::{Base64, UrlSafe};
+use serde_with::formats::Unpadded;
+use serde_with::{Bytes as SerdeBytes, IfIsHumanReadable, serde_as};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -70,6 +74,9 @@ pub struct GroupRotation {
     pub signer: SigningPublic,
     pub new_admin_set: BTreeSet<SigningPublic>,
     pub gbk_rotation: HeaderEncrypted,
+    /// The roster snapshot encrypted with the new GBK's symmetric key.
+    /// Format: `nonce (24 bytes) || ciphertext`.
+    pub roster_encrypted: Bytes,
     pub signature: Signature,
 }
 
@@ -88,6 +95,7 @@ impl Signable for GroupRotation {
             &self.signer,
             &self.new_admin_set,
             &self.gbk_rotation,
+            &self.roster_encrypted,
         ))
         .unwrap()
     }
@@ -105,10 +113,12 @@ impl Signable for GroupRotation {
 ///
 /// Possession of the GBK lets a device derive the mailbox key (for polling)
 /// and the symmetric encryption key (for encrypting/decrypting messages).
+#[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GroupBearerKey {
     pub group_id: GroupId,
     pub server: ServerName,
+    #[serde_as(as = "IfIsHumanReadable<Base64<UrlSafe, Unpadded>, SerdeBytes>")]
     pub random_nonce: [u8; 32],
 }
 
@@ -140,12 +150,41 @@ impl GroupBearerKey {
 
 /// The plaintext payload inside `GroupRotation::gbk_rotation`.
 ///
-/// HeaderEncrypted to all members' medium-term keys, so every member can
-/// decrypt and learn both the current GBK and the full group roster.
+/// HeaderEncrypted to all members' medium-term keys so every member can
+/// decrypt and learn the current GBK. The roster is carried separately in
+/// `GroupRotation::roster_encrypted`, encrypted with the GBK, so that
+/// invitees who receive the GBK out-of-band can also read the roster.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GroupRotationPayload {
     pub gbk: GroupBearerKey,
-    pub roster: GroupRoster,
+}
+
+/// Encrypt a roster snapshot with a GBK's symmetric key.
+/// Returns `nonce (24 bytes) || ciphertext`.
+pub fn encrypt_roster(gbk: &GroupBearerKey, roster: &GroupRoster) -> anyhow::Result<Bytes> {
+    let roster_bytes = bcs::to_bytes(roster)?;
+    let nonce: [u8; 24] = rand::random();
+    let ciphertext = gbk
+        .symmetric_key()
+        .encrypt(nonce, &roster_bytes, &[])
+        .map_err(|_| anyhow::anyhow!("roster encryption failed"))?;
+    let mut out = Vec::with_capacity(24 + ciphertext.len());
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ciphertext);
+    Ok(Bytes::from(out))
+}
+
+/// Decrypt a roster snapshot from `nonce || ciphertext` using a GBK's symmetric key.
+pub fn decrypt_roster(gbk: &GroupBearerKey, encrypted: &[u8]) -> anyhow::Result<GroupRoster> {
+    anyhow::ensure!(encrypted.len() >= 24, "roster ciphertext too short");
+    let mut nonce = [0u8; 24];
+    nonce.copy_from_slice(&encrypted[..24]);
+    let ciphertext = &encrypted[24..];
+    let plaintext = gbk
+        .symmetric_key()
+        .decrypt(nonce, ciphertext, &[])
+        .map_err(|_| anyhow::anyhow!("roster decryption failed"))?;
+    Ok(bcs::from_bytes(&plaintext)?)
 }
 
 /// Complete group membership state, embedded in every rotation.

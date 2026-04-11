@@ -125,8 +125,7 @@ async fn process_mailbox_entry(
 
     // Handle group invitations specially
     if event.tag == nullspace_structs::event::TAG_GROUP_INVITATION {
-        if let Ok(invitation) =
-            bcs::from_bytes::<nullspace_structs::event::GroupInvitationBody>(&event.body)
+        if let Ok(invitation) = event.decode_body::<nullspace_structs::event::GroupInvitation>()
         {
             let mut conn = db.acquire().await?;
             sqlx::query(
@@ -145,6 +144,13 @@ async fn process_mailbox_entry(
             .execute(&mut *conn)
             .await?;
 
+            let invitation_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM group_invitations WHERE group_id = ?",
+            )
+            .bind(invitation.group_id.to_bytes().to_vec())
+            .fetch_one(&mut *conn)
+            .await?;
+
             // Also insert as a system event in the DM thread for UI display
             let thread_id =
                 ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;
@@ -161,7 +167,7 @@ async fn process_mailbox_entry(
                 .clone()
                 .unwrap_or_else(|| format!("Group {}", invitation.group_id.short_id()));
             let system_body = bcs::to_bytes(&super::SystemItem::GroupInvitationReceived {
-                invitation_id: 0, // will be filled by the query above's rowid
+                invitation_id,
                 group_id: invitation.group_id,
                 display_title,
             })?;

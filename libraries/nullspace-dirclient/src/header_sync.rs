@@ -6,8 +6,9 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 const BATCH_MIN: u64 = 1;
-const BATCH_MAX: u64 = 1_000;
-const BATCH_INC: u64 = 1;
+const BATCH_MAX: u64 = 10_000;
+const BATCH_START: u64 = 2_000;
+const BATCH_INC: u64 = 500;
 const BATCH_DEC_NUM: u64 = 8;
 const BATCH_DEC_DEN: u64 = 10;
 
@@ -65,7 +66,7 @@ pub async fn sync_headers(
         Some(current) => current + 1,
         None => 0,
     };
-    let mut batch_len = BATCH_MIN;
+    let mut batch_len = BATCH_START;
     while next <= anchor.last_header_height {
         let end = next
             .saturating_add(batch_len.saturating_sub(1))
@@ -185,11 +186,11 @@ fn aimd_decrease(current: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BATCH_MAX, BATCH_MIN, aimd_decrease, aimd_increase};
+    use super::{BATCH_INC, BATCH_MAX, BATCH_MIN, aimd_decrease, aimd_increase};
 
     #[test]
-    fn aimd_increase_adds_one_until_cap() {
-        assert_eq!(aimd_increase(BATCH_MIN), BATCH_MIN + 1);
+    fn aimd_increase_adds_inc_until_cap() {
+        assert_eq!(aimd_increase(BATCH_MIN), BATCH_MIN + BATCH_INC);
         assert_eq!(aimd_increase(BATCH_MAX), BATCH_MAX);
     }
 

@@ -7,13 +7,12 @@ use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use nullspace_structs::e2ee::HeaderEncrypted;
 use nullspace_structs::event::{
-    GroupInvitationBody, GroupMetadataChangeBody, GroupMuteChangeBody, GroupSettingsChangeBody,
-    TAG_GROUP_INVITATION, TAG_GROUP_METADATA_CHANGE, TAG_GROUP_MUTE_CHANGE,
-    TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST,
+    GroupInvitation, GroupPermissionChange, GroupSettingsChange, TAG_GROUP_INVITATION,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST,
 };
 use nullspace_structs::group::{
     GroupBearerKey, GroupId, GroupMetadata, GroupRoster, GroupRosterSettings, GroupRotation,
-    GroupRotationPayload, MemberState,
+    GroupRotationPayload, MemberState, encrypt_roster,
 };
 use nullspace_structs::server::ServerName;
 
@@ -61,14 +60,12 @@ pub async fn group_create(
         },
     };
 
-    let payload = GroupRotationPayload {
-        gbk: gbk.clone(),
-        roster: roster.clone(),
-    };
+    let payload = GroupRotationPayload { gbk: gbk.clone() };
     let payload_bytes = bcs::to_bytes(&payload)?;
     let payload_encrypted =
         HeaderEncrypted::encrypt_bytes(&payload_bytes, [identity.medium_sk_current.public_key()])
             .map_err(|e| anyhow::anyhow!(e))?;
+    let roster_encrypted = encrypt_roster(&gbk, &roster)?;
 
     let device_pk = identity.device_secret.public().signing_public();
     let mut admin_set = BTreeSet::new();
@@ -80,6 +77,7 @@ pub async fn group_create(
         signer: device_pk,
         new_admin_set: admin_set.clone(),
         gbk_rotation: payload_encrypted,
+        roster_encrypted,
         signature: Signature::from_bytes([0u8; 64]),
     };
     rotation.sign(&identity.device_secret);
@@ -342,19 +340,18 @@ pub async fn load_gbk(
     })
 }
 
-pub async fn refresh_group_state(
-    ctx: &AnyCtx<Config>,
-    group_id: GroupId,
-) -> anyhow::Result<bool> {
+pub async fn refresh_group_state(ctx: &AnyCtx<Config>, group_id: GroupId) -> anyhow::Result<bool> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(&mut *db.acquire().await?).await?;
-    let auth = get_auth_token(ctx).await?;
     let mut loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
     let server = get_server_client(ctx, &loaded.server_name).await?;
     let mut changed = false;
 
     loop {
-        let rotation = match server.group_get(group_id, loaded.rotation_index + 1).await? {
+        let rotation = match server
+            .group_get(group_id, loaded.rotation_index + 1)
+            .await?
+        {
             Ok(Some(rotation)) => rotation,
             Ok(None) => break,
             Err(err) => anyhow::bail!("group_get failed: {err}"),
@@ -365,7 +362,10 @@ pub async fn refresh_group_state(
             .map_err(|_| anyhow::anyhow!("rotation signature verification failed"))?;
 
         if !loaded.admin_set.contains(&rotation.signer) {
-            anyhow::bail!("rotation signer {:?} not in previous admin set", rotation.signer);
+            anyhow::bail!(
+                "rotation signer {:?} not in previous admin set",
+                rotation.signer
+            );
         }
         match &rotation.prev_hash {
             Some(hash) if *hash == loaded.rotation_hash => {}
@@ -376,8 +376,11 @@ pub async fn refresh_group_state(
         let payload_bytes = match rotation
             .gbk_rotation
             .decrypt_bytes(&identity.medium_sk_current)
-            .or_else(|_| rotation.gbk_rotation.decrypt_bytes(&identity.medium_sk_prev))
-        {
+            .or_else(|_| {
+                rotation
+                    .gbk_rotation
+                    .decrypt_bytes(&identity.medium_sk_prev)
+            }) {
             Ok(bytes) => bytes,
             Err(_) => {
                 let mut tx = db.begin().await?;
@@ -395,7 +398,10 @@ pub async fn refresh_group_state(
         if payload.gbk.server != loaded.server_name {
             anyhow::bail!("rotation payload server mismatch");
         }
+        let roster =
+            nullspace_structs::group::decrypt_roster(&payload.gbk, &rotation.roster_encrypted)?;
 
+        let auth = get_auth_token(ctx).await?;
         server
             .mailbox_create(auth, payload.gbk.mailbox_key())
             .await?
@@ -414,7 +420,7 @@ pub async fn refresh_group_state(
             &rotation_hash,
         )
         .await?;
-        replace_current_roster(&mut tx, group_id, next_index, &payload.roster).await?;
+        replace_current_roster(&mut tx, group_id, next_index, &roster).await?;
         let convo_id = ConvoId::Group { group_id };
         ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
         tx.commit().await?;
@@ -463,16 +469,18 @@ async fn group_refresh_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
                 },
             ),
             Ok(false) => {}
-            Err(err) => tracing::warn!(group = %group_id, error = %err, "failed to refresh group state"),
+            Err(err) => {
+                tracing::warn!(group = %group_id, error = %err, "failed to refresh group state")
+            }
         }
     }
 
     Ok(())
 }
 
-/// Dispatch a group action. Rotation-requiring actions (ban, admin leave) submit
-/// a new rotation. Mailbox-event actions (admin changes, mutes, metadata) are
-/// queued as events through the normal send path. ShareInvite DMs the GBK.
+/// Dispatch a group action. Rotation-requiring actions submit a new rotation.
+/// Mailbox-event actions are queued through the normal send path. ShareInvite
+/// DMs the current GBK.
 pub async fn group_action(
     ctx: &AnyCtx<Config>,
     group_id: GroupId,
@@ -482,10 +490,7 @@ pub async fn group_action(
 
     let db = ctx.get(DATABASE);
     let identity = Identity::load(&mut *db.acquire().await?).await?;
-    let (rotation_index, mut roster) = load_roster(&mut *db.acquire().await?, group_id).await?;
-    let loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
-    let prev_rotation_hash = loaded.rotation_hash;
-    let gbk = loaded.gbk;
+    let (_, mut roster) = load_roster(&mut *db.acquire().await?, group_id).await?;
 
     let am_admin = roster
         .members
@@ -498,14 +503,16 @@ pub async fn group_action(
         GroupAction::ShareInvite { username } => {
             anyhow::ensure!(am_admin, "only admins can invite");
             anyhow::ensure!(!roster.banned.contains(&username), "user is banned");
-            let invitation = GroupInvitationBody {
+            let loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
+            let gbk = loaded.gbk;
+            let invitation = GroupInvitation {
                 group_id: gbk.group_id,
                 gbk: gbk.clone(),
                 rotation_index: loaded.rotation_index,
                 title: roster.metadata.title.clone(),
                 description: roster.metadata.description.clone(),
             };
-            let body = Bytes::from(bcs::to_bytes(&invitation)?);
+            let body = super::encode_event_body(&invitation)?;
             let dm_convo = ConvoId::Direct {
                 peer: username.clone(),
             };
@@ -525,18 +532,18 @@ pub async fn group_action(
             if let Some(member) = roster.members.get_mut(&username) {
                 member.is_admin = is_admin;
             }
-            submit_rotation(ctx, &identity, group_id, prev_rotation_hash, &roster, &gbk).await?;
+            submit_rotation(ctx, &identity, group_id, &roster).await?;
         }
 
         GroupAction::SetMemberMuted { username, muted } => {
             anyhow::ensure!(am_admin, "only admins can mute/unmute");
-            let body = Bytes::from(bcs::to_bytes(&GroupMuteChangeBody { username, muted })?);
+            let body = super::encode_event_body(&GroupPermissionChange { username, muted })?;
             let mut conn = db.acquire().await?;
             super::send::queue_message(
                 &mut conn,
                 &group_convo,
                 &identity.username,
-                TAG_GROUP_MUTE_CHANGE,
+                TAG_GROUP_PERMISSION_CHANGE,
                 &body,
             )
             .await?;
@@ -544,16 +551,18 @@ pub async fn group_action(
 
         GroupAction::SetMetadata { title, description } => {
             anyhow::ensure!(am_admin, "only admins can change metadata");
-            let body = Bytes::from(bcs::to_bytes(&GroupMetadataChangeBody {
+            let body = super::encode_event_body(&GroupSettingsChange {
                 title,
                 description,
-            })?);
+                new_members_muted: roster.settings.new_members_muted,
+                allow_new_members_to_see_history: roster.settings.allow_new_members_to_see_history,
+            })?;
             let mut conn = db.acquire().await?;
             super::send::queue_message(
                 &mut conn,
                 &group_convo,
                 &identity.username,
-                TAG_GROUP_METADATA_CHANGE,
+                TAG_GROUP_SETTINGS_CHANGE,
                 &body,
             )
             .await?;
@@ -561,10 +570,12 @@ pub async fn group_action(
 
         GroupAction::SetNewMembersMuted { muted } => {
             anyhow::ensure!(am_admin, "only admins can change settings");
-            let body = Bytes::from(bcs::to_bytes(&GroupSettingsChangeBody {
+            let body = super::encode_event_body(&GroupSettingsChange {
+                title: roster.metadata.title.clone(),
+                description: roster.metadata.description.clone(),
                 new_members_muted: muted,
                 allow_new_members_to_see_history: roster.settings.allow_new_members_to_see_history,
-            })?);
+            })?;
             let mut conn = db.acquire().await?;
             super::send::queue_message(
                 &mut conn,
@@ -578,10 +589,12 @@ pub async fn group_action(
 
         GroupAction::SetAllowNewMembersToSeeHistory { allow } => {
             anyhow::ensure!(am_admin, "only admins can change settings");
-            let body = Bytes::from(bcs::to_bytes(&GroupSettingsChangeBody {
+            let body = super::encode_event_body(&GroupSettingsChange {
+                title: roster.metadata.title.clone(),
+                description: roster.metadata.description.clone(),
                 new_members_muted: roster.settings.new_members_muted,
                 allow_new_members_to_see_history: allow,
-            })?);
+            })?;
             let mut conn = db.acquire().await?;
             super::send::queue_message(
                 &mut conn,
@@ -598,20 +611,16 @@ pub async fn group_action(
             if banned {
                 roster.members.remove(&username);
                 roster.banned.insert(username);
-                submit_rotation(ctx, &identity, group_id, prev_rotation_hash, &roster, &gbk)
-                    .await?;
             } else {
                 roster.banned.remove(&username);
-                replace_current_roster(&mut *db.acquire().await?, group_id, rotation_index, &roster)
-                    .await?;
             }
+            submit_rotation(ctx, &identity, group_id, &roster).await?;
         }
 
         GroupAction::Leave => {
             if am_admin {
                 roster.members.remove(&identity.username);
-                submit_rotation(ctx, &identity, group_id, prev_rotation_hash, &roster, &gbk)
-                    .await?;
+                submit_rotation(ctx, &identity, group_id, &roster).await?;
             } else {
                 let body = Bytes::new();
                 let mut conn = db.acquire().await?;
@@ -623,8 +632,6 @@ pub async fn group_action(
                     &body,
                 )
                 .await?;
-                roster.members.remove(&identity.username);
-                replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
             }
         }
     }

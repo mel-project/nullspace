@@ -213,16 +213,14 @@ mod tests {
             replies_to: None,
             metadata: BTreeMap::new(),
         };
-        let event = Event {
-            sender: UserName::parse("@sender_test").expect("sender username"),
-            recipient: EventRecipient::Dm(
+        let event = Event::default()
+            .sender(UserName::parse("@sender_test").expect("sender username"))
+            .recipient(EventRecipient::Dm(
                 UserName::parse("@recipient01").expect("recipient username"),
-            ),
-            sent_at: NanoTimestamp(0),
-            after: None,
-            tag: TAG_MESSAGE,
-            body: Bytes::from(bcs::to_bytes(&payload).expect("payload")),
-        };
+            ))
+            .sent_at(NanoTimestamp(0))
+            .encoded_body(payload)
+            .expect("payload");
 
         let encrypted = HeaderEncrypted::encrypt_bytes(
             &bcs::to_bytes(&event).expect("encode event"),

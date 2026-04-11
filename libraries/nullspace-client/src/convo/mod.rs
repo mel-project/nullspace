@@ -18,12 +18,14 @@ pub use convo_impl::*;
 pub use queries::last_dm_received_at;
 
 use anyctx::AnyCtx;
+use bytes::Bytes;
 use futures_concurrency::future::Race;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::{MessagePayload, MessageText, TAG_MESSAGE};
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -31,6 +33,14 @@ use crate::config::Config;
 
 pub const THREAD_KIND_DIRECT: &str = "direct";
 pub const THREAD_KIND_GROUP: &str = "group";
+
+pub(super) fn encode_event_body<T: Serialize>(value: &T) -> anyhow::Result<Bytes> {
+    Ok(Bytes::from(serde_json::to_vec(value)?))
+}
+
+pub(super) fn decode_event_body<T: DeserializeOwned>(body: &[u8]) -> anyhow::Result<T> {
+    Ok(serde_json::from_slice(body)?)
+}
 
 /// Identifies a conversation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -138,14 +148,14 @@ pub struct ConvoItem {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ConvoItemKind {
     Message(MessagePayload),
     System(SystemItem),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum SystemItem {
     Notice {
         text: String,
@@ -178,10 +188,6 @@ pub enum SystemItem {
     },
     GroupHistorySharingChanged {
         allow_new_members_to_see_history: bool,
-    },
-    GroupAdminChanged {
-        username: UserName,
-        is_admin: bool,
     },
     GroupBanChanged {
         username: UserName,
@@ -265,13 +271,6 @@ impl SystemItem {
                     "History sharing disabled".to_string()
                 }
             }
-            SystemItem::GroupAdminChanged { username, is_admin } => {
-                if *is_admin {
-                    format!("{username} is now an admin")
-                } else {
-                    format!("{username} is no longer an admin")
-                }
-            }
             SystemItem::GroupBanChanged { username, banned } => {
                 if *banned {
                     format!("{username} banned")
@@ -353,7 +352,7 @@ fn decode_convo_item_kind(
     local_id: i64,
 ) -> anyhow::Result<ConvoItemKind> {
     if event_tag == TAG_MESSAGE {
-        return Ok(ConvoItemKind::Message(bcs::from_bytes(body)?));
+        return Ok(ConvoItemKind::Message(decode_event_body(body)?));
     }
     if let Ok(system_item) = bcs::from_bytes::<SystemItem>(body) {
         return Ok(ConvoItemKind::System(system_item));

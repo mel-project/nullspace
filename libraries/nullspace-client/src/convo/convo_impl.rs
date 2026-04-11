@@ -1,5 +1,4 @@
 use anyctx::AnyCtx;
-use bytes::Bytes;
 use nullspace_structs::event::{MessagePayload, TAG_MESSAGE};
 use nullspace_structs::group::GroupId;
 
@@ -8,7 +7,6 @@ use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::identity::Identity;
 use nullspace_crypt::signing::Signable;
-use nullspace_structs::group::GroupRotationPayload;
 use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
@@ -55,7 +53,7 @@ pub async fn convo_send_impl(
     let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
         .await
         .map_err(|_| InternalRpcError::NotReady)?;
-    let body = Bytes::from(bcs::to_bytes(&message).map_err(internal_err)?);
+    let body = super::encode_event_body(&message).map_err(internal_err)?;
     let mut conn = db.acquire().await.map_err(internal_err)?;
     let id =
         super::send::queue_message(&mut conn, &convo_id, &identity.username, TAG_MESSAGE, &body)
@@ -247,9 +245,6 @@ pub async fn group_invitation_accept_impl(
     invitation_id: i64,
 ) -> Result<GroupId, InternalRpcError> {
     let db = ctx.get(DATABASE);
-    let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?)
-        .await
-        .map_err(internal_err)?;
 
     // Load invitation
     let row = sqlx::query_as::<_, (Vec<u8>, String, i64, Vec<u8>)>(
@@ -272,109 +267,50 @@ pub async fn group_invitation_accept_impl(
     let gbk: nullspace_structs::group::GroupBearerKey =
         bcs::from_bytes(&row.3).map_err(internal_err)?;
 
-    // Fetch latest rotation from server to get the roster
+    // Fetch the rotation at the invitation index and decrypt the roster
+    // using the GBK from the invitation.
     let server = get_server_client(ctx, &server_name)
         .await
         .map_err(internal_err)?;
 
-    // Walk forward from the invitation's rotation to find the latest
-    let mut current_index = invitation_rotation_index;
-    let mut latest_payload: Option<GroupRotationPayload> = None;
-    let mut prev_admin_set: std::collections::BTreeSet<nullspace_crypt::signing::SigningPublic> =
-        std::collections::BTreeSet::new();
-    let mut final_admin_set = prev_admin_set.clone();
-    let mut prev_hash: Option<nullspace_crypt::hash::Hash> = None;
-    let mut final_rotation_hash = nullspace_crypt::hash::Hash::digest(&[]);
+    let rotation = server
+        .group_get(group_id, invitation_rotation_index)
+        .await
+        .map_err(internal_err)?
+        .map_err(internal_err)?
+        .ok_or(internal_err("rotation not found on server"))?;
 
-    loop {
-        let rotation = match server
-            .group_get(group_id, current_index)
-            .await
-            .map_err(internal_err)?
-        {
-            Ok(Some(rot)) => rot,
-            Ok(None) => break,
-            Err(e) => return Err(internal_err(e)),
-        };
+    rotation
+        .verify(rotation.signer)
+        .map_err(|_| internal_err("rotation signature verification failed"))?;
 
-        // Verify signature
-        rotation
-            .verify(rotation.signer)
-            .map_err(|_| internal_err("rotation signature verification failed"))?;
+    let roster =
+        nullspace_structs::group::decrypt_roster(&gbk, &rotation.roster_encrypted)
+            .map_err(internal_err)?;
 
-        // Verify signer authorization (skip for the first entry in our walk,
-        // since we don't have the previous admin set)
-        if !prev_admin_set.is_empty() && !prev_admin_set.contains(&rotation.signer) {
-            return Err(internal_err("rotation signer not in previous admin set"));
-        }
-
-        // Verify hash chain (skip for the first entry in our walk)
-        if let Some(expected_prev) = prev_hash {
-            match &rotation.prev_hash {
-                Some(h) if *h != expected_prev => {
-                    return Err(internal_err(
-                        "rotation prev_hash does not match previous rotation hash",
-                    ));
-                }
-                None => {
-                    return Err(internal_err("rotation has no prev_hash"));
-                }
-                _ => {}
-            }
-        }
-
-        // Try to decrypt the payload
-        if let Ok(payload_bytes) = rotation
-            .gbk_rotation
-            .decrypt_bytes(&identity.medium_sk_current)
-            .or_else(|_| {
-                rotation
-                    .gbk_rotation
-                    .decrypt_bytes(&identity.medium_sk_prev)
-            })
-        {
-            if let Ok(payload) = bcs::from_bytes::<GroupRotationPayload>(&payload_bytes) {
-                latest_payload = Some(payload);
-            }
-        } else {
-            // Can't decrypt — we were removed in a later rotation
-            break;
-        }
-
-        prev_admin_set = rotation.new_admin_set.clone();
-        final_admin_set = rotation.new_admin_set.clone();
-        final_rotation_hash = rotation.hash();
-        prev_hash = Some(final_rotation_hash);
-        current_index += 1;
-    }
-
-    // Use the latest decryptable payload, or fall back to the invitation's GBK
-    let (final_gbk, final_roster, final_index) = match latest_payload {
-        Some(payload) => {
-            let idx = current_index.saturating_sub(1);
-            (payload.gbk, Some(payload.roster), idx)
-        }
-        None => (gbk, None, invitation_rotation_index),
-    };
+    let rotation_hash = rotation.hash();
 
     // Store GBK and roster
     let mut tx = db.begin().await.map_err(internal_err)?;
     super::groups::store_gbk(
         &mut tx,
         group_id,
-        &final_gbk,
+        &gbk,
         &server_name,
-        final_index,
-        &final_admin_set,
-        &final_rotation_hash,
+        invitation_rotation_index,
+        &rotation.new_admin_set,
+        &rotation_hash,
     )
     .await
     .map_err(internal_err)?;
-    if let Some(roster) = &final_roster {
-        super::groups::replace_current_roster(&mut tx, group_id, final_index, roster)
-            .await
-            .map_err(internal_err)?;
-    }
+    super::groups::replace_current_roster(
+        &mut tx,
+        group_id,
+        invitation_rotation_index,
+        &roster,
+    )
+    .await
+    .map_err(internal_err)?;
     let convo_id = ConvoId::Group { group_id };
     super::ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty())
         .await
@@ -387,16 +323,6 @@ pub async fn group_invitation_accept_impl(
         .bind(invitation_id)
         .execute(&*db)
         .await
-        .map_err(internal_err)?;
-
-    // Create mailbox
-    let auth = crate::net::get_auth_token(ctx)
-        .await
-        .map_err(internal_err)?;
-    server
-        .mailbox_create(auth, final_gbk.mailbox_key())
-        .await
-        .map_err(internal_err)?
         .map_err(internal_err)?;
 
     emit_event(ctx, Event::ConvoUpdated { convo_id });

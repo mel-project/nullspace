@@ -21,11 +21,18 @@ pub struct GroupInfo<'a> {
 
 impl Widget for GroupInfo<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
+        let mut invite_username: Var<String> = ui.use_state(String::new, ()).into_var();
+        let group_view = ui.use_memo(
+            || {
+                let result = block_on(get_rpc().group_view(self.group));
+                flatten_rpc(result)
+            },
+            (self.group, self.app.state.msg_updates),
+        );
+
         if !*self.open {
             return ui.response();
         }
-
-        let mut invite_username: Var<String> = ui.use_state(String::new, ()).into_var();
 
         let mut window_open = *self.open;
         Window::new("Group info")
@@ -39,13 +46,6 @@ impl Widget for GroupInfo<'_> {
                 ui.add_space(4.0);
 
                 ui.heading("Members");
-                let group_view = ui.use_memo(
-                    || {
-                        let result = block_on(get_rpc().group_view(self.group));
-                        flatten_rpc(result)
-                    },
-                    (self.group, self.app.state.msg_updates),
-                );
 
                 match group_view {
                     Ok(group_view) => {

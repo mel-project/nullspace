@@ -112,7 +112,10 @@ impl Widget for Convo<'_> {
                     user_info: &mut user_info_target,
                 });
             }
-            ui.add(UserInfo(user_info_target));
+            ui.add(UserInfo {
+                app,
+                target: user_info_target,
+            });
 
             ui.response()
         });

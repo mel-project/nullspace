@@ -99,7 +99,6 @@ impl Widget for NewGroup<'_> {
                     disabled_reasons: &Default::default(),
                     placeholder: "Search people or enter exact @username",
                     empty_text: "Select local people or enter an exact @username to invite someone new.",
-                    max_height: 220.0,
                 });
 
                 if !invitees.is_empty() {
@@ -189,7 +188,10 @@ impl Widget for NewGroup<'_> {
                     }
                 }
 
-                ui.add(UserInfo(user_info_target.take()));
+                ui.add(UserInfo {
+                    app: self.app,
+                    target: user_info_target.take(),
+                });
             });
         if close_requested {
             window_open = false;

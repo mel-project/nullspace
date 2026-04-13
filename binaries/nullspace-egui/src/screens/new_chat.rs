@@ -52,7 +52,6 @@ impl Widget for NewChat<'_> {
                     disabled_reasons: &Default::default(),
                     placeholder: "Search people or enter exact @username",
                     empty_text: "No local matches. Enter an exact @username to look someone up.",
-                    max_height: 240.0,
                 });
 
                 ui.add_space(8.0);
@@ -69,7 +68,10 @@ impl Widget for NewChat<'_> {
                     }
                 });
 
-                ui.add(UserInfo(user_info_target.take()));
+                ui.add(UserInfo {
+                    app: self.app,
+                    target: user_info_target.take(),
+                });
             });
         if close_requested {
             window_open = false;

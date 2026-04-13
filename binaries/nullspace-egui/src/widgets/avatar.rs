@@ -19,6 +19,7 @@ pub struct Avatar {
     pub color_key: String,
     pub attachment: Option<ImageAttachment>,
     pub placeholder: AvatarPlaceholder,
+    pub sense: eframe::egui::Sense,
     pub size: f32,
 }
 
@@ -33,6 +34,7 @@ impl Avatar {
             color_key: username.to_string(),
             attachment,
             placeholder: AvatarPlaceholder::UserMonogram(username.to_string()),
+            sense: eframe::egui::Sense::empty(),
             size,
         }
     }
@@ -42,8 +44,14 @@ impl Avatar {
             color_key: group_id.to_string(),
             attachment,
             placeholder: AvatarPlaceholder::GroupIcon,
+            sense: eframe::egui::Sense::empty(),
             size,
         }
+    }
+
+    pub fn sense(mut self, sense: eframe::egui::Sense) -> Self {
+        self.sense = sense;
+        self
     }
 }
 
@@ -53,19 +61,14 @@ impl Widget for Avatar {
         ui.push_id(id, |ui| {
             let radius_u8 = (self.size / 2.0).round().clamp(0.0, u8::MAX as f32) as u8;
             let circle_corner_radius = eframe::egui::CornerRadius::same(radius_u8);
-            let sense = eframe::egui::Sense::empty();
+            let sense = self.sense;
             let Some(attachment) = self.attachment.as_ref() else {
                 let (rect, response) =
                     ui.allocate_exact_size(eframe::egui::vec2(self.size, self.size), sense);
                 paint_avatar_placeholder(ui, rect, &self.color_key, &self.placeholder);
                 return response;
             };
-            let Some(path) = avatar_cache_path(attachment) else {
-                let (rect, response) =
-                    ui.allocate_exact_size(eframe::egui::vec2(self.size, self.size), sense);
-                paint_avatar_placeholder(ui, rect, &self.color_key, &self.placeholder);
-                return response;
-            };
+            let path = avatar_cache_path(attachment);
 
             let download_started = ui.use_state(|| false, ());
             if !path.exists() && !*download_started {
@@ -85,22 +88,15 @@ impl Widget for Avatar {
                 .detach();
             }
 
-            if path.exists() {
-                let size = eframe::egui::vec2(self.size, self.size);
-                ui.add(
-                    SmoothImage::new(path.as_path())
-                        .thumbhash(Some(attachment.thumbhash.as_str()))
-                        .max_size(size)
-                        .corner_radius(circle_corner_radius)
-                        .preserve_aspect_ratio(false)
-                        .sense(sense),
-                )
-            } else {
-                let (rect, response) =
-                    ui.allocate_exact_size(eframe::egui::vec2(self.size, self.size), sense);
-                paint_avatar_placeholder(ui, rect, &self.color_key, &self.placeholder);
-                response
-            }
+            let size = eframe::egui::vec2(self.size, self.size);
+            ui.add(
+                SmoothImage::new(path.as_path())
+                    .thumbhash(Some(attachment.thumbhash.as_str()))
+                    .max_size(size)
+                    .corner_radius(circle_corner_radius)
+                    .preserve_aspect_ratio(false)
+                    .sense(sense),
+            )
         })
         .response
     }
@@ -149,10 +145,10 @@ fn group_avatar_icon() -> &'static str {
     GROUP_AVATAR_ICON
 }
 
-fn avatar_cache_path(attachment: &ImageAttachment) -> Option<PathBuf> {
+fn avatar_cache_path(attachment: &ImageAttachment) -> PathBuf {
     let base = folders::avatar_cache_dir();
     let filename = attachment.inner.bcs_hash().to_string();
-    Some(base.join(filename))
+    base.join(filename)
 }
 
 #[cfg(test)]

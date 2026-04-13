@@ -1,26 +1,28 @@
 use chrono::{DateTime, Local};
 use eframe::egui::{Response, TextWrapMode, Widget, Window};
-use egui::{Color32, RichText};
+use egui::RichText;
 use egui_hooks::UseHookExt;
 use egui_taffy::{Tui, TuiBuilderLogic, tui};
+use nullspace_client::UserDetails;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use taffy::style_helpers::{auto, fr, length};
 use taffy::{AlignItems, Display, FlexDirection, LengthPercentage, Size as TaffySize, Style};
 
-use crate::rpc::flatten_rpc;
-use crate::rpc::get_rpc;
+use crate::NullspaceApp;
 use crate::utils::color::identity_color;
-use crate::utils::hooks::CustomHooksExt;
 use crate::widgets::avatar::Avatar;
 
-pub struct UserInfo(pub Option<UserName>);
+pub struct UserInfo<'a> {
+    pub app: &'a mut NullspaceApp,
+    pub target: Option<UserName>,
+}
 
-impl Widget for UserInfo {
+impl Widget for UserInfo<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let mut open = ui.use_state(|| false, ()).into_var();
         let mut selected = ui.use_state(|| None, ()).into_var();
-        if let Some(username) = self.0 {
+        if let Some(username) = self.target {
             *selected = Some(username);
             *open = true;
         }
@@ -38,25 +40,19 @@ impl Widget for UserInfo {
             .vscroll(true)
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
-                let username = ui.use_gbox(|| username.clone(), username.clone());
-                let details_result = ui.use_async_memo(
-                    async move { flatten_rpc(get_rpc().user_details(username.get()).await) },
-                    username.id(),
-                );
-
-                let details = match details_result.as_ref() {
-                    Some(result) => match result.as_ref() {
-                        Ok(details) => details,
-                        Err(err) => {
-                            ui.label(RichText::new(err).color(Color32::RED));
-                            return;
-                        }
-                    },
-                    None => {
-                        ui.spinner();
-                        return;
-                    }
-                };
+                let details = self
+                    .app
+                    .state
+                    .profile_loader
+                    .view(&username)
+                    .unwrap_or_else(|| UserDetails {
+                        username: username.clone(),
+                        display_name: None,
+                        avatar: None,
+                        server_name: None,
+                        common_groups: vec![],
+                        last_dm_message: None,
+                    });
 
                 // Main container with taffy
                 tui(ui, ui.id().with("user_info"))

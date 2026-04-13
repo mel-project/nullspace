@@ -31,14 +31,10 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
         return;
     };
 
-    let fetch_username = username.clone();
-    let profile_result = ui.use_async_memo(
-        async move { flatten_rpc(get_rpc().user_details(fetch_username).await) },
-        (),
-    );
-    let profile = profile_result
-        .as_deref()
-        .and_then(|result| result.as_ref().ok().cloned())
+    let profile = app
+        .state
+        .profile_loader
+        .view(&username)
         .unwrap_or_else(|| UserDetails {
             username: username.clone(),
             display_name: None,

@@ -58,7 +58,6 @@ pub struct UserSearch<'a> {
     pub disabled_reasons: &'a BTreeMap<UserName, String>,
     pub placeholder: &'a str,
     pub empty_text: &'a str,
-    pub max_height: f32,
 }
 
 impl Widget for UserSearch<'_> {
@@ -141,33 +140,39 @@ impl Widget for UserSearch<'_> {
             }
 
             ui.add_space(6.0);
-            ScrollArea::vertical()
-                .max_height(self.max_height)
-                .show(ui, |ui| {
-                    for row in rows {
-                        let disabled_reason = self.disabled_reasons.get(&row.username);
-                        let enabled = disabled_reason.is_none();
-                        let selected = self.selection.is_selected(&row.username);
-                        let button_text = if selected {
-                            format!("{} {}", row.primary_label, "Selected")
-                        } else {
-                            row.primary_label.clone()
-                        };
+            ScrollArea::vertical().show(ui, |ui| {
+                for row in rows {
+                    let disabled_reason = self.disabled_reasons.get(&row.username);
+                    let enabled = disabled_reason.is_none();
+                    let selected = self.selection.is_selected(&row.username);
+                    let button_text = if selected {
+                        format!("{} {}", row.primary_label, "Selected")
+                    } else {
+                        row.primary_label.clone()
+                    };
+
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            let avatar = Avatar::for_user(&row.username, row.avatar.clone(), 28.0)
+                                .sense(eframe::egui::Sense::click());
+                            if ui.add(avatar).clicked() {
+                                *self.user_info_target = Some(row.username.clone());
+                            }
+
+                            let response = ui.add_enabled(
+                                enabled,
+                                Button::new(button_text)
+                                    .selected(selected)
+                                    .min_size([220.0, 30.0].into()),
+                            );
+                            if response.clicked() {
+                                self.selection.activate(&row.username);
+                            }
+                        });
 
                         ui.horizontal(|ui| {
-                            ui.add(Avatar::for_user(&row.username, row.avatar.clone(), 28.0));
-
+                            ui.add_space(28.0 + ui.style().spacing.item_spacing.x);
                             ui.vertical(|ui| {
-                                let response = ui.add_enabled(
-                                    enabled,
-                                    Button::new(button_text)
-                                        .selected(selected)
-                                        .min_size([220.0, 30.0].into()),
-                                );
-                                if response.clicked() {
-                                    self.selection.activate(&row.username);
-                                }
-
                                 ui.label(
                                     RichText::new(row.secondary_line.clone())
                                         .size(11.0)
@@ -181,14 +186,11 @@ impl Widget for UserSearch<'_> {
                                     );
                                 }
                             });
-
-                            if ui.small_button("Info").clicked() {
-                                *self.user_info_target = Some(row.username.clone());
-                            }
                         });
-                        ui.add_space(4.0);
-                    }
-                });
+                    });
+                    ui.add_space(4.0);
+                }
+            });
 
             ui.response()
         })

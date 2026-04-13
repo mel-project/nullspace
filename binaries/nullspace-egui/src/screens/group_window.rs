@@ -20,6 +20,7 @@ use crate::widgets::user_search::{UserSearch, UserSearchSelection, known_dm_peer
 enum GroupActionFeedback {
     None,
     Message(String),
+    CloseAddMembersWindow,
     CloseWindow,
 }
 
@@ -57,6 +58,9 @@ impl Widget for GroupWindow<'_> {
                 let actions = ui.use_async_slot::<Result<GroupActionFeedback, String>>(self.group);
                 let mut inline_error: Var<Option<String>> =
                     ui.use_state(|| None::<String>, ()).into_var();
+                let mut show_add_members: Var<bool> = ui.use_state(|| false, ()).into_var();
+                let mut invitees: Var<BTreeSet<UserName>> =
+                    ui.use_state(BTreeSet::<UserName>::new, ()).into_var();
 
                 let group_view = match group_view {
                     Ok(view) => view,
@@ -87,6 +91,8 @@ impl Widget for GroupWindow<'_> {
                     inline_error: &mut *inline_error,
                     user_info_target: self.user_info,
                     busy: actions.is_busy(),
+                    show_add_members: &mut *show_add_members,
+                    invitees: &mut *invitees,
                 };
 
                 TabbedPane::new("group_tabs")
@@ -96,12 +102,18 @@ impl Widget for GroupWindow<'_> {
                         tabs.tab("Members", |ui| body.render_members(ui));
                         tabs.tab("Settings", |ui| body.render_settings(ui));
                     });
+                body.render_add_members_window(ui);
 
                 if let Some(result) = actions.take() {
                     match result {
                         Ok(GroupActionFeedback::None) => *inline_error = None,
                         Ok(GroupActionFeedback::Message(message)) => {
                             *inline_error = Some(message);
+                        }
+                        Ok(GroupActionFeedback::CloseAddMembersWindow) => {
+                            *inline_error = None;
+                            *show_add_members = false;
+                            invitees.clear();
                         }
                         Ok(GroupActionFeedback::CloseWindow) => {
                             *inline_error = None;
@@ -128,6 +140,8 @@ struct GroupWindowBody<'a, 'b> {
     inline_error: &'b mut Option<String>,
     user_info_target: &'b mut Option<UserName>,
     busy: bool,
+    show_add_members: &'b mut bool,
+    invitees: &'b mut BTreeSet<UserName>,
 }
 
 impl GroupWindowBody<'_, '_> {
@@ -250,92 +264,18 @@ impl GroupWindowBody<'_, '_> {
     }
 
     fn render_members(&mut self, ui: &mut Ui) {
-        let mut invitees: Var<BTreeSet<UserName>> =
-            ui.use_state(BTreeSet::<UserName>::new, ()).into_var();
-        let mut known_users = known_dm_peers(self.convos);
-        for entry in &self.group_view.roster {
-            known_users.push(entry.username.clone());
-        }
-        known_users.sort();
-        known_users.dedup();
-
-        let mut disabled_reasons = BTreeMap::new();
-        for entry in &self.group_view.roster {
-            let reason = if entry.is_banned {
-                "Banned; unban first"
-            } else {
-                "Already in group"
-            };
-            disabled_reasons.insert(entry.username.clone(), reason.to_string());
-        }
-
-        ui.heading("Invite people");
-        ui.add(UserSearch {
-            app: self.app,
-            id_source: "group_invite_search",
-            known_users: &known_users,
-            selection: UserSearchSelection::Multi(&mut *invitees),
-            user_info_target: self.user_info_target,
-            disabled_reasons: &disabled_reasons,
-            placeholder: "Search people or enter exact @username",
-            empty_text: "Enter an exact @username to invite someone not already visible here.",
-            max_height: 180.0,
-        });
-
-        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if !invitees.is_empty() {
-                ui.label(
-                    RichText::new(format!("Selected: {}", invitees.len()))
-                        .color(ui.visuals().weak_text_color()),
-                );
-            }
+            ui.heading("Members");
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_share_invites
-                        && !invitees.is_empty()
-                        && !self.busy,
-                    Button::new("Send invites"),
+                    self.group_view.capabilities.can_share_invites && !self.busy,
+                    Button::new("Add members"),
                 )
                 .clicked()
             {
-                let selected_invitees: Vec<UserName> = invitees.iter().cloned().collect();
-                let group_id = self.group_id;
-                self.start_action(async move {
-                    let mut failures = Vec::new();
-                    for username in selected_invitees {
-                        if let Err(err) = flatten_rpc(
-                            get_rpc()
-                                .group_action(
-                                    group_id,
-                                    GroupAction::ShareInvite {
-                                        username: username.clone(),
-                                    },
-                                )
-                                .await,
-                        ) {
-                            failures.push((username, err));
-                        }
-                    }
-                    if failures.is_empty() {
-                        Ok(GroupActionFeedback::None)
-                    } else {
-                        let summary = failures
-                            .into_iter()
-                            .map(|(username, err)| format!("{username}: {err}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        Ok(GroupActionFeedback::Message(format!(
-                            "Some invites failed:\n{summary}"
-                        )))
-                    }
-                });
-                invitees.clear();
+                *self.show_add_members = true;
             }
         });
-
-        ui.separator();
-        ui.heading("Members");
         let mut active_members = self
             .group_view
             .roster
@@ -624,6 +564,136 @@ impl GroupWindowBody<'_, '_> {
                 }
             });
         }
+    }
+
+    fn render_add_members_window(&mut self, ui: &mut Ui) {
+        if !*self.show_add_members {
+            return;
+        }
+
+        let (known_users, disabled_reasons) = self.invite_picker_data();
+        let mut window_open = *self.show_add_members;
+        let mut clear_selection = false;
+        let mut close_requested = false;
+
+        Window::new("Add members")
+            .collapsible(false)
+            .default_width(480.0)
+            .vscroll(true)
+            .open(&mut window_open)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    RichText::new("Search people, then send invites to add them to this group.")
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(8.0);
+
+                ui.add(UserSearch {
+                    app: self.app,
+                    id_source: "group_invite_search",
+                    known_users: &known_users,
+                    selection: UserSearchSelection::Multi(self.invitees),
+                    user_info_target: self.user_info_target,
+                    disabled_reasons: &disabled_reasons,
+                    placeholder: "Search people or enter exact @username",
+                    empty_text: "Enter an exact @username to invite someone not already visible here.",
+                });
+
+                if !self.invitees.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(format!("Selected: {}", self.invitees.len()))
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        let selected: Vec<UserName> = self.invitees.iter().cloned().collect();
+                        for username in selected {
+                            if ui.small_button(username.as_str()).clicked() {
+                                self.invitees.remove(&username);
+                            }
+                        }
+                    });
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        close_requested = true;
+                        clear_selection = true;
+                    }
+
+                    if ui
+                        .add_enabled(
+                            self.group_view.capabilities.can_share_invites
+                                && !self.invitees.is_empty()
+                                && !self.busy,
+                            Button::new("Send invites"),
+                        )
+                        .clicked()
+                    {
+                        let selected_invitees: Vec<UserName> = self.invitees.iter().cloned().collect();
+                        let group_id = self.group_id;
+                        self.start_action(async move {
+                            let mut failures = Vec::new();
+                            for username in selected_invitees {
+                                if let Err(err) = flatten_rpc(
+                                    get_rpc()
+                                        .group_action(
+                                            group_id,
+                                            GroupAction::ShareInvite {
+                                                username: username.clone(),
+                                            },
+                                        )
+                                        .await,
+                                ) {
+                                    failures.push((username, err));
+                                }
+                            }
+                            if failures.is_empty() {
+                                Ok(GroupActionFeedback::CloseAddMembersWindow)
+                            } else {
+                                let summary = failures
+                                    .into_iter()
+                                    .map(|(username, err)| format!("{username}: {err}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                Ok(GroupActionFeedback::Message(format!(
+                                    "Some invites failed:\n{summary}"
+                                )))
+                            }
+                        });
+                    }
+                });
+            });
+
+        if close_requested {
+            window_open = false;
+        }
+        *self.show_add_members = window_open;
+        if !window_open && clear_selection {
+            self.invitees.clear();
+        }
+    }
+
+    fn invite_picker_data(&self) -> (Vec<UserName>, BTreeMap<UserName, String>) {
+        let mut known_users = known_dm_peers(self.convos);
+        for entry in &self.group_view.roster {
+            known_users.push(entry.username.clone());
+        }
+        known_users.sort();
+        known_users.dedup();
+
+        let mut disabled_reasons = BTreeMap::new();
+        for entry in &self.group_view.roster {
+            let reason = if entry.is_banned {
+                "Banned; unban first"
+            } else {
+                "Already in group"
+            };
+            disabled_reasons.insert(entry.username.clone(), reason.to_string());
+        }
+
+        (known_users, disabled_reasons)
     }
 
     fn capabilities_summary(&self) -> String {

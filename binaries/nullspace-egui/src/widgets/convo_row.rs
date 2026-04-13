@@ -12,6 +12,7 @@ use nullspace_structs::event::MessageText;
 use nullspace_structs::timestamp::NanoTimestamp;
 use pollster::FutureExt;
 
+use crate::fonts::FontVariant;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::utils::color::username_color;
@@ -51,8 +52,8 @@ impl ConvoRow<'_> {
                 ui.label(RichText::new(format!("[{timestamp}]")).color(weak_text_color));
                 ui.label(
                     RichText::new(event.summary_text(&self.message.sender))
-                        .color(weak_text_color)
-                        .italics(),
+                        .family(FontVariant::Italic.family())
+                        .color(weak_text_color),
                 );
             });
             return ui.response();
@@ -82,8 +83,8 @@ impl ConvoRow<'_> {
                 ui.add_space(36.0 + ui.style().spacing.item_spacing.x);
                 ui.label(
                     RichText::new(event.summary_text(&self.message.sender))
-                        .color(ui.visuals().weak_text_color())
-                        .italics(),
+                        .family(FontVariant::Italic.family())
+                        .color(ui.visuals().weak_text_color()),
                 );
             });
             if self.is_end {
@@ -130,8 +131,8 @@ impl ConvoRow<'_> {
                     ui.horizontal_top(|ui| {
                         ui.label(
                             RichText::new(sender_label)
-                                .color(sender_color)
-                                .family(egui::FontFamily::Name("main_bold".into())),
+                                .family(FontVariant::Bold.family())
+                                .color(sender_color),
                         );
                         ui.label(RichText::new(timestamp.to_string()).color(weak_text_color));
                     });
@@ -150,8 +151,8 @@ fn render_message_body(ui: &mut eframe::egui::Ui, app: &mut NullspaceApp, messag
     let ConvoItemKind::Message(body) = &message.kind else {
         ui.label(
             RichText::new("Unsupported conversation item")
-                .color(ui.visuals().weak_text_color())
-                .italics(),
+                .family(FontVariant::Italic.family())
+                .color(ui.visuals().weak_text_color()),
         );
         return;
     };

@@ -2,7 +2,7 @@ use eframe::egui::{Response, Widget};
 use egui::{Align, Frame, Label, Layout, RichText, Sense};
 use nullspace_client::{ConvoId, ConvoSummary};
 
-use crate::{NullspaceApp, widgets::avatar::Avatar};
+use crate::{NullspaceApp, fonts::FontVariant, widgets::avatar::Avatar};
 
 pub struct ConvoSelect<'a> {
     pub app: &'a mut NullspaceApp,
@@ -51,7 +51,7 @@ impl Widget for ConvoSelect<'_> {
                     ui.add(
                         Label::new(
                             RichText::new(label)
-                                .family(egui::FontFamily::Name("main_bold".into()))
+                                .family(FontVariant::Bold.family())
                                 .color(text_color),
                         )
                         .truncate(),

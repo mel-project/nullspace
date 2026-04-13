@@ -22,7 +22,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::events::{event_loop, spawn_audio_thread};
-use crate::fonts::load_fonts;
+use crate::fonts::{FontVariant, load_fonts};
 use crate::utils::prefs::{AppTheme, PrefData};
 use crate::utils::profile_loader::ProfileLoader;
 
@@ -458,7 +458,7 @@ fn configure_theme_styles(ctx: &egui::Context) {
             style.visuals.widgets.open.expansion = 0.0;
             style.text_styles.insert(
                 egui::TextStyle::Heading,
-                egui::FontId::new(14.0, egui::FontFamily::Name("main_bold".into())),
+                egui::FontId::new(14.0, FontVariant::Bold.family()),
             );
             style.visuals.window_shadow.offset = [0, 0];
             style.visuals.window_shadow.blur = 30;

@@ -46,11 +46,10 @@ impl Widget for GroupWindow<'_> {
             .default_height(520.0)
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
-                let group_view =
-                    ui.use_memo(
-                        || flatten_rpc(block_on(get_rpc().group_view(self.group))),
-                        (self.group, self.app.state.msg_updates),
-                    );
+                let group_view = ui.use_memo(
+                    || flatten_rpc(block_on(get_rpc().group_view(self.group))),
+                    (self.group, self.app.state.msg_updates),
+                );
                 let convos = ui.use_memo(
                     || flatten_rpc(block_on(get_rpc().convo_list())),
                     self.app.state.msg_updates,
@@ -179,11 +178,8 @@ impl GroupWindowBody<'_, '_> {
 
         ui.heading(&self.group_view.display_title);
         ui.label(
-            RichText::new(format!(
-                "{}  •  {}",
-                self.group_id, self.group_view.server
-            ))
-            .color(ui.visuals().weak_text_color()),
+            RichText::new(format!("{}  •  {}", self.group_id, self.group_view.server))
+                .color(ui.visuals().weak_text_color()),
         );
         ui.add_space(10.0);
 
@@ -217,9 +213,7 @@ impl GroupWindowBody<'_, '_> {
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_edit_metadata
-                        && metadata_dirty
-                        && !self.busy,
+                    self.group_view.capabilities.can_edit_metadata && metadata_dirty && !self.busy,
                     Button::new("Save"),
                 )
                 .clicked()
@@ -230,10 +224,7 @@ impl GroupWindowBody<'_, '_> {
                 self.start_action(async move {
                     flatten_rpc(
                         get_rpc()
-                            .group_action(
-                                group_id,
-                                GroupAction::SetMetadata { title, description },
-                            )
+                            .group_action(group_id, GroupAction::SetMetadata { title, description })
                             .await,
                     )?;
                     Ok(GroupActionFeedback::None)
@@ -241,9 +232,7 @@ impl GroupWindowBody<'_, '_> {
             }
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_edit_metadata
-                        && metadata_dirty
-                        && !self.busy,
+                    self.group_view.capabilities.can_edit_metadata && metadata_dirty && !self.busy,
                     Button::new("Reset"),
                 )
                 .clicked()
@@ -399,9 +388,7 @@ impl GroupWindowBody<'_, '_> {
             if ui.selectable_label(false, headline).clicked() {
                 *self.user_info_target = Some(entry.username.clone());
             }
-            ui.label(
-                RichText::new(entry.username.as_str()).color(ui.visuals().weak_text_color()),
-            );
+            ui.label(RichText::new(entry.username.as_str()).color(ui.visuals().weak_text_color()));
 
             if is_self {
                 return;
@@ -538,8 +525,7 @@ impl GroupWindowBody<'_, '_> {
                 *last_loaded_settings = Some(loaded_pair);
             }
         }
-        let settings_dirty =
-            *new_members_muted != loaded_pair.0 || *allow_history != loaded_pair.1;
+        let settings_dirty = *new_members_muted != loaded_pair.0 || *allow_history != loaded_pair.1;
 
         ui.heading("Member defaults");
         ui.add_enabled(
@@ -558,9 +544,7 @@ impl GroupWindowBody<'_, '_> {
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_manage_members
-                        && settings_dirty
-                        && !self.busy,
+                    self.group_view.capabilities.can_manage_members && settings_dirty && !self.busy,
                     Button::new("Save"),
                 )
                 .clicked()
@@ -571,10 +555,7 @@ impl GroupWindowBody<'_, '_> {
                 self.start_action(async move {
                     flatten_rpc(
                         get_rpc()
-                            .group_action(
-                                group_id,
-                                GroupAction::SetNewMembersMuted { muted },
-                            )
+                            .group_action(group_id, GroupAction::SetNewMembersMuted { muted })
                             .await,
                     )?;
                     flatten_rpc(
@@ -590,9 +571,7 @@ impl GroupWindowBody<'_, '_> {
             }
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_manage_members
-                        && settings_dirty
-                        && !self.busy,
+                    self.group_view.capabilities.can_manage_members && settings_dirty && !self.busy,
                     Button::new("Reset"),
                 )
                 .clicked()
@@ -630,11 +609,7 @@ impl GroupWindowBody<'_, '_> {
                 {
                     let group_id = self.group_id;
                     self.start_action(async move {
-                        flatten_rpc(
-                            get_rpc()
-                                .group_action(group_id, GroupAction::Leave)
-                                .await,
-                        )?;
+                        flatten_rpc(get_rpc().group_action(group_id, GroupAction::Leave).await)?;
                         Ok(GroupActionFeedback::CloseWindow)
                     });
                     *confirm_leave = false;
@@ -669,9 +644,5 @@ impl GroupWindowBody<'_, '_> {
 }
 
 fn non_empty(value: String) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }

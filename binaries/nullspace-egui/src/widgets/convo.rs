@@ -11,6 +11,7 @@ use smol_str::SmolStr;
 use uuid::Uuid;
 
 use crate::NullspaceApp;
+use crate::fonts::FontVariant;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
 use crate::screens::group_window::GroupWindow;
@@ -227,7 +228,7 @@ fn render_header(
                     size,
                 });
                 ui.add(Label::new(
-                    RichText::new(display).family(egui::FontFamily::Name("main_bold".into())),
+                    RichText::new(display).family(FontVariant::Bold.family()),
                 ));
                 if ui.button("Info").clicked() {
                     *user_info_target = Some(peer.clone());
@@ -242,7 +243,8 @@ fn render_header(
                 },
                 (group_id, app.state.msg_updates),
             );
-            let display_title = display_title.unwrap_or_else(|_| format!("Group {}", group_id.short_id()));
+            let display_title =
+                display_title.unwrap_or_else(|_| format!("Group {}", group_id.short_id()));
             ui.horizontal_centered(|ui| {
                 ui.add(Label::new(RichText::from(display_title).heading()));
                 if ui.add(Button::new("Manage")).clicked() {

@@ -33,7 +33,10 @@ impl<'a> TabbedPane<'a> {
                 egui::pos2(full_rect.min.x + rail_width, full_rect.max.y),
             );
             let body_rect = egui::Rect::from_min_max(
-                egui::pos2((rail_rect.max.x + gap).min(full_rect.max.x), full_rect.min.y),
+                egui::pos2(
+                    (rail_rect.max.x + gap).min(full_rect.max.x),
+                    full_rect.min.y,
+                ),
                 full_rect.max,
             );
 
@@ -43,8 +46,11 @@ impl<'a> TabbedPane<'a> {
             rail_ui.set_width(rail_rect.width());
             rail_ui.set_max_width(rail_rect.width());
 
-            let mut body_host_ui =
-                ui.new_child(egui::UiBuilder::new().max_rect(body_rect).id_salt("body_host"));
+            let mut body_host_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(body_rect)
+                    .id_salt("body_host"),
+            );
             body_host_ui.set_clip_rect(body_rect);
 
             ScrollArea::vertical()

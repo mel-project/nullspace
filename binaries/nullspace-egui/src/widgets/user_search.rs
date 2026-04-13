@@ -82,7 +82,10 @@ impl Widget for UserSearch<'_> {
                         let Ok(username) = UserName::parse(trimmed) else {
                             return None;
                         };
-                        Some((username.clone(), flatten_rpc(get_rpc().user_details(username).await)))
+                        Some((
+                            username.clone(),
+                            flatten_rpc(get_rpc().user_details(username).await),
+                        ))
                     }
                 },
                 trimmed.clone(),

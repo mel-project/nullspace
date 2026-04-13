@@ -69,7 +69,7 @@ The group remains one logical event thread across all epochs. The `after` field 
 
 Within an epoch:
 - The **roster snapshot** (embedded in the rotation entry) is the starting state for membership.
-- **Admin action events** (tags 4–8) posted to the mailbox are deltas applied on top of the snapshot.
+- **Admin action events** posted to the mailbox are deltas applied on top of the snapshot.
 
 Clients poll only the current GBK mailbox. To avoid getting stuck on a stale GBK, they refresh the rotation registry before sending and may also refresh it periodically in the background. Rotation hints are an optimization, not the only recovery path.
 
@@ -80,7 +80,7 @@ The rotation registry is a server-side append-only log, one per group. Each entr
 A rotation entry is BCS-encoded as:
 
 ```
-[group_id, prev_hash, signer, new_admin_set, gbk_rotation, signature]
+[group_id, prev_hash, signer, new_admin_set, gbk_rotation, roster_encrypted, signature]
 ```
 
 - `group_id`: the group identifier
@@ -88,7 +88,8 @@ A rotation entry is BCS-encoded as:
 - `signer`: the device signing public key of the admin submitting the rotation
 - `new_admin_set`: set of device signing public keys for all admin devices (used to validate the next rotation's `signer`)
 - `gbk_rotation`: a header-encrypted payload containing the [rotation payload](#rotation-payload)
-- `signature`: Ed25519 signature over `bcs_encode([group_id, prev_hash, signer, new_admin_set, gbk_rotation])`
+- `roster_encrypted`: the roster snapshot encrypted under the new GBK
+- `signature`: Ed25519 signature over `bcs_encode([group_id, prev_hash, signer, new_admin_set, gbk_rotation, roster_encrypted])`
 
 The **rotation hash** of an entry is `H(bcs_encode(rotation))` (covering all fields including the signature).
 
@@ -98,23 +99,26 @@ Server validation rules:
 - `signature` MUST verify under `signer`
 - `new_admin_set` MUST be non-empty
 
+The current server implementation does not check that the supplied `prev_hash` matches the stored head hash, so clients MUST still validate the full chain themselves.
+
 Client validation rules (defense-in-depth — do not trust the server alone):
 - `signature` MUST verify under `signer`
 - `signer` MUST be in the locally stored `new_admin_set` from the previous rotation
 - `prev_hash` MUST equal the locally stored hash of the previous rotation
 - `prev_hash` MUST be `null` for the first entry
-- When walking a chain of rotations (e.g., during invite acceptance), each entry's `prev_hash` and `signer` MUST be validated against the preceding entry
+- When walking a chain of rotations (for example during refresh), each entry's `prev_hash` and `signer` MUST be validated against the preceding entry
 
 ### Rotation payload
 
 The `gbk_rotation` field is header-encrypted to all members' medium-term keys, so every member can decrypt it. The plaintext is BCS-encoded as:
 
 ```
-[gbk, roster]
+[gbk]
 ```
 
 - `gbk`: the new [group bearer key](#group-bearer-key-gbk)
-- `roster`: the complete [roster snapshot](#roster-snapshot)
+
+The roster travels separately in `roster_encrypted`, encrypted with the new GBK.
 
 ## Roster snapshot
 
@@ -125,7 +129,7 @@ The roster is a complete snapshot of group membership state, embedded in every r
 ```
 
 - `members`: map of `{username: [is_admin, is_muted], ...}`
-- `banned`: list of `[username, ...]`
+- `banned`: set of usernames
 - `metadata`: `[title, description]` where both are optional strings
 - `settings`: `[new_members_muted, allow_new_members_to_see_history]`
 
@@ -143,8 +147,9 @@ A rotation (and therefore a new GBK and mailbox epoch) is required when:
 
 Actions that do **not** require a rotation:
 - Non-admin member leaving (sends a LEAVE_REQUEST event instead)
-- Unbanning a member (local roster update only)
+- Unbanning a member
 - Mute changes, metadata changes, settings changes (sent as in-epoch events)
+- Sharing an invite
 
 ## Admin action events
 
@@ -152,15 +157,15 @@ Within an epoch, admins (and non-admin leavers) can modify group state by postin
 
 | Tag | Name | Authorization | Body | Effect |
 |-----|------|---------------|------|--------|
-| 6 | GROUP_MUTE_CHANGE | admin only | `[username, muted]` | sets `is_muted` for the named member |
-| 7 | GROUP_METADATA_CHANGE | admin only | `[title, description]` | updates group title and/or description |
-| 8 | GROUP_SETTINGS_CHANGE | admin only | `[new_members_muted, allow_history]` | updates group-wide settings |
+| 5 | GROUP_PERMISSION_CHANGE | admin only | `{"username", "muted"}` | sets `is_muted` for the named member |
+| 6 | GROUP_SETTINGS_CHANGE | admin only | `{"title", "description", "new_members_muted", "allow_new_members_to_see_history"}` | updates metadata and/or group-wide settings |
+| 7 | GROUP_UNBAN | admin only | `{"username"}` | removes the named user from the banned set |
 | 4 | LEAVE_REQUEST | any member | empty | removes sender from the roster |
 | 2 | ROTATION_HINT | any member | empty | signals clients to check registry for a new rotation (not a roster change) |
 
-Clients MUST verify that the event sender is an admin before applying tags 6–8. LEAVE_REQUEST (tag 4) is accepted from any member. ROTATION_HINT (tag 2) does not modify the roster.
+Clients MUST verify that the event sender is an admin before applying tags 5–7. LEAVE_REQUEST (tag 4) is accepted from any member. ROTATION_HINT (tag 2) does not modify the roster.
 
-Admin set changes (tag 5, GROUP_ADMIN_CHANGE) are not delivered as in-epoch events — they go through the rotation registry instead, keeping `new_admin_set` authoritative and up to date.
+Admin set changes are not delivered as in-epoch events — they go through the rotation registry instead, keeping `new_admin_set` authoritative and up to date.
 
 ## Flows
 
@@ -178,10 +183,11 @@ create_group(title, description):
         settings: [new_members_muted=false, allow_history=false]
     }
 
-    payload = [gbk, roster]
+    payload = [gbk]
     payload_encrypted = header_encrypt(my_medium_keys, bcs_encode(payload))
+    roster_encrypted = encrypt_with_gbk(gbk, roster)
 
-    rotation = [group_id, index=0, signer=my_device_pk, admin_set={my_device_pk}, payload_encrypted, signature]
+    rotation = [group_id, prev_hash=null, signer=my_device_pk, admin_set={my_device_pk}, payload_encrypted, roster_encrypted, signature]
     sign(rotation)
 
     server.group_create(auth_token, rotation)
@@ -210,7 +216,7 @@ recv_group_message(body_bytes, gbk, group_id):
         check_and_adopt_rotation(group_id)
         return
 
-    if event.tag in [ADMIN_CHANGE, MUTE_CHANGE, METADATA_CHANGE, SETTINGS_CHANGE, LEAVE_REQUEST]:
+    if event.tag in [GROUP_PERMISSION_CHANGE, GROUP_SETTINGS_CHANGE, LEAVE_REQUEST]:
         apply_admin_action(event)
         return
 
@@ -228,27 +234,25 @@ invite_user(group_id, invitee_username):
     assert invitee not banned
 
     invitation = [group_id, current_gbk, current_rotation_index, title, description]
-    event = [my_username, ["dm", invitee_username], now_nanos, after, TAG_GROUP_INVITATION, bcs_encode(invitation)]
+    event = [my_username, ["dm", invitee_username], now_nanos, after, TAG_GROUP_INVITATION, json_encode(invitation)]
     send_dm(invitee_username, event)
 ```
+
+Sharing an invite does not itself insert the invitee into the roster. The GBK is the capability.
 
 ### Accept an invite
 
 ```
 accept_invite(invitation):
     gbk = invitation.gbk
-    persist(gbk)
 
-    // Forward-walk the rotation registry to the latest rotation
-    index = invitation.rotation_index
-    loop:
-        next = server.group_get(gbk.group_id, index + 1)
-        if next is null:
-            break
-        adopt_rotation(next)
-        index = next.index
+    rotation = server.group_get(gbk.group_id, invitation.rotation_index)
+    verify(rotation)
+    roster = decrypt_roster(gbk, rotation.roster_encrypted)
 
-    // Start polling the current GBK's mailbox
+    persist(gbk, roster)
+
+    // Later refreshes and rotation hints adopt newer rotations
     start_polling(gbk.mailbox_key())
 ```
 
@@ -309,10 +313,11 @@ submit_rotation(group_id, roster):
     all_medium_keys = fetch_medium_keys(roster.members)
     admin_device_keys = fetch_device_keys(admins in roster.members)
 
-    payload = [new_gbk, roster]
+    payload = [new_gbk]
     payload_encrypted = header_encrypt(all_medium_keys, bcs_encode(payload))
+    roster_encrypted = encrypt_with_gbk(new_gbk, roster)
 
-    rotation = [group_id, index=current+1, signer=my_device_pk, admin_set=admin_device_keys, payload_encrypted, signature]
+    rotation = [group_id, prev_hash=current_rotation_hash, signer=my_device_pk, admin_set=admin_device_keys, payload_encrypted, roster_encrypted, signature]
     sign(rotation)
 
     server.group_update(rotation)

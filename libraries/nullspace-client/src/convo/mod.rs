@@ -21,7 +21,11 @@ use anyctx::AnyCtx;
 use bytes::Bytes;
 use futures_concurrency::future::Race;
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::event::{MessagePayload, MessageText, TAG_MESSAGE};
+use nullspace_structs::event::{
+    GroupPermissionChange, GroupSettingsChange, GroupUnban, MessagePayload, MessageText,
+    TAG_GROUP_INVITATION, TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN,
+    TAG_LEAVE_REQUEST, TAG_MESSAGE,
+};
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
@@ -151,56 +155,26 @@ pub struct ConvoItem {
 #[serde(rename_all = "snake_case")]
 pub enum ConvoItemKind {
     Message(MessagePayload),
-    System(SystemItem),
+    Event(ConvoEventItem),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SystemItem {
-    Notice {
-        text: String,
+pub enum ConvoEventItem {
+    GroupPermissionChange(GroupPermissionChange),
+    GroupSettingsChange(GroupSettingsChange),
+    GroupUnban(GroupUnban),
+    LeaveRequest,
+    Unknown {
+        tag: u16,
     },
-    GroupCreated,
-    GroupInvitationReceived {
-        invitation_id: i64,
-        group_id: GroupId,
-        display_title: String,
-    },
-    GroupInvitationShared {
-        username: UserName,
-    },
-    GroupMemberJoined {
-        username: UserName,
-    },
-    GroupMemberLeft {
-        username: UserName,
-    },
-    GroupMetadataChanged {
-        title: Option<String>,
-        description: Option<String>,
-    },
-    GroupMemberMutedChanged {
-        username: UserName,
-        muted: bool,
-    },
-    GroupNewMembersMutedChanged {
-        muted: bool,
-    },
-    GroupHistorySharingChanged {
-        allow_new_members_to_see_history: bool,
-    },
-    GroupBanChanged {
-        username: UserName,
-        banned: bool,
-    },
-    GroupKeysRotated,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConvoItemPreview {
     pub sender: Option<UserName>,
     pub text: String,
-    pub is_system: bool,
+    pub is_event: bool,
 }
 
 impl ConvoItem {
@@ -222,63 +196,32 @@ impl ConvoItem {
                 ConvoItemPreview {
                     sender: Some(self.sender.clone()),
                     text,
-                    is_system: false,
+                    is_event: false,
                 }
             }
-            ConvoItemKind::System(system) => ConvoItemPreview {
+            ConvoItemKind::Event(event) => ConvoItemPreview {
                 sender: None,
-                text: system.summary_text(),
-                is_system: true,
+                text: event.summary_text(&self.sender),
+                is_event: true,
             },
         }
     }
 }
 
-impl SystemItem {
-    pub fn summary_text(&self) -> String {
+impl ConvoEventItem {
+    pub fn summary_text(&self, sender: &UserName) -> String {
         match self {
-            SystemItem::Notice { text } => text.clone(),
-            SystemItem::GroupCreated => "Group created".to_string(),
-            SystemItem::GroupInvitationReceived { display_title, .. } => {
-                format!("Invited to {display_title}")
-            }
-            SystemItem::GroupInvitationShared { username } => {
-                format!("Shared invite with {username}")
-            }
-            SystemItem::GroupMemberJoined { username } => format!("{username} joined"),
-            SystemItem::GroupMemberLeft { username } => format!("{username} left"),
-            SystemItem::GroupMetadataChanged { .. } => "Group details updated".to_string(),
-            SystemItem::GroupMemberMutedChanged { username, muted } => {
-                if *muted {
-                    format!("{username} muted")
+            ConvoEventItem::GroupPermissionChange(change) => {
+                if change.muted {
+                    format!("{} muted", change.username)
                 } else {
-                    format!("{username} unmuted")
+                    format!("{} unmuted", change.username)
                 }
             }
-            SystemItem::GroupNewMembersMutedChanged { muted } => {
-                if *muted {
-                    "New members muted".to_string()
-                } else {
-                    "New members unmuted".to_string()
-                }
-            }
-            SystemItem::GroupHistorySharingChanged {
-                allow_new_members_to_see_history,
-            } => {
-                if *allow_new_members_to_see_history {
-                    "History sharing enabled".to_string()
-                } else {
-                    "History sharing disabled".to_string()
-                }
-            }
-            SystemItem::GroupBanChanged { username, banned } => {
-                if *banned {
-                    format!("{username} banned")
-                } else {
-                    format!("{username} unbanned")
-                }
-            }
-            SystemItem::GroupKeysRotated => "Group keys rotated".to_string(),
+            ConvoEventItem::GroupSettingsChange(_) => "Group settings updated".to_string(),
+            ConvoEventItem::GroupUnban(change) => format!("{} unbanned", change.username),
+            ConvoEventItem::LeaveRequest => format!("{sender} left"),
+            ConvoEventItem::Unknown { tag } => format!("Unknown event tag {tag}"),
         }
     }
 }
@@ -339,27 +282,25 @@ pub async fn convo_loop(ctx: &AnyCtx<Config>) {
         .await;
 }
 
-fn display_title_for_convo(convo_id: &ConvoId) -> String {
-    match convo_id {
-        ConvoId::Direct { peer } => peer.as_str().to_owned(),
-        ConvoId::Group { group_id } => format!("Group {}", group_id.short_id()),
-    }
-}
-
-fn decode_convo_item_kind(
-    event_tag: u16,
-    body: &[u8],
-    local_id: i64,
-) -> anyhow::Result<ConvoItemKind> {
+fn decode_convo_item_kind(event_tag: u16, body: &[u8]) -> anyhow::Result<Option<ConvoItemKind>> {
     if event_tag == TAG_MESSAGE {
-        return Ok(ConvoItemKind::Message(decode_event_body(body)?));
+        return Ok(Some(ConvoItemKind::Message(decode_event_body(body)?)));
     }
-    if let Ok(system_item) = bcs::from_bytes::<SystemItem>(body) {
-        return Ok(ConvoItemKind::System(system_item));
+    if event_tag == TAG_GROUP_INVITATION {
+        return Ok(None);
     }
-    Ok(ConvoItemKind::System(SystemItem::Notice {
-        text: format!("Unsupported item #{local_id}"),
-    }))
+
+    let event = match event_tag {
+        TAG_GROUP_PERMISSION_CHANGE => {
+            ConvoEventItem::GroupPermissionChange(decode_event_body(body)?)
+        }
+        TAG_GROUP_SETTINGS_CHANGE => ConvoEventItem::GroupSettingsChange(decode_event_body(body)?),
+        TAG_GROUP_UNBAN => ConvoEventItem::GroupUnban(decode_event_body(body)?),
+        TAG_LEAVE_REQUEST => ConvoEventItem::LeaveRequest,
+        _ => ConvoEventItem::Unknown { tag: event_tag },
+    };
+
+    Ok(Some(ConvoItemKind::Event(event)))
 }
 
 pub(super) async fn thread_accepts_event_link(

@@ -3,8 +3,9 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use nullspace_structs::e2ee::DeviceSigned;
 use nullspace_structs::event::{
-    Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, TAG_GROUP_PERMISSION_CHANGE,
-    TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
+    Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, GroupUnban,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN,
+    TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
 };
 use nullspace_structs::group::{GroupBearerKey, GroupId, MemberState};
 use nullspace_structs::mailbox::MailboxEntry;
@@ -343,7 +344,7 @@ async fn try_apply_admin_action(
     let tag = event.tag;
     if !matches!(
         tag,
-        TAG_GROUP_PERMISSION_CHANGE | TAG_GROUP_SETTINGS_CHANGE | TAG_LEAVE_REQUEST
+        TAG_GROUP_PERMISSION_CHANGE | TAG_GROUP_SETTINGS_CHANGE | TAG_GROUP_UNBAN | TAG_LEAVE_REQUEST
     ) {
         return Ok(None);
     }
@@ -373,27 +374,24 @@ async fn try_apply_admin_action(
         return Ok(Some(ProcessResult::Skip));
     }
 
-    let system_item = apply_roster_delta(&mut roster, sender, event)?;
+    apply_roster_delta(&mut roster, sender, event)?;
     replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
 
-    if let Some(system_item) = system_item {
-        let body_bytes = bcs::to_bytes(&system_item)?;
-        let event_hash = event.hash();
-        insert_thread_event(
-            &mut conn,
-            &NewThreadEvent {
-                thread_id,
-                sender: sender.as_str(),
-                event_tag: event.tag,
-                event_body: &body_bytes,
-                event_after: event.after.as_ref(),
-                event_hash: &event_hash,
-                sent_at: event.sent_at,
-                received_at: Some(received_at),
-            },
-        )
-        .await?;
-    }
+    let event_hash = event.hash();
+    insert_thread_event(
+        &mut conn,
+        &NewThreadEvent {
+            thread_id,
+            sender: sender.as_str(),
+            event_tag: event.tag,
+            event_body: &event.body,
+            event_after: event.after.as_ref(),
+            event_hash: &event_hash,
+            sent_at: event.sent_at,
+            received_at: Some(received_at),
+        },
+    )
+    .await?;
 
     emit_event(
         ctx,
@@ -408,52 +406,33 @@ fn apply_roster_delta(
     roster: &mut nullspace_structs::group::GroupRoster,
     sender: &nullspace_structs::username::UserName,
     event: &Event,
-) -> anyhow::Result<Option<super::SystemItem>> {
+) -> anyhow::Result<()> {
     match event.tag {
         TAG_GROUP_PERMISSION_CHANGE => {
             let change: GroupPermissionChange = event.decode_body()?;
             if let Some(member) = roster.members.get_mut(&change.username) {
                 member.is_muted = change.muted;
             }
-            Ok(Some(super::SystemItem::GroupMemberMutedChanged {
-                username: change.username,
-                muted: change.muted,
-            }))
+            Ok(())
         }
         TAG_GROUP_SETTINGS_CHANGE => {
             let change: GroupSettingsChange = event.decode_body()?;
-            let old_title = roster.metadata.title.clone();
-            let old_description = roster.metadata.description.clone();
-            let old_new_members_muted = roster.settings.new_members_muted;
-            let old_allow_history = roster.settings.allow_new_members_to_see_history;
             roster.metadata.title = change.title.clone();
             roster.metadata.description = change.description.clone();
             roster.settings.new_members_muted = change.new_members_muted;
             roster.settings.allow_new_members_to_see_history =
                 change.allow_new_members_to_see_history;
-            if change.title != old_title || change.description != old_description {
-                Ok(Some(super::SystemItem::GroupMetadataChanged {
-                    title: change.title,
-                    description: change.description,
-                }))
-            } else if change.new_members_muted != old_new_members_muted {
-                Ok(Some(super::SystemItem::GroupNewMembersMutedChanged {
-                    muted: change.new_members_muted,
-                }))
-            } else if change.allow_new_members_to_see_history != old_allow_history {
-                Ok(Some(super::SystemItem::GroupHistorySharingChanged {
-                    allow_new_members_to_see_history: change.allow_new_members_to_see_history,
-                }))
-            } else {
-                Ok(None)
-            }
+            Ok(())
+        }
+        TAG_GROUP_UNBAN => {
+            let change: GroupUnban = event.decode_body()?;
+            roster.banned.remove(&change.username);
+            Ok(())
         }
         TAG_LEAVE_REQUEST => {
             roster.members.remove(sender);
-            Ok(Some(super::SystemItem::GroupMemberLeft {
-                username: sender.clone(),
-            }))
+            Ok(())
         }
-        _ => Ok(None),
+        _ => Ok(()),
     }
 }

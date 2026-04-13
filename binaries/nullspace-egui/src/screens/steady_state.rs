@@ -7,8 +7,8 @@ use nullspace_client::{ConvoId, ConvoSummary};
 use crate::NullspaceApp;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
-use crate::screens::add_contact::AddContact;
-use crate::screens::add_group::AddGroup;
+use crate::screens::new_chat::NewChat;
+use crate::screens::new_group::NewGroup;
 use crate::screens::settings::Settings;
 use crate::widgets::avatar::Avatar;
 use crate::widgets::convo::Convo;
@@ -19,8 +19,8 @@ pub struct SteadyState<'a>(pub &'a mut NullspaceApp);
 #[derive(Clone, Default)]
 struct SsState {
     selected_chat: Option<ConvoId>,
-    show_add_contact: bool,
-    show_add_group: bool,
+    show_new_chat: bool,
+    show_new_group: bool,
     show_settings: bool,
 }
 
@@ -84,18 +84,31 @@ impl Widget for SteadyState<'_> {
         eframe::egui::CentralPanel::default().show_inside(ui, |ui| {
             self.render_right(ui, &state);
         });
-        ui.add(AddContact {
-            app: self.0,
-            open: &mut state.show_add_contact,
-        });
-        ui.add(AddGroup {
-            app: self.0,
-            open: &mut state.show_add_group,
-        });
-        ui.add(Settings {
-            app: self.0,
-            open: &mut state.show_settings,
-        });
+        {
+            let state = &mut *state;
+            ui.add(NewChat {
+                app: self.0,
+                open: &mut state.show_new_chat,
+                selected_chat: &mut state.selected_chat,
+                convos: &convos,
+            });
+        }
+        {
+            let state = &mut *state;
+            ui.add(NewGroup {
+                app: self.0,
+                open: &mut state.show_new_group,
+                selected_chat: &mut state.selected_chat,
+                convos: &convos,
+            });
+        }
+        {
+            let state = &mut *state;
+            ui.add(Settings {
+                app: self.0,
+                open: &mut state.show_settings,
+            });
+        }
         ui.response()
     }
 }
@@ -108,11 +121,11 @@ impl<'a> SteadyState<'a> {
         state: &mut SsState,
     ) {
         ui.horizontal(|ui| {
-            if ui.add(Button::new("Add contact")).clicked() {
-                state.show_add_contact = true;
+            if ui.add(Button::new("New chat")).clicked() {
+                state.show_new_chat = true;
             }
             if ui.add(Button::new("New group")).clicked() {
-                state.show_add_group = true;
+                state.show_new_group = true;
             }
         });
         ui.separator();

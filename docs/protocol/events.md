@@ -31,28 +31,25 @@ where `H` is BLAKE3. This hash is used as the `after` link in subsequent events.
 
 ## Event tags
 
+The outer event is BCS-encoded, but the current implementation encodes typed event bodies as JSON bytes.
+
 | Tag | Value | Context | Body |
 |-----|-------|---------|------|
-| MESSAGE | 1 | DM or group | BCS-encoded [MessagePayload](#messagepayload) |
+| MESSAGE | 1 | DM or group | JSON-encoded [MessagePayload](#messagepayload) |
 | ROTATION_HINT | 2 | group | empty |
-| GROUP_INVITATION | 3 | DM | BCS-encoded [GroupInvitationBody](#groupinvitationbody) |
+| GROUP_INVITATION | 3 | DM | JSON-encoded [GroupInvitationBody](#groupinvitationbody) |
 | LEAVE_REQUEST | 4 | group | empty |
-| GROUP_ADMIN_CHANGE | 5 | group | BCS-encoded [GroupAdminChangeBody](#groupadminchangebody) — reserved; admin set changes are handled via rotation |
-| GROUP_MUTE_CHANGE | 6 | group | BCS-encoded [GroupMuteChangeBody](#groupmutechangebody) |
-| GROUP_METADATA_CHANGE | 7 | group | BCS-encoded [GroupMetadataChangeBody](#groupmetadatachangebody) |
-| GROUP_SETTINGS_CHANGE | 8 | group | BCS-encoded [GroupSettingsChangeBody](#groupsettingschangebody) |
+| GROUP_PERMISSION_CHANGE | 5 | group | JSON-encoded [GroupPermissionChangeBody](#grouppermissionchangebody) |
+| GROUP_SETTINGS_CHANGE | 6 | group | JSON-encoded [GroupSettingsChangeBody](#groupsettingschangebody) |
+| GROUP_UNBAN | 7 | group | JSON-encoded [GroupUnbanBody](#groupunbanbody) |
 
-Tags 2 and 4–8 are group management events. Their authorization and semantics are specified in [groups](groups.md).
+Tags 2 and 4–7 are group management events. Their authorization and semantics are specified in [groups](groups.md).
 
 ## MessagePayload
 
-A human chat message. BCS-encoded as:
+A human chat message. The event body is a JSON object with these fields:
 
-```
-[text, attachments, images, replies_to, metadata]
-```
-
-- `text`: either `["plain", string]` or `["rich", string]`
+- `payload`: either `{"plain": string}` or `{"rich": string}`
 - `attachments`: list of file [attachments](attachments.md)
 - `images`: list of image attachments (compressed images with thumbhash previews)
 - `replies_to`: optional event hash (the hash of the event being replied to)
@@ -60,11 +57,7 @@ A human chat message. BCS-encoded as:
 
 ## GroupInvitationBody
 
-Sent as a DM (tag 3) from an admin to an invitee. BCS-encoded as:
-
-```
-[group_id, gbk, rotation_index, title, description]
-```
+Sent as a DM (tag 3) from an admin to an invitee. The JSON body contains:
 
 - `group_id`: the group identifier
 - `gbk`: the current [group bearer key](groups.md#group-bearer-key-gbk) (full capability)
@@ -74,46 +67,24 @@ Sent as a DM (tag 3) from an admin to an invitee. BCS-encoded as:
 
 See [groups — invitation flow](groups.md#invite-a-user) for the full flow.
 
-## GroupAdminChangeBody
+## GroupPermissionChangeBody
 
-Sent in a group mailbox (tag 5) by an admin. BCS-encoded as:
+Sent in a group mailbox (tag 5) by an admin. The JSON body contains:
 
-```
-[username, is_admin]
-```
-
-- `username`: the member whose admin status is changing
-- `is_admin`: boolean — `true` to grant admin, `false` to revoke
-
-## GroupMuteChangeBody
-
-Sent in a group mailbox (tag 6) by an admin. BCS-encoded as:
-
-```
-[username, muted]
-```
-
-- `username`: the member whose mute status is changing
+- `username`: the member whose mute state is changing
 - `muted`: boolean — `true` to mute, `false` to unmute
-
-## GroupMetadataChangeBody
-
-Sent in a group mailbox (tag 7) by an admin. BCS-encoded as:
-
-```
-[title, description]
-```
-
-- `title`: optional new group title (or `null` to clear)
-- `description`: optional new group description (or `null` to clear)
 
 ## GroupSettingsChangeBody
 
-Sent in a group mailbox (tag 8) by an admin. BCS-encoded as:
+Sent in a group mailbox (tag 6) by an admin. The JSON body contains:
 
-```
-[new_members_muted, allow_new_members_to_see_history]
-```
-
+- `title`: optional new group title (or `null` to clear)
+- `description`: optional new group description (or `null` to clear)
 - `new_members_muted`: boolean — whether newly invited members start muted
 - `allow_new_members_to_see_history`: boolean — whether new members can see messages from before they joined
+
+## GroupUnbanBody
+
+Sent in a group mailbox (tag 7) by an admin. The JSON body contains:
+
+- `username`: the user to remove from the banned set

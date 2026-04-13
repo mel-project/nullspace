@@ -20,9 +20,9 @@ sequenceDiagram
 
 Provisioning uses server channel RPCs from the [server RPC](../rpc/server.md):
 
-- `v1_chan_allocate(auth_token) -> channel_id`
-- `v1_chan_send(channel_id, direction, blob) -> ()`
-- `v1_chan_recv(channel_id, direction) -> blob | null`
+- `chan_allocate(auth_token) -> channel_id`
+- `chan_send(channel_id, direction, blob) -> ()`
+- `chan_recv(channel_id, direction) -> blob | null`
 
 Channel contents are unauthenticated. The SPAKE exchange and AEAD payload protect integrity and confidentiality.
 
@@ -54,34 +54,43 @@ Both devices initialize SPAKE with:
 
 Message flow on the bidirectional channel:
 
-1. A sends `v1.provision_helo` on `forward`.
-2. B polls `forward` until it receives `v1.provision_helo`, then sends `v1.provision_ehlo` on `backward`.
-3. A polls `backward` until it receives `v1.provision_ehlo`.
+1. A sends `{"kind":"helo","spake_msg":...}` on `forward`.
+2. B polls `forward` until it receives `{"kind":"helo","spake_msg":...}`, then sends `{"kind":"ehlo","spake_msg":...}` on `backward`.
+3. A polls `backward` until it receives `{"kind":"ehlo","spake_msg":...}`.
 4. Both sides finish SPAKE and derive the same 32-byte shared key.
 
-If no completion happens, the host-side attempt expires and the caller may start a fresh attempt to obtain a new code. A practical default is 15 seconds per attempt.
+If no completion happens, the host-side attempt expires after 60 seconds. While waiting, A reposts `helo` every 5 seconds, and B polls the channel every 1.5 seconds.
 
 ## Blob payloads
 
-`v1.provision_helo` and `v1.provision_ehlo` use:
+Handshake messages use:
 
 ```json
-{ "spake_msg": "base64url-encoded 33-byte value" }
+{ "kind": "helo", "spake_msg": "base64url-encoded 33-byte value" }
 ```
 
-`v1.provision_finish` uses:
+or:
+
+```json
+{ "kind": "ehlo", "spake_msg": "base64url-encoded 33-byte value" }
+```
+
+The finish message uses:
 
 ```json
 {
-  "nonce": "base64url-encoded 24-byte nonce",
-  "ciphertext": "base64url-encoded bytes"
+  "kind": "finish",
+  "envelope": {
+    "nonce": "base64url-encoded 24-byte nonce",
+    "ciphertext": "base64url-encoded bytes"
+  }
 }
 ```
 
 The ciphertext is XChaCha20-Poly1305 over a JSON body using:
 
 - key: SPAKE shared key
-- nonce: `nonce` field
+- nonce: `envelope.nonce`
 - associated data: empty bytes
 
 Plaintext JSON:
@@ -100,12 +109,11 @@ Plaintext JSON:
 
 ## Receiver completion (device B)
 
-After decrypting `v1.provision_finish`, B must:
+After decrypting the finish payload, B must:
 
-1. verify the decrypted username matches the login username;
-2. verify the signed update targets that username and adds the decrypted device key;
-3. submit the signed update to the directory;
-4. verify the new device is present in the resulting descriptor;
-5. authenticate to the bound server and publish medium-term keys.
+1. verify the signed update targets that username and adds the decrypted device key;
+2. submit the signed update to the directory;
+3. verify the new device is present in the resulting descriptor;
+4. authenticate to the bound server, publish medium-term keys, and create or fetch the DM mailbox using `dm_mailbox_key`.
 
 This completes provisioning.

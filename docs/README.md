@@ -1,6 +1,6 @@
 # nullspace: an experimental confederal chat protocol
 
-**[GitHub](https://github.com/mel-project/xirtam-core)** **[Docs website](https://melproject.gitbook.io/nullspace)**
+**[GitHub](https://github.com/mel-project/nullspace-core)** **[Docs website](https://melproject.gitbook.io/nullspace)**
 
 Nullspace (aka "Xirtam") is a **confederal** end-to-end encrypted chat system. A confederal protocol shares two similarities with a federated protocol like Matrix:
 - we use a server-client architecture; it's not purely p2p

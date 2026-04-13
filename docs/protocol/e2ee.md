@@ -9,8 +9,8 @@ This is to achieve a key design goal of Nullspace --- **making encrypted chat UX
 ## Nullspace's "contrarian" cryptography
 
 The two major differences in Nullspace's E2EE security model and that of Signal Protocol are actually that we *don't* have two properties that Signal does have:
-- **Deniability**: users cannot prove to a third party [give a definition]
-- **Fine-grained forward secrecy (FS) and post-compromise secrecy**: [give a definition]
+- **Deniability**: third parties cannot obtain cryptographic proof that a particular user authored a particular message transcript
+- **Fine-grained forward secrecy (FS) and post-compromise secrecy**: compromising a device's current keys does not let an attacker decrypt old messages or indefinitely decrypt future messages, with protection rotating at message granularity rather than on a coarse schedule
 
 ### On deniability
 
@@ -141,7 +141,7 @@ If Alice wants to send an [event](events.md) as a DM to Bob:
 1. BCS-encode the event.
 2. Device-sign the encoded event (see [device signing](#device-signing)).
 3. Header-encrypt the signed bytes to the medium-term keys of **all of Bob's devices** (see [header encryption](#header-encryption)).
-4. Send the resulting ciphertext to Bob's DM mailbox (advertised in Bob's [profile](../rpc/server.md#v1_profileusername---user_profile--null)).
+4. Send the resulting ciphertext to Bob's DM mailbox (advertised in Bob's [profile](../rpc/server.md)).
 5. Also send the same ciphertext to Alice's own DM mailbox (for multi-device sync).
 
 ```
@@ -169,13 +169,13 @@ recv_dm(he_bytes):
     (sender_username, event_bytes) = device_verify(signed_bytes)
     event = bcs_decode(event_bytes)
     assert event.sender == sender_username
-    assert event.recipient is ["dm", my_username] or ["dm", sender_username]
+    assert event.recipient is ["dm", my_username] or sender_username == my_username
     return event
 ```
 
-Each participant periodically refreshes their medium-term keys, at an interval *not more frequent than* once every hour (so that caching lookups for 1 hour is always safe). Participants also keep around their previous medium-term key to decrypt any out-of-order messages.
+Each participant periodically refreshes their medium-term keys, at an interval of about once every hour, and keeps around their previous medium-term key to decrypt any out-of-order messages.
 
-This ensures FS/PCS within 2 hours.
+This ensures coarse-grained FS/PCS within roughly 2 hours.
 
 ## Group encryption
 
@@ -219,11 +219,11 @@ recv_group_message(body_bytes):
     return event
 ```
 
-Clients poll the mailboxes for both the current and previous GBK to handle messages sent during a rotation transition.
+Clients poll the current GBK mailbox. Rotation hints and periodic refreshes are used to adopt newer GBKs.
 
 ### Group key rotation
 
-Group keys are rotated through the server-side [group rotation registry](groups.md#group-rotation-registry). Each rotation entry contains a new GBK (and roster snapshot) header-encrypted to all members' medium-term keys. This replaces the old in-mailbox rekey mechanism — rotations are now out-of-band via the registry, not posted as mailbox messages.
+Group keys are rotated through the server-side [group rotation registry](groups.md#group-rotation-registry). Each rotation entry contains a new GBK header-encrypted to all members' medium-term keys, plus a separately encrypted roster snapshot. Rotations are out-of-band via the registry, not posted as mailbox messages.
 
 When a rotation occurs, a ROTATION_HINT event (tag 2, empty body) is posted to the *old* mailbox to notify polling clients. On receiving this hint, clients check the registry for the next rotation entry and adopt the new GBK.
 

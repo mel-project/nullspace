@@ -70,7 +70,7 @@ value = BCS(next_descriptor)
 signature = ed25519_sign(signer_sk, BCS([username_key, nonce, signer_pk, owners, value]))
 ```
 
-4. Submit `update` using `v1_insert_update` from the [directory RPC](../rpc/directory.md).
+4. Submit `update` using `insert_update` from the [directory RPC](../rpc/directory.md).
 
 Validation is enforced by the raw directory:
 
@@ -92,7 +92,7 @@ Provisioning transfers a new device secret plus a signed raw username update fro
 Bundle payload:
 
 ```
-[new_device_secret, add_device_update]
+[new_device_secret, add_device_update, dm_mailbox_key]
 ```
 
 where `add_device_update` is a raw update that:
@@ -101,7 +101,7 @@ where `add_device_update` is a raw update that:
 - includes `new_device_pk` in `owners`/descriptor `devices`
 - has `owners == next_descriptor.devices`
 
-The new device verifies these properties, submits `add_device_update`, waits for commit, then authenticates to the bound server and publishes a medium-term key.
+The new device verifies these properties, submits `add_device_update`, waits for commit, then authenticates to the bound server, publishes a medium-term key, and creates or fetches the DM mailbox using `dm_mailbox_key`.
 
 ## Server authentication
 

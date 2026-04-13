@@ -11,7 +11,7 @@ Servers provide:
 - a short-lived bidirectional channel primitive (used by [device provisioning](../protocol/provisioning.md))
 - optional request proxying
 
-For wire format, encoding conventions, and transport, see the [RPC overview](./).
+For wire format, encoding conventions, and transport, see [basic concepts](basic-concepts.md).
 
 ## Server-specific primitives
 
@@ -31,7 +31,7 @@ Mailbox access is key-based:
 
 #### DM mailboxes
 
-Each user advertises a DM mailbox in their [profile](#v1_profileusername---user_profile--null). The `mailbox_id` is included in the signed profile. Senders look up the recipient's profile to discover where to deliver DMs.
+Each user advertises a DM mailbox in their [profile](#profileusername---user_profile--null). The `mailbox_id` is included in the signed profile. Senders look up the recipient's profile to discover where to deliver DMs.
 
 #### Group mailboxes
 
@@ -52,13 +52,13 @@ Clients use `received_at` as a mailbox cursor.
 
 ## Methods
 
-### `v1_chan_allocate(auth_token) -> channel_id`
+### `chan_allocate(auth_token) -> channel_id`
 
 Allocates a short-lived bidirectional channel used for pairing-style flows (see [device provisioning](../protocol/provisioning.md)).
 
 Authorization:
 
-- `auth_token` MUST be a valid device-authenticated token on this server (obtained from `v1_device_auth_finish`).
+- `auth_token` MUST be a valid device-authenticated token on this server (obtained from `device_auth_finish`).
 
 Returns:
 
@@ -69,7 +69,7 @@ Notes:
 - Channels are ephemeral and may expire after a short period of inactivity.
 - Channel IDs may be reused after expiration.
 
-### `v1_chan_send(channel_id, direction, value) -> ()`
+### `chan_send(channel_id, direction, value) -> ()`
 
 Writes a `blob` value into one direction of a channel. If a value already exists in that direction, it is overwritten.
 
@@ -82,7 +82,7 @@ Notes:
 
 - This is intentionally unauthenticated; treat the channel contents as attacker-controlled unless protected by an end-to-end pairing protocol.
 
-### `v1_chan_recv(channel_id, direction) -> value | null`
+### `chan_recv(channel_id, direction) -> value | null`
 
 Returns the latest `blob` value written to the requested channel direction.
 
@@ -91,7 +91,7 @@ Returns `null` if:
 - no value has been posted yet, or
 - the channel does not exist (expired or never allocated)
 
-### `v1_device_auth_start(username, device_pk) -> challenge`
+### `device_auth_start(username, device_pk) -> challenge`
 
 Starts challenge/response authentication for a device.
 
@@ -114,7 +114,7 @@ challenge = { challenge, expires_at }
 - `challenge`: a list of 32 integers in the range `0..=255` (one-time nonce bytes)
 - `expires_at`: Unix timestamp (seconds)
 
-### `v1_device_auth_finish(signed_request) -> auth_token`
+### `device_auth_finish(signed_request) -> auth_token`
 
 Finishes challenge/response authentication and returns an auth token.
 
@@ -134,7 +134,7 @@ BCS([username, device_pk, challenge])
 Validation:
 
 - The server MUST verify `signature` under `device_pk`.
-- The server MUST verify that `challenge` was issued by `v1_device_auth_start` and has not expired.
+- The server MUST verify that `challenge` was issued by `device_auth_start` and has not expired.
 - The server MUST re-check directory membership and server binding for `username` (see [devices](../protocol/devices.md)).
 
 Returns:
@@ -145,7 +145,7 @@ Notes:
 
 - Servers MAY reuse an existing token for the same `(username, device_pk)` rather than issuing a fresh one.
 
-### `v1_device_add_medium_pk(auth_token, signed_medium_pk) -> ()`
+### `device_add_medium_pk(auth_token, signed_medium_pk) -> ()`
 
 Stores a device's medium-term public key (used by [e2ee](../protocol/e2ee.md)).
 
@@ -172,7 +172,7 @@ Notes:
 
 - The server stores the latest published medium-term key per device. Clients SHOULD refresh these keys periodically (see [e2ee](../protocol/e2ee.md)).
 
-### `v1_device_medium_pks(username) -> { device_hash: signed_medium_pk, ... }`
+### `device_medium_pks(username) -> { device_hash: signed_medium_pk, ... }`
 
 Returns medium-term public keys for devices associated with `username`.
 
@@ -187,7 +187,7 @@ Notes:
   - verifying the signature with the device signing key from the directory, and
   - using only devices present in the current directory descriptor (see [devices](../protocol/devices.md)).
 
-### `v1_profile(username) -> user_profile | null`
+### `profile(username) -> user_profile | null`
 
 Fetches a user's profile, if present.
 
@@ -207,7 +207,7 @@ user_profile = { display_name, avatar, dm_mailbox, created, signature }
 
 Clients SHOULD verify the signature with a device key currently listed for `username` (see [devices](../protocol/devices.md)).
 
-### `v1_profile_set(username, user_profile) -> ()`
+### `profile_set(username, user_profile) -> ()`
 
 Stores a user profile for `username`.
 
@@ -217,7 +217,7 @@ Authorization and validation:
 - The server MUST verify `user_profile.signature` under at least one currently listed device key for `username`.
 - The server MUST reject updates where `user_profile.created` is not strictly greater than the stored profile's `created`.
 
-### `v1_mailbox_send(mailbox_id, message, ttl_seconds) -> received_at`
+### `mailbox_send(mailbox_id, message, ttl_seconds) -> received_at`
 
 Appends a message into a mailbox.
 
@@ -235,7 +235,7 @@ Returns:
 
 - `received_at`: server-assigned timestamp (nanoseconds), unique per mailbox
 
-### `v1_mailbox_create(auth_token, mailbox_key) -> mailbox_id`
+### `mailbox_create(auth_token, mailbox_key) -> mailbox_id`
 
 Creates a mailbox owned by the authenticated user, or returns the existing `mailbox_id` if the mailbox already exists.
 
@@ -250,9 +250,9 @@ Returns:
 
 Notes:
 
-- The `mailbox_key` is the read credential for the mailbox. It is included in `v1_mailbox_multirecv` args to prove read access.
+- The `mailbox_key` is the read credential for the mailbox. It is included in `mailbox_multirecv` args to prove read access.
 
-### `v1_mailbox_multirecv(args, timeout_ms) -> { mailbox_id: [mailbox_entry, ...], ... }`
+### `mailbox_multirecv(args, timeout_ms) -> { mailbox_id: [mailbox_entry, ...], ... }`
 
 Receives one or more messages from one or more mailboxes. This call is intended for long-polling across multiple mailboxes efficiently.
 
@@ -281,7 +281,7 @@ Notes:
 - The server MAY return only a subset of the requested mailboxes (including just one) to implement "first mailbox that becomes ready" semantics.
 - The server MAY cap the number of returned entries per mailbox. Clients should repeat calls, advancing `after` to the last returned `received_at`.
 
-### `v1_group_create(auth_token, rotation) -> ()`
+### `group_create(auth_token, rotation) -> ()`
 
 Creates a new group registry with the provided rotation as the initial entry.
 
@@ -303,7 +303,7 @@ Effect:
 
 - Creates a new group registry keyed by `rotation.group_id`, storing the rotation at index 0.
 
-### `v1_group_update(rotation) -> ()`
+### `group_update(rotation) -> ()`
 
 Appends the next rotation entry to a group registry.
 
@@ -326,8 +326,9 @@ Effect:
 Notes:
 
 - This method does not require an `auth_token`. The rotation's signature, validated against the previous admin set, serves as authorization.
+- The current server implementation does not verify that `rotation.prev_hash` matches the stored head hash; clients must still validate the hash chain when reading rotations.
 
-### `v1_group_get(group_id, index) -> rotation | null`
+### `group_get(group_id, index) -> rotation | null`
 
 Returns the rotation entry at `index` for the group identified by `group_id`.
 
@@ -338,7 +339,7 @@ Returns `null` if:
 
 This method is intentionally unauthenticated and stateless so it can be cached aggressively.
 
-### `v1_frag_upload(auth_token, fragment, ttl_seconds) -> ()`
+### `frag_upload(auth_token, fragment, ttl_seconds) -> ()`
 
 Uploads a fragment into the content-addressed store (see [attachments](../protocol/attachments.md)).
 
@@ -361,7 +362,7 @@ fragment_id = H(BCS(fragment))
 
 - If the fragment already exists, the server MAY extend its expiry but MUST NOT shorten it.
 
-### `v1_frag_download(fragment_id) -> fragment | null`
+### `frag_download(fragment_id) -> fragment | null`
 
 Downloads a fragment by content hash.
 
@@ -369,14 +370,14 @@ Returns `null` if the fragment does not exist (expired or never uploaded).
 
 This method is intentionally unauthenticated.
 
-### `v1_proxy_server(auth_token, server_name, req) -> resp`
+### `proxy_server(auth_token, server_name, req) -> resp`
 
 Proxies a raw JSON-RPC request to another server.
 
 Authorization:
 
 - `auth_token` MUST be a valid device-authenticated token.
-- Proxying is optional; servers that do not support it return `not_supported`.
+- Proxying is optional; if proxying is disabled, or if the auth token is invalid, the server returns `not_supported`.
 
 Inputs:
 
@@ -396,8 +397,13 @@ Errors:
 - `not_supported`
 - `{"upstream": "..."}` (string message)
 
-### `v1_proxy_directory(auth_token, req) -> resp`
+### `proxy_directory(auth_token, req) -> resp`
 
 Proxies a raw JSON-RPC request to the directory.
 
-Authorization and errors are the same as `v1_proxy_server`.
+Authorization:
+
+- `auth_token` MUST be a valid device-authenticated token.
+- If the auth token is invalid, the server returns `not_supported`.
+
+Errors are otherwise the same as `proxy_server`.

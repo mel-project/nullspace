@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::NullspaceApp;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
-use crate::screens::group_info::GroupInfo;
+use crate::screens::group_window::GroupWindow;
 use crate::screens::user_info::UserInfo;
 use crate::utils::generational::GBox;
 use crate::utils::hooks::CustomHooksExt;
@@ -58,7 +58,7 @@ impl Widget for Convo<'_> {
         );
 
         let response = ui.push_id(&*convo_id.read(), |ui| {
-            let mut show_roster: Var<bool> = ui.use_state(|| false, ()).into_var();
+            let mut show_group_window: Var<bool> = ui.use_state(|| false, ()).into_var();
             let mut user_info_target: Option<UserName> = None;
             let mut last_update_seen: Var<u64> =
                 ui.use_state(|| app.state.msg_updates, ()).into_var();
@@ -92,7 +92,7 @@ impl Widget for Convo<'_> {
                     app,
                     ui,
                     convo_id.get(),
-                    &mut show_roster,
+                    &mut show_group_window,
                     &mut user_info_target,
                 );
             });
@@ -104,9 +104,9 @@ impl Widget for Convo<'_> {
             });
 
             if let ConvoId::Group { group_id } = convo_id.get() {
-                ui.add(GroupInfo {
+                ui.add(GroupWindow {
                     app,
-                    open: &mut show_roster,
+                    open: &mut show_group_window,
                     group: group_id,
                     user_info: &mut user_info_target,
                 });
@@ -212,7 +212,7 @@ fn render_header(
     app: &mut NullspaceApp,
     ui: &mut eframe::egui::Ui,
     convo_id: ConvoId,
-    show_roster: &mut bool,
+    show_group_window: &mut bool,
     user_info_target: &mut Option<UserName>,
 ) {
     match convo_id {
@@ -235,12 +235,18 @@ fn render_header(
             });
         }
         ConvoId::Group { group_id } => {
+            let display_title = ui.use_memo(
+                || {
+                    flatten_rpc(block_on(get_rpc().group_view(group_id)))
+                        .map(|view| view.display_title)
+                },
+                (group_id, app.state.msg_updates),
+            );
+            let display_title = display_title.unwrap_or_else(|_| format!("Group {}", group_id.short_id()));
             ui.horizontal_centered(|ui| {
-                ui.add(Label::new(
-                    RichText::from(format!("Group {}", group_id.short_id())).heading(),
-                ));
-                if ui.add(Button::new("Members")).clicked() {
-                    *show_roster = true;
+                ui.add(Label::new(RichText::from(display_title).heading()));
+                if ui.add(Button::new("Manage")).clicked() {
+                    *show_group_window = true;
                 }
             });
         }

@@ -1,10 +1,12 @@
+use nullspace_structs::event::TAG_GROUP_INVITATION;
+use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use tracing::warn;
 
 use super::{
     ConvoHistoryRow, ConvoId, ConvoItem, ConvoListRow, ConvoSummary, decode_convo_item_kind,
-    display_title_for_convo, parse_convo_id,
+    parse_convo_id,
 };
 
 pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<ConvoSummary>> {
@@ -15,15 +17,18 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
                  LEFT JOIN message_reads mr ON mr.message_id = ue.id \
                  WHERE ue.thread_id = t.id \
                    AND ue.received_at IS NOT NULL \
+                   AND ue.event_tag != ? \
                    AND ue.sender_username != ci.username \
                    AND mr.message_id IS NULL) AS unread_count, \
                 e.id AS msg_id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
          FROM event_threads t \
          LEFT JOIN thread_events e \
-           ON e.id = (SELECT MAX(id) FROM thread_events WHERE thread_id = t.id) \
+           ON e.id = (SELECT MAX(id) FROM thread_events WHERE thread_id = t.id AND event_tag != ?) \
          LEFT JOIN message_reads mr ON mr.message_id = e.id \
          ORDER BY (e.received_at IS NULL) DESC, e.received_at DESC, t.created_at DESC, t.id DESC",
     )
+    .bind(i64::from(TAG_GROUP_INVITATION))
+    .bind(i64::from(TAG_GROUP_INVITATION))
     .fetch_all(&mut *db)
     .await?;
     let mut out = Vec::with_capacity(rows.len());
@@ -38,14 +43,14 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
         ) {
             (Some(id), Some(sender_username), Some(event_tag), Some(body)) => {
                 let sender = UserName::parse(sender_username)?;
-                let kind = match decode_convo_item_kind(u16::try_from(event_tag)?, &body, id) {
+                let kind = match decode_convo_item_kind(u16::try_from(event_tag)?, &body) {
                     Ok(kind) => Some(kind),
                     Err(err) => {
                         warn!(error = %err, "failed to decode message payload in convo_list");
                         None
                     }
                 };
-                kind.map(|kind| {
+                kind.flatten().map(|kind| {
                     ConvoItem {
                         id,
                         convo_id: convo_id.clone(),
@@ -61,7 +66,10 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
             }
             _ => None,
         };
-        let display_title = display_title_for_convo(&convo_id);
+        let display_title = display_title_for_convo(db, &convo_id).await?;
+        if matches!(convo_id, ConvoId::Direct { .. }) && last_item.is_none() {
+            continue;
+        }
         out.push(ConvoSummary {
             convo_id,
             display_title,
@@ -70,6 +78,34 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
         });
     }
     Ok(out)
+}
+
+async fn display_title_for_convo(
+    db: &mut sqlx::SqliteConnection,
+    convo_id: &ConvoId,
+) -> anyhow::Result<String> {
+    match convo_id {
+        ConvoId::Direct { peer } => Ok(peer.as_str().to_owned()),
+        ConvoId::Group { group_id } => Ok(
+            load_group_title(db, *group_id)
+                .await?
+                .unwrap_or_else(|| format!("Group {}", group_id.short_id())),
+        ),
+    }
+}
+
+async fn load_group_title(
+    db: &mut sqlx::SqliteConnection,
+    group_id: GroupId,
+) -> anyhow::Result<Option<String>> {
+    let gid = group_id.to_bytes().to_vec();
+    let row = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT title FROM group_state_current WHERE group_id = ?",
+    )
+    .bind(gid)
+    .fetch_optional(&mut *db)
+    .await?;
+    Ok(row.and_then(|(title,)| title))
 }
 
 pub async fn convo_history(
@@ -88,12 +124,13 @@ pub async fn convo_history(
          FROM thread_events e \
          JOIN event_threads t ON e.thread_id = t.id \
          LEFT JOIN message_reads mr ON mr.message_id = e.id \
-         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.id <= ? AND e.id >= ? \
+         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.event_tag != ? AND e.id <= ? AND e.id >= ? \
          ORDER BY e.id DESC \
          LIMIT ?",
     )
     .bind(thread_kind)
     .bind(counterparty)
+    .bind(i64::from(TAG_GROUP_INVITATION))
     .bind(before)
     .bind(after)
     .bind(limit as i64)
@@ -103,12 +140,10 @@ pub async fn convo_history(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let sender = UserName::parse(row.event.sender_username)?;
-        let kind = match decode_convo_item_kind(
-            u16::try_from(row.event.event_tag)?,
-            &row.event.event_body,
-            row.event.id,
-        ) {
-            Ok(kind) => kind,
+        let kind = match decode_convo_item_kind(u16::try_from(row.event.event_tag)?, &row.event.event_body)
+        {
+            Ok(Some(kind)) => kind,
+            Ok(None) => continue,
             Err(err) => {
                 warn!(error = %err, "failed to decode message payload in convo_history");
                 continue;
@@ -170,12 +205,13 @@ pub async fn last_dm_received_at(
         "SELECT e.received_at \
          FROM thread_events e \
          JOIN event_threads t ON e.thread_id = t.id \
-         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.sender_username != ? \
+         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.event_tag != ? AND e.sender_username != ? \
          ORDER BY e.id DESC \
          LIMIT 1",
     )
     .bind(thread_kind)
     .bind(counterparty)
+    .bind(i64::from(TAG_GROUP_INVITATION))
     .bind(local_username.as_str())
     .fetch_optional(&mut *db)
     .await?

@@ -1,5 +1,5 @@
 use anyctx::AnyCtx;
-use nullspace_structs::event::{MessagePayload, TAG_MESSAGE};
+use nullspace_structs::event::{GroupInvitation, MessagePayload, TAG_MESSAGE};
 use nullspace_structs::group::GroupId;
 
 use crate::config::Config;
@@ -7,12 +7,10 @@ use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::identity::Identity;
 use nullspace_crypt::signing::Signable;
-use nullspace_structs::server::ServerName;
-use nullspace_structs::timestamp::NanoTimestamp;
 
 use crate::internal::{
-    Event, GroupAction, GroupCapabilities, GroupCreateRequest, GroupInvitationSummary,
-    GroupRosterEntry, GroupSettings, GroupView, InternalRpcError, internal_err, map_anyhow_err,
+    Event, GroupAction, GroupCapabilities, GroupCreateRequest, GroupRosterEntry, GroupSettings,
+    GroupView, InternalRpcError, internal_err, map_anyhow_err,
 };
 use crate::net::get_server_client;
 
@@ -191,102 +189,32 @@ pub async fn group_view_impl(
     })
 }
 
-pub async fn group_invitation_list_impl(
+pub(super) async fn accept_group_invitation(
     ctx: &AnyCtx<Config>,
-) -> Result<Vec<GroupInvitationSummary>, InternalRpcError> {
+    invitation: &GroupInvitation,
+) -> anyhow::Result<GroupId> {
     let db = ctx.get(DATABASE);
-    let rows = sqlx::query_as::<
-        _,
-        (
-            i64,
-            Vec<u8>,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            i64,
-        ),
-    >(
-        "SELECT id, group_id, server_name, inviter_username, title, description, received_at \
-         FROM group_invitations WHERE accepted = 0",
-    )
-    .fetch_all(&*db)
-    .await
-    .map_err(internal_err)?;
-
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, gid_bytes, server, inviter, title, description, received_at) in rows {
-        let gid_arr: [u8; 16] = gid_bytes
-            .try_into()
-            .map_err(|_| internal_err("invalid group_id"))?;
-        let group_id = GroupId::from_bytes(gid_arr);
-        let server = ServerName::parse(server).map_err(internal_err)?;
-        let inviter =
-            nullspace_structs::username::UserName::parse(inviter).map_err(internal_err)?;
-        let display_title = title
-            .clone()
-            .unwrap_or_else(|| format!("Group {}", group_id.short_id()));
-        out.push(GroupInvitationSummary {
-            invitation_id: id,
-            group_id,
-            display_title,
-            title,
-            description,
-            inviter,
-            server,
-            received_at: NanoTimestamp(received_at as u64),
-        });
-    }
-    Ok(out)
-}
-
-pub async fn group_invitation_accept_impl(
-    ctx: &AnyCtx<Config>,
-    invitation_id: i64,
-) -> Result<GroupId, InternalRpcError> {
-    let db = ctx.get(DATABASE);
-
-    // Load invitation
-    let row = sqlx::query_as::<_, (Vec<u8>, String, i64, Vec<u8>)>(
-        "SELECT group_id, server_name, rotation_index, gbk \
-         FROM group_invitations WHERE id = ? AND accepted = 0",
-    )
-    .bind(invitation_id)
-    .fetch_optional(&*db)
-    .await
-    .map_err(internal_err)?
-    .ok_or(InternalRpcError::NotFound)?;
-
-    let gid_arr: [u8; 16] = row
-        .0
-        .try_into()
-        .map_err(|_| internal_err("invalid group_id"))?;
-    let group_id = GroupId::from_bytes(gid_arr);
-    let server_name = ServerName::parse(row.1).map_err(internal_err)?;
-    let invitation_rotation_index = row.2 as u64;
-    let gbk: nullspace_structs::group::GroupBearerKey =
-        bcs::from_bytes(&row.3).map_err(internal_err)?;
+    let group_id = invitation.group_id;
+    let server_name = invitation.gbk.server.clone();
+    let invitation_rotation_index = invitation.rotation_index;
+    let gbk = invitation.gbk.clone();
 
     // Fetch the rotation at the invitation index and decrypt the roster
     // using the GBK from the invitation.
-    let server = get_server_client(ctx, &server_name)
-        .await
-        .map_err(internal_err)?;
+    let server = get_server_client(ctx, &server_name).await?;
 
     let rotation = server
         .group_get(group_id, invitation_rotation_index)
-        .await
-        .map_err(internal_err)?
-        .map_err(internal_err)?
-        .ok_or(internal_err("rotation not found on server"))?;
+        .await??
+        .ok_or_else(|| anyhow::anyhow!("rotation not found on server"))?;
 
     rotation
         .verify(rotation.signer)
-        .map_err(|_| internal_err("rotation signature verification failed"))?;
+        .map_err(|_| anyhow::anyhow!("rotation signature verification failed"))?;
 
     let roster =
         nullspace_structs::group::decrypt_roster(&gbk, &rotation.roster_encrypted)
-            .map_err(internal_err)?;
+            .map_err(|err| anyhow::anyhow!(err))?;
 
     let rotation_hash = rotation.hash();
 
@@ -302,7 +230,7 @@ pub async fn group_invitation_accept_impl(
         &rotation_hash,
     )
     .await
-    .map_err(internal_err)?;
+    ?;
     super::groups::replace_current_roster(
         &mut tx,
         group_id,
@@ -310,21 +238,12 @@ pub async fn group_invitation_accept_impl(
         &roster,
     )
     .await
-    .map_err(internal_err)?;
+    ?;
     let convo_id = ConvoId::Group { group_id };
     super::ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty())
         .await
-        .map_err(internal_err)?;
-    tx.commit().await.map_err(internal_err)?;
+        ?;
+    tx.commit().await?;
     DbNotify::touch();
-
-    // Mark invitation as accepted
-    sqlx::query("UPDATE group_invitations SET accepted = 1 WHERE id = ?")
-        .bind(invitation_id)
-        .execute(&*db)
-        .await
-        .map_err(internal_err)?;
-
-    emit_event(ctx, Event::ConvoUpdated { convo_id });
     Ok(group_id)
 }

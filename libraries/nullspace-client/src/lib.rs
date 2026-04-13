@@ -23,10 +23,10 @@ use tokio::sync::oneshot;
 pub use crate::config::Config;
 use crate::config::Ctx;
 pub use crate::internal::{
-    ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, Event, GroupAction,
-    GroupCapabilities, GroupCreateRequest, GroupInvitationSummary, GroupRosterEntry, GroupSettings,
+    ConvoEventItem, ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, Event,
+    GroupAction, GroupCapabilities, GroupCreateRequest, GroupRosterEntry, GroupSettings,
     GroupView, InternalClient, InternalProtocol, InternalRpcError, MessageDirection,
-    ProvisionHostState, RegisterFinish, RegisterStartInfo, SystemItem, UploadedRoot, UserDetails,
+    ProvisionHostState, RegisterFinish, RegisterStartInfo, UploadedRoot, UserDetails,
     UserLastMessageSummary,
 };
 
@@ -74,10 +74,9 @@ impl Client {
     ///    if necessary and running migrations).
     /// 2. Start serving RPC requests immediately.
     /// 3. Once an identity exists in the database, launch the background
-    ///    workers -- message send/receive loops and medium-term key
-    ///    rotation,
-    ///    medium-term key rotation, and the database event loop that drives
-    ///    push [`Event`](internal::Event)s to the frontend.
+    ///    workers -- message send/receive loops, medium-term key rotation,
+    ///    group refresh / rotation loops, and the event channel used to push
+    ///    [`Event`](internal::Event)s to the frontend.
     ///
     /// # Panics
     ///

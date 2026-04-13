@@ -35,6 +35,7 @@ impl Widget for UserInfo {
         let mut window_open = *open;
         Window::new("User info")
             .collapsible(false)
+            .vscroll(true)
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
                 let username = ui.use_gbox(|| username.clone(), username.clone());

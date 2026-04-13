@@ -21,7 +21,7 @@ use crate::attachments::{self, AttachmentStatus};
 use crate::config::Config;
 use crate::convo;
 pub use crate::convo::{
-    ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, SystemItem,
+    ConvoEventItem, ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary,
 };
 use crate::identity;
 use crate::identity::provisioning::{self, HostProvisioning};
@@ -40,9 +40,9 @@ use crate::users;
 /// - **No crypto leaks.**  Frontends never see encryption keys, device
 ///   secrets, or raw protocol blobs.  All types exposed here are simple,
 ///   serializable value objects.
-/// - **Database-driven events.**  State changes flow through SQLite.
-///   Background workers write to the DB, the event loop detects changes,
-///   and the frontend observes them via [`next_event`](Self::next_event).
+/// - **Push events for UI state.**  Background tasks emit
+///   [`Event`]s when frontend-visible state changes, and the frontend
+///   observes them via [`next_event`](Self::next_event).
 /// - **Fire-and-forget sends.**  [`convo_send`](Self::convo_send) enqueues
 ///   the message locally and returns immediately; the background send loop
 ///   handles encryption, delivery, and retries.
@@ -169,15 +169,6 @@ pub trait InternalProtocol {
         action: GroupAction,
     ) -> Result<(), InternalRpcError>;
 
-    /// Lists pending inbound group invitations.
-    async fn group_invitation_list(&self) -> Result<Vec<GroupInvitationSummary>, InternalRpcError>;
-
-    /// Accepts an inbound group invitation and returns the joined group ID.
-    async fn group_invitation_accept(
-        &self,
-        invitation_id: i64,
-    ) -> Result<GroupId, InternalRpcError>;
-
     /// Starts an asynchronous file upload.
     ///
     /// The file at `absolute_path` is chunked, encrypted with a random
@@ -207,7 +198,7 @@ pub trait InternalProtocol {
 
     /// Starts an asynchronous attachment download.
     ///
-    /// The fragment tree is fetched from the sender's server, decrypted,
+    /// The fragment tree is fetched from the attachment's storage server, decrypted,
     /// and reassembled into a file at `save_path`.  The caller is
     /// responsible for choosing the filename (including uniqueness).
     /// Progress is reported through [`Event::DownloadProgress`]; on
@@ -259,10 +250,10 @@ pub trait InternalProtocol {
 
 /// A push notification emitted by the client's background service.
 ///
-/// Events are the sole mechanism through which the client communicates
-/// state changes to the frontend.  They are derived from database
-/// mutations -- background workers never emit events directly, ensuring
-/// that replaying the DB always reproduces the same event stream.
+/// Events are the primary mechanism through which the client
+/// communicates frontend-visible state changes to the UI layer.
+/// Background tasks emit them when login state, conversations, uploads,
+/// or downloads change.
 ///
 /// Retrieve events by calling
 /// [`InternalProtocol::next_event`] (or `InternalClient::next_event`)
@@ -470,18 +461,6 @@ pub enum GroupAction {
     Leave,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GroupInvitationSummary {
-    pub invitation_id: i64,
-    pub group_id: GroupId,
-    pub display_title: String,
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub inviter: UserName,
-    pub server: ServerName,
-    pub received_at: NanoTimestamp,
-}
-
 /// Rich profile and relationship information about a user.
 ///
 /// Returned by [`user_details`](InternalProtocol::user_details).
@@ -635,17 +614,6 @@ impl InternalProtocol for InternalImpl {
         action: GroupAction,
     ) -> Result<(), InternalRpcError> {
         convo::group_action_impl(&self.ctx, group, action).await
-    }
-
-    async fn group_invitation_list(&self) -> Result<Vec<GroupInvitationSummary>, InternalRpcError> {
-        convo::group_invitation_list_impl(&self.ctx).await
-    }
-
-    async fn group_invitation_accept(
-        &self,
-        invitation_id: i64,
-    ) -> Result<GroupId, InternalRpcError> {
-        convo::group_invitation_accept_impl(&self.ctx, invitation_id).await
     }
 
     async fn attachment_upload(

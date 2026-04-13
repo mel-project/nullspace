@@ -11,11 +11,7 @@ There are two RPC protocols:
 
 All Nullspace RPC protocols use the [JSON-RPC 2.0](https://www.jsonrpc.org/specification) wire format with **positional parameters** (JSON arrays, not named objects).
 
-Method names are versioned with a `v1_` prefix.
-
-{% hint style="info" %}
-The `v1_` prefix reserves space for future incompatible revisions. Clients and servers SHOULD reject unknown method prefixes.
-{% endhint %}
+Method names are the exported RPC method names themselves. The current implementation does not add a `v1_` prefix on the wire.
 
 ## Transport
 

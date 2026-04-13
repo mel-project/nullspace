@@ -5,7 +5,7 @@ use eframe::egui::{Response, RichText, Widget};
 use egui::{ProgressBar, Sense, TextFormat, TextStyle, text::LayoutJob};
 use egui_hooks::UseHookExt;
 use fast_thumbhash::thumb_hash_from_b91;
-use nullspace_client::{ConvoItem, ConvoItemKind, SystemItem};
+use nullspace_client::{ConvoItem, ConvoItemKind};
 use nullspace_crypt::hash::BcsHashExt;
 use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::MessageText;
@@ -44,26 +44,16 @@ impl Widget for ConvoRow<'_> {
 
 impl ConvoRow<'_> {
     fn text_ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        if let ConvoItemKind::System(system) = &self.message.kind {
+        if let ConvoItemKind::Event(event) = &self.message.kind {
             let timestamp = format_timestamp(self.message.received_at);
             let weak_text_color = ui.visuals().weak_text_color();
             ui.horizontal_top(|ui| {
                 ui.label(RichText::new(format!("[{timestamp}]")).color(weak_text_color));
                 ui.label(
-                    RichText::new(system.summary_text())
+                    RichText::new(event.summary_text(&self.message.sender))
                         .color(weak_text_color)
                         .italics(),
                 );
-                if let SystemItem::GroupInvitationReceived { invitation_id, .. } = system {
-                    if ui.small_button("Accept").clicked() {
-                        let result = flatten_rpc(
-                            get_rpc().group_invitation_accept(*invitation_id).block_on(),
-                        );
-                        if let Err(e) = result {
-                            self.app.state.error_dialog = Some(e.to_string());
-                        }
-                    }
-                }
             });
             return ui.response();
         }
@@ -87,24 +77,14 @@ impl ConvoRow<'_> {
     }
 
     fn friendly_ui(self, ui: &mut eframe::egui::Ui) -> Response {
-        if let ConvoItemKind::System(system) = &self.message.kind {
+        if let ConvoItemKind::Event(event) = &self.message.kind {
             ui.horizontal(|ui| {
                 ui.add_space(36.0 + ui.style().spacing.item_spacing.x);
                 ui.label(
-                    RichText::new(system.summary_text())
+                    RichText::new(event.summary_text(&self.message.sender))
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
-                if let SystemItem::GroupInvitationReceived { invitation_id, .. } = system {
-                    if ui.small_button("Accept").clicked() {
-                        let result = flatten_rpc(
-                            get_rpc().group_invitation_accept(*invitation_id).block_on(),
-                        );
-                        if let Err(e) = result {
-                            self.app.state.error_dialog = Some(e.to_string());
-                        }
-                    }
-                }
             });
             if self.is_end {
                 ui.add_space(8.0);

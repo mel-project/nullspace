@@ -453,6 +453,9 @@ fn configure_theme_styles(ctx: &egui::Context) {
             ] {
                 wid.corner_radius = egui::CornerRadius::ZERO.at_least(6);
             }
+            style.visuals.widgets.hovered.expansion = 0.0;
+            style.visuals.widgets.active.expansion = 0.0;
+            style.visuals.widgets.open.expansion = 0.0;
             style.text_styles.insert(
                 egui::TextStyle::Heading,
                 egui::FontId::new(14.0, egui::FontFamily::Name("main_bold".into())),

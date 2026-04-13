@@ -4,20 +4,18 @@ This document specifies Nullspace file attachments: how files are represented, u
 
 ## Overview
 
-An attachment is sent as a normal [event](events.md) whose:
-
-- `mime` is `application/vnd.nullspace.v1.attachment`
-- `body` is a JSON-encoded **attachment root**
+Attachments are embedded inside the JSON body of a normal [message event](events.md), not sent as a separate event MIME.
 
 The attachment root is an index that:
 
 - names the file (`filename`) and its media type (`mime`)
+- records the storage server (`server_name`)
 - contains a symmetric content key (`content_key`) used to encrypt file data
 - points to the file bytes via a content-addressed fragment tree (`children`)
 
-Fragments are stored on the uploader’s server in a content-addressed store and are fetched by recipients from that server.
+Fragments are stored on the uploader’s server in a content-addressed store and are fetched by recipients from the `server_name` named in the attachment itself.
 
-Image messages use a related event MIME, `application/vnd.nullspace.v1.imageattachment`, whose JSON body is:
+Image messages use a related image-attachment object whose fields are:
 
 - `width`: original image width in pixels
 - `height`: original image height in pixels
@@ -36,10 +34,11 @@ In particular, a fragment’s ID is computed from the fragment value’s **BCS e
 
 Recipients SHOULD verify that downloaded objects hash to their expected IDs.
 
-## Attachment root (event body)
+## Attachment root
 
 The attachment root is a JSON object with these fields:
 
+- `server_name`: the server storing the fragments
 - `filename`: string (suggested save name)
 - `mime`: string (media type, e.g. `image/png`)
 - `children`: list of `[hash, size]` pairs, where:
@@ -64,16 +63,16 @@ Fragments are uploaded and downloaded using server RPC calls (see “Upload and 
 A fragment is one of these structured values:
 
 - `node`: contains a list of child pointers
-- `leaf`: contains a file chunk (plaintext or ciphertext)
+- `leaf`: contains a file chunk ciphertext
 
 Fragment IDs are computed from the BCS encoding of these structured values. Implementations MUST NOT compute fragment IDs by hashing JSON text or any other transport-level encoding.
 
 ### BCS encoding of a fragment (tagged variant)
 
-For hashing, the fragment value is encoded as a BCS **externally tagged variant**:
+For hashing, the fragment value is encoded as a BCS externally tagged variant:
 
-1) Encode the variant tag as ULEB128 `u32`.
-2) Encode that variant's payload immediately after the tag.
+1. Encode the variant tag as ULEB128 `u32`.
+2. Encode that variant's payload immediately after the tag.
 
 Canonical tags for this protocol are:
 
@@ -111,7 +110,7 @@ A leaf contains:
 To upload a fragment to a server’s fragment store:
 
 ```
-v1_upload_frag(auth_token, fragment, ttl_seconds)
+frag_upload(auth_token, fragment, ttl_seconds)
 ```
 
 - The server MUST reject uploads if `auth_token` is not authorized.
@@ -122,7 +121,7 @@ v1_upload_frag(auth_token, fragment, ttl_seconds)
 To download a fragment by ID:
 
 ```
-v1_download_frag(fragment_id) -> fragment | null
+frag_download(fragment_id) -> fragment | null
 ```
 
 If the server returns `null`, the fragment is missing (expired or never uploaded).
@@ -144,21 +143,20 @@ send_attachment(file_bytes, filename, file_mime):
         upload leaf
 
     build and upload internal nodes
-    root = { filename, mime: file_mime, children: top_level_children, content_key }
-    send event with (mime = application/vnd.nullspace.v1.attachment, body = json_encode(root))
+    root = { server_name, filename, mime: file_mime, children: top_level_children, content_key }
+    include root in the message payload's attachments or images field
 ```
 
 Chunk size and tree shape are not protocol-visible as long as `children` sizes sum to the total plaintext length.
 
 ### Receiving an attachment
 
-On receive of an attachment event:
+On receive of a message containing an attachment:
 
-1) Decode the JSON root from the event body.
-2) Optionally compute `attachment_id = id(root)` as a stable local identifier.
-3) When the user chooses to download:
-   - resolve the sender’s server via the directory
-   - recursively fetch fragments from the sender’s server
+1. Decode the attachment root from the message body.
+2. Optionally compute `attachment_id = id(root)` as a stable local identifier.
+3. When the user chooses to download:
+   - recursively fetch fragments from `root.server_name`
    - verify each fragment’s hash matches its expected ID
    - decrypt leaf chunks
    - write the resulting bytes to disk

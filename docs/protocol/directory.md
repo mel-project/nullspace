@@ -165,7 +165,7 @@ The directory verifies that:
 
 ## Merkle proofs
 
-`v1_get_item` returns a Merkle branch proving inclusion or non-inclusion of the key’s current leaf value under a specific header’s `smt_root`.
+`get_item` returns a Merkle branch proving inclusion or non-inclusion of the key’s current leaf value under a specific header’s `smt_root`.
 
 A full proof is a list of 256 sibling hashes:
 

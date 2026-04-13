@@ -36,7 +36,7 @@ fn message_kind(message: &ConvoItem) -> MessageKind {
                 _ => MessageKind::Mixed,
             }
         }
-        ConvoItemKind::System(_) => MessageKind::System,
+        ConvoItemKind::Event(_) => MessageKind::System,
     }
 }
 

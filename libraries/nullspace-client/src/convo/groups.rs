@@ -7,8 +7,9 @@ use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use nullspace_structs::e2ee::HeaderEncrypted;
 use nullspace_structs::event::{
-    GroupInvitation, GroupPermissionChange, GroupSettingsChange, TAG_GROUP_INVITATION,
-    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST,
+    GroupInvitation, GroupPermissionChange, GroupSettingsChange, GroupUnban,
+    TAG_GROUP_INVITATION, TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE,
+    TAG_GROUP_UNBAN, TAG_LEAVE_REQUEST,
 };
 use nullspace_structs::group::{
     GroupBearerKey, GroupId, GroupMetadata, GroupRoster, GroupRosterSettings, GroupRotation,
@@ -611,10 +612,21 @@ pub async fn group_action(
             if banned {
                 roster.members.remove(&username);
                 roster.banned.insert(username);
+                submit_rotation(ctx, &identity, group_id, &roster).await?;
             } else {
-                roster.banned.remove(&username);
+                let body = super::encode_event_body(&GroupUnban {
+                    username: username.clone(),
+                })?;
+                let mut conn = db.acquire().await?;
+                super::send::queue_message(
+                    &mut conn,
+                    &group_convo,
+                    &identity.username,
+                    TAG_GROUP_UNBAN,
+                    &body,
+                )
+                .await?;
             }
-            submit_rotation(ctx, &identity, group_id, &roster).await?;
         }
 
         GroupAction::Leave => {

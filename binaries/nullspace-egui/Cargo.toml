@@ -18,13 +18,15 @@ url = "2.5.8"
 nullspace-client = { version = "0.0.1", path = "../../libraries/nullspace-client" }
 nullspace-crypt = { version = "0.0.1", path = "../../libraries/nullspace-crypt" }
 nullspace-structs = { version = "0.0.1", path = "../../libraries/nullspace-structs" }
-egui_hooks = { git = "https://github.com/nullchinchilla/egui_hooks", rev = "7cbd21a69d60ea6683ce057392b739b2471c6c93", features = ["persistence"] }
+egui_hooks = { git = "https://github.com/nullchinchilla/egui_hooks", rev = "7cbd21a69d60ea6683ce057392b739b2471c6c93", features = [
+    "persistence",
+] }
 smol_str = "0.3.2"
 notify-rust = { version = "4.11.0", features = ["d"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 egui = "0.34.1"
-egui_extras = { version = "0.34.1", features = ["all_loaders"] }
+# egui_extras = { version = "0.34.1", features = ["all_loaders"] }
 anyhow = "1.0.100"
 egui_taffy = "0.11"
 taffy = "0.7.7"

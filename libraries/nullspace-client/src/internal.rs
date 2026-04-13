@@ -225,7 +225,6 @@ pub trait InternalProtocol {
     /// fetching a user avatar.
     async fn attachment_download_oneshot(
         &self,
-        sender: UserName,
         attachment: Attachment,
         save_to: PathBuf,
     ) -> Result<(), InternalRpcError>;
@@ -656,11 +655,10 @@ impl InternalProtocol for InternalImpl {
 
     async fn attachment_download_oneshot(
         &self,
-        sender: UserName,
         attachment: Attachment,
         save_to: PathBuf,
     ) -> Result<(), InternalRpcError> {
-        attachments::attachment_download_oneshot(&self.ctx, sender, attachment, save_to)
+        attachments::attachment_download_oneshot(&self.ctx, attachment, save_to)
             .await
             .map_err(map_anyhow_err)
     }

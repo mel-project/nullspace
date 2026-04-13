@@ -9,7 +9,6 @@ use futures_util::stream::{self, StreamExt, TryStreamExt};
 use nullspace_crypt::hash::{BcsHashExt, Hash};
 use nullspace_structs::fragment::{Attachment, Fragment};
 use nullspace_structs::server::ServerClient;
-use nullspace_structs::username::UserName;
 use parking_lot::Mutex;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
@@ -49,7 +48,6 @@ pub async fn attachment_download(
 
 pub async fn attachment_download_oneshot(
     ctx: &AnyCtx<Config>,
-    _sender: UserName,
     attachment: Attachment,
     save_to: PathBuf,
 ) -> anyhow::Result<()> {

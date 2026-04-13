@@ -110,8 +110,6 @@ pub enum HeaderEncryptionError {
     Decrypt,
     #[error("dh error")]
     Dh,
-    #[error("no recipients")]
-    NoRecipients,
 }
 
 impl HeaderEncrypted {
@@ -135,9 +133,6 @@ impl HeaderEncrypted {
                 receiver_mpk_short,
                 receiver_key: Bytes::from(sealed),
             });
-        }
-        if headers.is_empty() {
-            return Err(HeaderEncryptionError::NoRecipients);
         }
         let aad = header_aad(&sender_epk, &headers)?;
         let ciphertext = key
@@ -238,5 +233,16 @@ mod tests {
         assert_eq!(event_a.body, event.body);
         assert_eq!(event_b.tag, TAG_MESSAGE);
         assert_eq!(event_b.body, event.body);
+    }
+
+    #[test]
+    fn encrypt_to_empty_recipient_set_is_unreadable() {
+        let outsider = DhSecret::random();
+        let plaintext = b"dead group payload";
+
+        let encrypted = HeaderEncrypted::encrypt_bytes(plaintext, []).expect("encrypt");
+
+        assert!(encrypted.headers.is_empty());
+        assert!(encrypted.decrypt_bytes(&outsider).is_err());
     }
 }

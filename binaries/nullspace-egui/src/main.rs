@@ -111,7 +111,7 @@ impl NullspaceApp {
         let audio_tx = spawn_audio_thread();
         let ctx = cc.egui_ctx.clone();
         smol::spawn(event_loop(ctx, event_tx, focused.clone(), audio_tx)).detach();
-        egui_extras::install_image_loaders(&cc.egui_ctx);
+        // egui_extras::install_image_loaders(&cc.egui_ctx);
         configure_theme_styles(&cc.egui_ctx);
         cc.egui_ctx
             .options_mut(|opt| opt.fallback_theme = egui::Theme::Light);

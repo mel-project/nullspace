@@ -61,11 +61,11 @@ impl Widget for SteadyState<'_> {
                         if ui.button(display).clicked()
                             | ui.add_sized(
                                 vec2(size, size),
-                                Avatar {
-                                    sender: own_username.clone(),
-                                    attachment: profile_view.and_then(|details| details.avatar),
+                                Avatar::for_user(
+                                    &own_username,
+                                    profile_view.and_then(|details| details.avatar),
                                     size,
-                                },
+                                ),
                             )
                             .clicked()
                         {

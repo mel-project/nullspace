@@ -15,7 +15,7 @@ use pollster::FutureExt;
 use crate::fonts::FontVariant;
 use crate::rpc::flatten_rpc;
 use crate::rpc::get_rpc;
-use crate::utils::color::username_color;
+use crate::utils::color::identity_color;
 use crate::utils::folders;
 use crate::utils::prefs::ConvoRowStyle;
 use crate::utils::speed::speed_fmt;
@@ -65,7 +65,7 @@ impl ConvoRow<'_> {
             .profile_loader
             .label_for(&self.message.sender);
 
-        let sender_color = username_color(&self.message.sender);
+        let sender_color = identity_color(&self.message.sender);
         let timestamp = format_timestamp(self.message.received_at);
         let weak_text_color = ui.visuals().weak_text_color();
 
@@ -101,7 +101,7 @@ impl ConvoRow<'_> {
             .state
             .profile_loader
             .label_for(&self.message.sender);
-        let sender_color = username_color(&self.message.sender);
+        let sender_color = identity_color(&self.message.sender);
         let avatar = self
             .app
             .state
@@ -117,11 +117,7 @@ impl ConvoRow<'_> {
                 let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(36.0, 36.0));
                 ui.place(
                     rect,
-                    Avatar {
-                        sender: self.message.sender.clone(),
-                        attachment: avatar,
-                        size: 36.0,
-                    },
+                    Avatar::for_user(&self.message.sender, avatar, 36.0),
                 );
             }
             ui.add_space(36.0 + ui.style().spacing.item_spacing.x);

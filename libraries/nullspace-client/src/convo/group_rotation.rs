@@ -133,11 +133,18 @@ pub async fn submit_rotation(
         }
     }
 
-    let auth = get_auth_token(ctx).await?;
-    server
-        .mailbox_create(auth, new_gbk.mailbox_key())
-        .await?
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if roster.members.is_empty() {
+        tracing::info!(
+            group = %group_id,
+            "rotation left the group with no members; new epoch is intentionally unreachable"
+        );
+    } else {
+        let auth = get_auth_token(ctx).await?;
+        server
+            .mailbox_create(auth, new_gbk.mailbox_key())
+            .await?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    }
 
     send_rotation_hint(ctx, identity, group_id, &old_gbk).await?;
 
@@ -173,10 +180,6 @@ async fn member_devices(
                 admin_device_keys.insert(*device_pk);
             }
         }
-    }
-
-    if all_medium_keys.is_empty() {
-        anyhow::bail!("no medium keys available for any group member");
     }
 
     Ok((all_medium_keys, admin_device_keys))

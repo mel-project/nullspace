@@ -1,11 +1,12 @@
 #![allow(dead_code)]
 
+use std::fmt::Display;
+
 use egui::Color32;
 use nullspace_crypt::hash::Hash;
-use nullspace_structs::username::UserName;
 
-pub fn username_color(username: &UserName) -> Color32 {
-    let hash = Hash::digest(username.as_str().as_bytes());
+pub fn identity_color(identity: impl Display) -> Color32 {
+    let hash = Hash::digest(identity.to_string().as_bytes());
     let bytes = hash.to_bytes();
     let hue = (u16::from_le_bytes([bytes[0], bytes[1]]) % 360) as f32 / 360.0;
     let hsva = egui::ecolor::Hsva::new(hue, 0.65, 0.55, 1.0);
@@ -200,4 +201,22 @@ fn hsl_to_color32(hue_deg: f32, saturation: f32, lightness: f32) -> Color32 {
     let hsva = egui::ecolor::Hsva::new(h, s_hsv.clamp(0.0, 1.0), v.clamp(0.0, 1.0), 1.0);
     let [r, g, b] = hsva.to_srgb();
     Color32::from_rgb(r, g, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::identity_color;
+
+    #[test]
+    fn identity_color_is_stable_for_same_seed() {
+        assert_eq!(identity_color("@alice"), identity_color("@alice"));
+    }
+
+    #[test]
+    fn identity_color_accepts_non_username_seeds() {
+        assert_ne!(
+            identity_color("4b606702-1d50-4e1d-9d2c-3f6d4eb9f68b"),
+            identity_color("5a43b648-9dce-4cf6-b495-c310f6b0c0a2")
+        );
+    }
 }

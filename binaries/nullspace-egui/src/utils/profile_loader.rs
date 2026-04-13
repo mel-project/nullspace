@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use nullspace_client::UserDetails;
 use nullspace_structs::username::UserName;
+use smol::channel::TryRecvError;
 
 use crate::rpc::{flatten_rpc, get_rpc};
-use crate::utils::profile_cache;
+use crate::utils::profile_cache::{self, CachedProfile};
 
-const PROFILE_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+const PROFILE_INITIAL_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+const PROFILE_MAX_RETRY_BACKOFF: Duration = Duration::from_secs(60 * 60);
+const PROFILE_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 pub struct ProfileLoader {
     entries: HashMap<UserName, ProfileEntry>,
@@ -20,10 +23,11 @@ pub struct ProfileLoader {
 
 #[derive(Default)]
 struct ProfileEntry {
-    last_good: Option<UserDetails>,
+    last_good: Option<CachedProfile>,
     inflight: Option<smol::channel::Receiver<Result<UserDetails, String>>>,
     last_error: Option<String>,
-    retry_after: Option<Instant>,
+    retry_after: Option<SystemTime>,
+    retry_failures: u32,
     missing: bool,
     force_refresh: bool,
 }
@@ -55,47 +59,54 @@ impl ProfileLoader {
             let previous_display = entry
                 .last_good
                 .as_ref()
-                .and_then(|profile| profile.display_name.clone());
+                .and_then(|profile| profile.details.display_name.clone());
             match rx.try_recv() {
                 Ok(result) => {
                     entry.inflight = None;
                     match result {
                         Ok(profile) => {
                             entry.missing = false;
-                            entry.last_good = Some(profile);
+                            entry.last_good = Some(profile_cache::fresh_entry(profile));
                             entry.last_error = None;
                             entry.retry_after = None;
+                            entry.retry_failures = 0;
                             if let Some(details) = entry.last_good.as_ref() {
                                 profile_cache::write_entry(&self.cache_dir, details);
                             }
                             let next_display = entry
                                 .last_good
                                 .as_ref()
-                                .and_then(|profile| profile.display_name.clone());
+                                .and_then(|profile| profile.details.display_name.clone());
                             if previous_display != next_display {
                                 self.label_index_dirty = true;
                             }
                         }
                         Err(err) => {
-                            entry.last_error = Some(err);
-                            entry.retry_after = Some(Instant::now() + PROFILE_RETRY_BACKOFF);
+                            record_refresh_failure(entry, err);
                         }
                     }
                 }
-                Err(_) => {
-                    // still pending or sender dropped
+                Err(TryRecvError::Empty) => {
+                    // still pending
+                }
+                Err(TryRecvError::Closed) => {
+                    entry.inflight = None;
+                    record_refresh_failure(entry, "profile refresh task dropped".to_string());
                 }
             }
         }
 
-        let should_fetch = entry.inflight.is_none()
-            && (entry.force_refresh
-                || (entry.last_good.is_none()
-                    && !entry.missing
-                    && entry
-                        .retry_after
-                        .map(|when| when <= Instant::now())
-                        .unwrap_or(true)));
+        let retry_ready = entry
+            .retry_after
+            .map(|when| when <= SystemTime::now())
+            .unwrap_or(true);
+        let cache_stale = entry
+            .last_good
+            .as_ref()
+            .map(|entry| is_stale(entry.cached_at_unix_secs))
+            .unwrap_or(true);
+        let should_fetch =
+            entry.inflight.is_none() && !entry.missing && retry_ready && (entry.force_refresh || cache_stale);
 
         if should_fetch {
             entry.force_refresh = false;
@@ -109,7 +120,7 @@ impl ProfileLoader {
             entry.inflight = Some(rx);
         }
 
-        entry.last_good.clone()
+        entry.last_good.as_ref().map(|entry| entry.details.clone())
     }
 
     fn refresh_label_index(&mut self) {
@@ -122,7 +133,7 @@ impl ProfileLoader {
             let base = entry
                 .last_good
                 .as_ref()
-                .and_then(|profile| profile.display_name.clone())
+                .and_then(|profile| profile.details.display_name.clone())
                 .unwrap_or_else(|| entry_username.as_str().to_string());
             self.label_counts
                 .entry(base)
@@ -161,6 +172,58 @@ impl ProfileLoader {
         entry.missing = false;
         entry.last_error = None;
         entry.retry_after = None;
+        entry.retry_failures = 0;
         entry.force_refresh = true;
+    }
+}
+
+fn record_refresh_failure(entry: &mut ProfileEntry, err: String) {
+    entry.retry_failures = entry.retry_failures.saturating_add(1);
+    entry.last_error = Some(err);
+    entry.retry_after = Some(SystemTime::now() + retry_backoff(entry.retry_failures));
+}
+
+fn retry_backoff(consecutive_failures: u32) -> Duration {
+    let shift = consecutive_failures.saturating_sub(1).min(16);
+    let multiplier = 1u64 << shift;
+    Duration::from_secs(
+        PROFILE_INITIAL_RETRY_BACKOFF
+            .as_secs()
+            .saturating_mul(multiplier)
+            .min(PROFILE_MAX_RETRY_BACKOFF.as_secs()),
+    )
+}
+
+fn is_stale(cached_at_unix_secs: u64) -> bool {
+    let now = profile_cache::current_unix_secs();
+    cached_at_unix_secs == 0
+        || now.saturating_sub(cached_at_unix_secs) >= PROFILE_CACHE_TTL.as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PROFILE_MAX_RETRY_BACKOFF, is_stale, retry_backoff};
+
+    #[test]
+    fn zero_timestamp_is_stale() {
+        assert!(is_stale(0));
+    }
+
+    #[test]
+    fn fresh_timestamp_is_not_stale() {
+        let now = crate::utils::profile_cache::current_unix_secs();
+        assert!(!is_stale(now));
+    }
+
+    #[test]
+    fn retry_backoff_grows_exponentially() {
+        assert_eq!(retry_backoff(1).as_secs(), 60);
+        assert_eq!(retry_backoff(2).as_secs(), 120);
+        assert_eq!(retry_backoff(3).as_secs(), 240);
+    }
+
+    #[test]
+    fn retry_backoff_is_capped() {
+        assert_eq!(retry_backoff(32), PROFILE_MAX_RETRY_BACKOFF);
     }
 }

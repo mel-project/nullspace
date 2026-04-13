@@ -6,7 +6,7 @@ use nullspace_structs::username::UserName;
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
-use crate::utils::color::username_color;
+use crate::utils::color::identity_color;
 use crate::utils::hooks::CustomHooksExt;
 
 pub struct Login<'a>(pub &'a mut NullspaceApp);
@@ -97,7 +97,7 @@ impl Widget for Login<'_> {
                 LoginStep::FinishBootstrap => {
                     let username: UserName = username_str.parse().unwrap();
                     ui.label("You are registering a new user:");
-                    ui.colored_label(username_color(&username), username.as_str());
+                    ui.colored_label(identity_color(&username), username.as_str());
 
                     ui.horizontal(|ui| {
                         ui.label("Server");

@@ -35,15 +35,18 @@ impl Widget for ConvoSelect<'_> {
                 ui.set_max_height(34.0);
                 ui.set_width(ui.available_width());
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    if let ConvoId::Direct { peer } = &self.convo.convo_id {
-                        let user_details = self.app.state.profile_loader.view(peer);
-                        ui.add(Avatar {
-                            sender: peer.clone(),
-                            attachment: user_details.and_then(|ud| ud.avatar),
-                            size: 28.0,
-                        });
-                    } else {
-                        ui.add_space(28.0 + ui.ctx().global_style().spacing.item_spacing.x);
+                    match &self.convo.convo_id {
+                        ConvoId::Direct { peer } => {
+                            let user_details = self.app.state.profile_loader.view(peer);
+                            ui.add(Avatar::for_user(
+                                peer,
+                                user_details.and_then(|ud| ud.avatar),
+                                28.0,
+                            ));
+                        }
+                        ConvoId::Group { group_id } => {
+                            ui.add(Avatar::for_group(*group_id, None, 28.0));
+                        }
                     }
 
                     ui.add_space(4.0);

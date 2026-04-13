@@ -155,11 +155,7 @@ impl Widget for UserSearch<'_> {
                         };
 
                         ui.horizontal(|ui| {
-                            ui.add(Avatar {
-                                sender: row.username.clone(),
-                                attachment: row.avatar.clone(),
-                                size: 28.0,
-                            });
+                            ui.add(Avatar::for_user(&row.username, row.avatar.clone(), 28.0));
 
                             ui.vertical(|ui| {
                                 let response = ui.add_enabled(

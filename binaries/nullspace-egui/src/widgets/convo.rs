@@ -222,11 +222,11 @@ fn render_header(
             let display = app.state.profile_loader.label_for(&peer);
             ui.horizontal_centered(|ui| {
                 let size = 24.0;
-                ui.add(Avatar {
-                    sender: peer.clone(),
-                    attachment: view.and_then(|details| details.avatar),
+                ui.add(Avatar::for_user(
+                    &peer,
+                    view.and_then(|details| details.avatar),
                     size,
-                });
+                ));
                 ui.add(Label::new(
                     RichText::new(display).family(FontVariant::Bold.family()),
                 ));
@@ -246,6 +246,7 @@ fn render_header(
             let display_title =
                 display_title.unwrap_or_else(|_| format!("Group {}", group_id.short_id()));
             ui.horizontal_centered(|ui| {
+                ui.add(Avatar::for_group(group_id, None, 24.0));
                 ui.add(Label::new(RichText::from(display_title).heading()));
                 if ui.add(Button::new("Manage")).clicked() {
                     *show_group_window = true;

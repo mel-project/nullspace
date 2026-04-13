@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
-use crate::utils::color::username_color;
+use crate::utils::color::identity_color;
 use crate::utils::generational::GBox;
 use crate::utils::hooks::CustomHooksExt;
 use crate::widgets::avatar::Avatar;
@@ -74,7 +74,7 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
         })
         .show(|tui| {
             tui.ui(|ui| {
-                ui.label(RichText::new(username.as_str()).color(username_color(&username)));
+                ui.label(RichText::new(username.as_str()).color(identity_color(&username)));
             });
 
             profile_row(tui, "Display name", |tui| {
@@ -112,11 +112,7 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
                             AvatarChoice::Clear => None,
                             AvatarChoice::Set(attachment) => Some(attachment.clone()),
                         };
-                        ui.add(Avatar {
-                            sender: username.clone(),
-                            attachment,
-                            size,
-                        });
+                        ui.add(Avatar::for_user(&username, attachment, size));
                     });
 
                     tui.style(Style {

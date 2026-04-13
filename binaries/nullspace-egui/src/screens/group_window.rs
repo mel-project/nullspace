@@ -176,11 +176,16 @@ impl GroupWindowBody<'_, '_> {
             .filter(|entry| entry.is_banned)
             .count();
 
-        ui.heading(&self.group_view.display_title);
-        ui.label(
-            RichText::new(format!("{}  •  {}", self.group_id, self.group_view.server))
-                .color(ui.visuals().weak_text_color()),
-        );
+        ui.horizontal(|ui| {
+            ui.add(Avatar::for_group(self.group_id, None, 40.0));
+            ui.vertical(|ui| {
+                ui.heading(&self.group_view.display_title);
+                ui.label(
+                    RichText::new(format!("{}  •  {}", self.group_id, self.group_view.server))
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        });
         ui.add_space(10.0);
 
         ui.label(format!("Active members: {active_count}"));
@@ -368,11 +373,11 @@ impl GroupWindowBody<'_, '_> {
         let is_self = self.app.state.own_username.as_ref() == Some(&entry.username);
 
         ui.horizontal(|ui| {
-            ui.add(Avatar {
-                sender: entry.username.clone(),
-                attachment: details.as_ref().and_then(|details| details.avatar.clone()),
-                size: 28.0,
-            });
+            ui.add(Avatar::for_user(
+                &entry.username,
+                details.as_ref().and_then(|details| details.avatar.clone()),
+                28.0,
+            ));
 
             let mut headline = label;
             if is_self {

@@ -41,10 +41,6 @@ pub async fn group_create(auth: AuthToken, rotation: GroupRotation) -> Result<()
 }
 
 pub async fn group_update(rotation: GroupRotation) -> Result<(), ServerRpcError> {
-    if rotation.new_admin_set.is_empty() {
-        tracing::debug!(group = %rotation.group_id, "group update denied: empty admin set");
-        return Err(ServerRpcError::AccessDenied);
-    }
     if rotation.prev_hash.is_none() {
         tracing::debug!(group = %rotation.group_id, "group update denied: missing prev_hash");
         return Err(ServerRpcError::AccessDenied);

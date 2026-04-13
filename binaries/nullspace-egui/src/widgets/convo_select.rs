@@ -43,7 +43,7 @@ impl Widget for ConvoSelect<'_> {
                             size: 28.0,
                         });
                     } else {
-                        ui.add_space(28.0 + ui.ctx().style().spacing.item_spacing.x);
+                        ui.add_space(28.0 + ui.ctx().global_style().spacing.item_spacing.x);
                     }
 
                     ui.add_space(4.0);

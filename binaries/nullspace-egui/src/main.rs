@@ -165,12 +165,9 @@ impl NullspaceApp {
             },
         }
     }
-}
 
-impl eframe::App for NullspaceApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let start = Instant::now();
-        // hack to speed up touchpad scroll while not speeding up mouse scroll too much
+    fn run_logic(&mut self, ctx: &egui::Context) {
+        // Keep scroll behavior aligned with the previous update loop.
         ctx.options_mut(|opt| opt.input_options.line_scroll_speed = 18.0);
         ctx.input_mut(|input| input.smooth_scroll_delta *= 4.0);
 
@@ -307,12 +304,22 @@ impl eframe::App for NullspaceApp {
                 }
             }
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        if self.state.prefs != self.state.last_saved_prefs {
+            if let Err(err) = save_prefs(&crate::utils::folders::prefs_path(), &self.state.prefs) {
+                tracing::warn!(error = %err, "failed to save prefs");
+            } else {
+                self.state.last_saved_prefs = self.state.prefs.clone();
+            }
+        }
+    }
+
+    fn show_root_ui(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.add(screens::image_viewer::ImageViewer(
                 &mut self.state.image_viewer,
             ));
             if let Some(e) = self.state.error_dialog.clone() {
-                Modal::new("error_modal".into()).show(ctx, |ui| {
+                Modal::new("error_modal".into()).show(ui.ctx(), |ui| {
                     ui.heading("Error");
                     ui.label(e);
                     if ui.button("OK").clicked() {
@@ -334,16 +341,21 @@ impl eframe::App for NullspaceApp {
                 None => {}
             }
         });
+
         if self.state.prefs.debug_mode {
-            show_debug_ui(ctx);
+            show_debug_ui(ui.ctx());
         }
-        if self.state.prefs != self.state.last_saved_prefs {
-            if let Err(err) = save_prefs(&crate::utils::folders::prefs_path(), &self.state.prefs) {
-                tracing::warn!(error = %err, "failed to save prefs");
-            } else {
-                self.state.last_saved_prefs = self.state.prefs.clone();
-            }
-        }
+    }
+}
+
+impl eframe::App for NullspaceApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.run_logic(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let start = Instant::now();
+        self.show_root_ui(ui);
         if start.elapsed() > Duration::from_millis(10) {
             tracing::warn!(elapsed = debug(start.elapsed()), "drawn took a while :(");
         }
@@ -398,7 +410,7 @@ fn main() -> eframe::Result<()> {
     };
     let client = Client::new(config);
     let options = eframe::NativeOptions {
-        renderer: eframe::Renderer::Glow,
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 

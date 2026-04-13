@@ -39,8 +39,8 @@ impl Widget for SteadyState<'_> {
         let frame = eframe::egui::Frame::default()
             .inner_margin(eframe::egui::Margin::same(8))
             .outer_margin(0.0);
-        eframe::egui::TopBottomPanel::top("steady_menu")
-            .exact_height(30.0)
+        eframe::egui::Panel::top("steady_menu")
+            .exact_size(30.0)
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.menu_button("File", |ui| {
@@ -75,10 +75,10 @@ impl Widget for SteadyState<'_> {
                 });
                 ui.add_space(4.0);
             });
-        eframe::egui::SidePanel::left("steady_left")
+        eframe::egui::Panel::left("steady_left")
             .resizable(true)
-            .min_width(200.0)
-            .default_width(200.0)
+            .min_size(200.0)
+            .default_size(200.0)
             .frame(frame)
             .show_inside(ui, |ui| self.render_left(ui, &convos, &mut state));
         eframe::egui::CentralPanel::default().show_inside(ui, |ui| {

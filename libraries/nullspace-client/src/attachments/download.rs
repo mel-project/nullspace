@@ -19,7 +19,7 @@ use crate::identity::identity_exists;
 use crate::internal::{Event, InternalRpcError};
 use crate::net::get_server_client;
 
-use super::{AttachmentStatus, load_attachment_root};
+use super::{AttachmentStatus, TransferProgressCallback, load_attachment_root};
 
 const TRANSFER_CONCURRENCY: usize = 16;
 
@@ -51,6 +51,15 @@ pub async fn attachment_download_oneshot(
     attachment: Attachment,
     save_to: PathBuf,
 ) -> anyhow::Result<()> {
+    attachment_download_oneshot_with_progress(ctx, attachment, save_to, None).await
+}
+
+pub async fn attachment_download_oneshot_with_progress(
+    ctx: &AnyCtx<Config>,
+    attachment: Attachment,
+    save_to: PathBuf,
+    progress: Option<TransferProgressCallback>,
+) -> anyhow::Result<()> {
     if !save_to.is_absolute() {
         return Err(anyhow::anyhow!("save path must be absolute"));
     }
@@ -65,7 +74,7 @@ pub async fn attachment_download_oneshot(
     tokio::fs::create_dir_all(parent).await?;
 
     let client = get_server_client(ctx, &attachment.server_name).await?;
-    download_attachment_to_path(ctx, client, &attachment, None, &save_to).await
+    download_attachment_to_path(ctx, client, &attachment, None, progress, &save_to).await
 }
 
 pub async fn attachment_status(ctx: &AnyCtx<Config>, id: Hash) -> anyhow::Result<AttachmentStatus> {
@@ -122,7 +131,8 @@ async fn download_inner(
     if let Some(parent) = save_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    download_attachment_to_path(ctx, client, &root, Some(attachment_id), &save_path).await?;
+    download_attachment_to_path(ctx, client, &root, Some(attachment_id), None, &save_path)
+        .await?;
     sqlx::query("insert or replace into attachment_paths (hash, download_path) values ($1, $2)")
         .bind(attachment_id.to_bytes().as_slice())
         .bind(save_path.to_string_lossy())
@@ -138,22 +148,29 @@ async fn download_inner(
     Ok(())
 }
 
-struct ProgressEmitter<'a> {
-    ctx: &'a AnyCtx<Config>,
-    attachment_id: Hash,
+#[derive(Clone)]
+struct ProgressEmitter {
+    ctx: AnyCtx<Config>,
+    attachment_id: Option<Hash>,
     total_size: u64,
+    progress: Option<TransferProgressCallback>,
 }
 
-impl<'a> ProgressEmitter<'a> {
+impl ProgressEmitter {
     fn emit(&self, downloaded: u64) {
-        emit_event(
-            self.ctx,
-            Event::DownloadProgress {
-                attachment_id: self.attachment_id,
-                downloaded_size: downloaded,
-                total_size: self.total_size,
-            },
-        );
+        if let Some(attachment_id) = self.attachment_id {
+            emit_event(
+                &self.ctx,
+                Event::DownloadProgress {
+                    attachment_id,
+                    downloaded_size: downloaded,
+                    total_size: self.total_size,
+                },
+            );
+        }
+        if let Some(progress) = &self.progress {
+            progress(downloaded, self.total_size);
+        }
     }
 }
 
@@ -162,6 +179,7 @@ async fn download_attachment_to_path(
     client: Arc<ServerClient>,
     attachment: &Attachment,
     attachment_id: Option<Hash>,
+    progress: Option<TransferProgressCallback>,
     final_path: &Path,
 ) -> anyhow::Result<()> {
     let parent = final_path
@@ -183,14 +201,13 @@ async fn download_attachment_to_path(
         .await?;
 
     let total_size = attachment.total_size();
-    let emitter = attachment_id.map(|id| ProgressEmitter {
-        ctx,
-        attachment_id: id,
+    let emitter = ProgressEmitter {
+        ctx: ctx.clone(),
+        attachment_id,
         total_size,
-    });
-    if let Some(emitter) = &emitter {
-        emitter.emit(0);
-    }
+        progress,
+    };
+    emitter.emit(0);
 
     if attachment.children.is_empty() {
         file.flush().await?;
@@ -209,7 +226,7 @@ async fn download_attachment_to_path(
             let root = attachment.clone();
             let downloaded_size = downloaded_size.clone();
             let temp_path = temp_path.clone();
-            let emitter = emitter.as_ref();
+            let emitter = emitter.clone();
             async move {
                 let mut file = tokio::fs::OpenOptions::new()
                     .write(true)
@@ -222,7 +239,7 @@ async fn download_attachment_to_path(
                     &downloaded_size,
                     hash,
                     start_offset,
-                    emitter,
+                    Some(&emitter),
                 )
                 .await?;
                 Ok::<(), anyhow::Error>(())
@@ -263,7 +280,7 @@ async fn download_fragment_iterative(
     downloaded_size: &AtomicU64,
     hash: Hash,
     start_offset: u64,
-    emitter: Option<&ProgressEmitter<'_>>,
+    emitter: Option<&ProgressEmitter>,
 ) -> anyhow::Result<()> {
     let mut stack = vec![(hash, start_offset)];
     while let Some((hash, start_offset)) = stack.pop() {

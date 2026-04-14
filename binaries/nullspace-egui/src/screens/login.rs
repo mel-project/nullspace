@@ -196,6 +196,9 @@ impl Widget for Login<'_> {
                             username,
                             code: (*pairing_code).trim().to_string(),
                         };
+                        self.0.state.provision_download_progress = None;
+                        self.0.state.provision_download_error = None;
+                        self.0.state.provision_download_done = false;
                         rpc.start(async move {
                             flatten_rpc(get_rpc().register_finish(request).await)
                                 .map(|()| LoginRpcOutcome::FinishAddDevice)
@@ -204,6 +207,17 @@ impl Widget for Login<'_> {
                     }
                     if rpc_running {
                         ui.add(Spinner::new());
+                    }
+                    if let Some((downloaded, total)) = self.0.state.provision_download_progress {
+                        ui.label(format!(
+                            "Downloading bootstrap bundle: {} / {} bytes",
+                            downloaded, total
+                        ));
+                    } else if self.0.state.provision_download_done && rpc_running {
+                        ui.label("Bootstrap bundle downloaded, importing state...");
+                    }
+                    if let Some(error) = self.0.state.provision_download_error.as_ref() {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                 }
             }

@@ -10,7 +10,7 @@ mod dm_send;
 mod group_recv;
 mod group_rotation;
 mod group_send;
-mod groups;
+pub(crate) mod groups;
 mod queries;
 mod send;
 
@@ -24,7 +24,7 @@ use nullspace_crypt::hash::Hash;
 use nullspace_structs::event::{
     GroupPermissionChange, GroupSettingsChange, GroupUnban, MessagePayload, MessageText,
     TAG_GROUP_INVITATION, TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN,
-    TAG_LEAVE_REQUEST, TAG_MESSAGE,
+    TAG_JOIN_REQUEST, TAG_LEAVE_REQUEST, TAG_MESSAGE,
 };
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
@@ -164,6 +164,7 @@ pub enum ConvoEventItem {
     GroupPermissionChange(GroupPermissionChange),
     GroupSettingsChange(GroupSettingsChange),
     GroupUnban(GroupUnban),
+    JoinRequest,
     LeaveRequest,
     Unknown { tag: u16 },
 }
@@ -218,6 +219,7 @@ impl ConvoEventItem {
             }
             ConvoEventItem::GroupSettingsChange(_) => "Group settings updated".to_string(),
             ConvoEventItem::GroupUnban(change) => format!("{} unbanned", change.username),
+            ConvoEventItem::JoinRequest => format!("{sender} joined"),
             ConvoEventItem::LeaveRequest => format!("{sender} left"),
             ConvoEventItem::Unknown { tag } => format!("Unknown event tag {tag}"),
         }
@@ -294,6 +296,7 @@ fn decode_convo_item_kind(event_tag: u16, body: &[u8]) -> anyhow::Result<Option<
         }
         TAG_GROUP_SETTINGS_CHANGE => ConvoEventItem::GroupSettingsChange(decode_event_body(body)?),
         TAG_GROUP_UNBAN => ConvoEventItem::GroupUnban(decode_event_body(body)?),
+        TAG_JOIN_REQUEST => ConvoEventItem::JoinRequest,
         TAG_LEAVE_REQUEST => ConvoEventItem::LeaveRequest,
         _ => ConvoEventItem::Unknown { tag: event_tag },
     };

@@ -5,11 +5,12 @@ use egui::{Color32, FontFamily, FontId, RichText, Spinner};
 use egui_hooks::{UseHookExt, hook::state::State};
 use nullspace_client::ProvisionHostState;
 
+use crate::NullspaceApp;
 use crate::rpc::get_rpc;
 use crate::utils::generational::GBox;
 use crate::utils::hooks::CustomHooksExt;
 
-pub(super) fn render(ui: &mut Ui) {
+pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
     let pairing_code: State<Option<String>> = ui.use_state(|| None, ());
     let pairing_done: State<bool> = ui.use_state(|| false, ());
     let fatal_error: State<Option<String>> = ui.use_state(|| None, ());
@@ -31,6 +32,9 @@ pub(super) fn render(ui: &mut Ui) {
             let pairing_code = pairing_code.clone();
             let pairing_done = pairing_done.clone();
             let fatal_error = fatal_error.clone();
+            app.state.provision_upload_progress = None;
+            app.state.provision_upload_error = None;
+            app.state.provision_upload_done = false;
             task.set(None);
             task.set(Some(smol::spawn(async move {
                 let result: anyhow::Result<()> = async {
@@ -83,8 +87,22 @@ pub(super) fn render(ui: &mut Ui) {
         if *pairing_done {
             ui.colored_label(success_fg_color(ui.visuals()), "Device added.");
         }
+        if let Some((uploaded, total)) = app.state.provision_upload_progress {
+            ui.label(format!(
+                "Uploading bootstrap bundle: {} / {} bytes",
+                uploaded, total
+            ));
+        } else if app.state.provision_upload_done {
+            ui.label("Bootstrap bundle uploaded.");
+        }
+        if let Some(error) = app.state.provision_upload_error.as_ref() {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
         if ui.button("Refresh code").clicked() {
             fatal_error.set_next(None);
+            app.state.provision_upload_progress = None;
+            app.state.provision_upload_error = None;
+            app.state.provision_upload_done = false;
             *refreshes += 1;
         }
     });

@@ -95,6 +95,12 @@ struct AppState {
     upload_error: BTreeMap<Uuid, String>,
     download_progress: BTreeMap<Hash, (u64, u64)>,
     download_error: BTreeMap<Hash, String>,
+    provision_upload_progress: Option<(u64, u64)>,
+    provision_upload_error: Option<String>,
+    provision_upload_done: bool,
+    provision_download_progress: Option<(u64, u64)>,
+    provision_download_error: Option<String>,
+    provision_download_done: bool,
 
     image_viewer: Option<PathBuf>,
 }
@@ -162,6 +168,12 @@ impl NullspaceApp {
                 upload_error: BTreeMap::new(),
                 download_progress: BTreeMap::new(),
                 download_error: BTreeMap::new(),
+                provision_upload_progress: None,
+                provision_upload_error: None,
+                provision_upload_done: false,
+                provision_download_progress: None,
+                provision_download_error: None,
+                provision_download_done: false,
                 image_viewer: None,
             },
         }
@@ -302,6 +314,42 @@ impl NullspaceApp {
                         .download_error
                         .insert(attachment_id, error.to_string());
                     self.state.attach_updates += 1;
+                }
+                Event::ProvisionBundleUploadProgress {
+                    uploaded_size,
+                    total_size,
+                } => {
+                    self.state.provision_upload_progress = Some((uploaded_size, total_size));
+                    self.state.provision_upload_error = None;
+                    self.state.provision_upload_done = false;
+                }
+                Event::ProvisionBundleUploadDone => {
+                    self.state.provision_upload_progress = None;
+                    self.state.provision_upload_error = None;
+                    self.state.provision_upload_done = true;
+                }
+                Event::ProvisionBundleUploadFailed { error } => {
+                    self.state.provision_upload_progress = None;
+                    self.state.provision_upload_error = Some(error);
+                    self.state.provision_upload_done = false;
+                }
+                Event::ProvisionBundleDownloadProgress {
+                    downloaded_size,
+                    total_size,
+                } => {
+                    self.state.provision_download_progress = Some((downloaded_size, total_size));
+                    self.state.provision_download_error = None;
+                    self.state.provision_download_done = false;
+                }
+                Event::ProvisionBundleDownloadDone => {
+                    self.state.provision_download_progress = None;
+                    self.state.provision_download_error = None;
+                    self.state.provision_download_done = true;
+                }
+                Event::ProvisionBundleDownloadFailed { error } => {
+                    self.state.provision_download_progress = None;
+                    self.state.provision_download_error = Some(error);
+                    self.state.provision_download_done = false;
                 }
             }
         }

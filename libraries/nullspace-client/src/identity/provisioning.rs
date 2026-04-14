@@ -10,6 +10,7 @@ use nullspace_crypt::spake::{SpakeKey, SpakeMessage, SpakeSession};
 use nullspace_structs::Blob;
 use nullspace_structs::certificate::DeviceSecret;
 use nullspace_structs::directory::DirectoryUpdate;
+use nullspace_structs::fragment::Attachment;
 use nullspace_structs::mailbox::MailboxKey;
 use nullspace_structs::profile::UserProfile;
 use nullspace_structs::server::{
@@ -26,7 +27,12 @@ use serde_with::{FromInto, IfIsHumanReadable, serde_as};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::Identity;
+use super::provisioning_bundle::{
+    ProvisioningBootstrap, ProvisioningBundle, build_provisioning_bundle,
+    import_provisioning_bundle,
+};
 use crate::DIR_CLIENT;
+use crate::attachments::{attachment_download_oneshot_with_progress, attachment_upload_path};
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
@@ -201,14 +207,14 @@ impl HostProvisioning {
                 return Ok(active.state.clone());
             }
         };
-        let payload = match build_provisioning_payload(ctx, &active.username).await {
-            Ok(payload) => payload,
+        let transfer = match build_provisioning_transfer(ctx, &active.username).await {
+            Ok(transfer) => transfer,
             Err(err) => {
                 active.fail(err.to_string());
                 return Ok(active.state.clone());
             }
         };
-        let envelope = match encrypt_finish_payload(&spake_key, &payload) {
+        let envelope = match encrypt_finish_payload(&spake_key, &transfer) {
             Ok(envelope) => envelope,
             Err(err) => {
                 active.fail(err.to_string());
@@ -341,15 +347,17 @@ async fn register_add_device_by_code(
         .finish(&helo_msg)
         .map_err(|err| InternalRpcError::Other(format!("spake exchange failed: {err}")))?;
     let finish = wait_for_finish_envelope(&server, channel, ChanDirection::Forward).await?;
-    let payload = decrypt_finish_payload(&spake_key, &finish)?;
-    register_add_device_payload(ctx, username, payload).await
+    let transfer = decrypt_finish_payload(&spake_key, &finish)?;
+    let bundle = download_provisioning_bundle(&ctx, &transfer.bundle_attachment).await?;
+    register_add_device_payload(ctx, username, bundle).await
 }
 
 async fn register_add_device_payload(
     ctx: AnyCtx<Config>,
     expected_username: UserName,
-    payload: ProvisioningPayload,
+    bundle: ProvisioningBundle,
 ) -> Result<(), InternalRpcError> {
+    let payload = &bundle.bootstrap;
     if payload.add_device_update.key != expected_username.as_str() {
         return Err(InternalRpcError::Other(
             "provision payload username mismatch".into(),
@@ -400,13 +408,12 @@ async fn register_add_device_payload(
         .await
         .map_err(internal_err)?
         .map_err(internal_err)?;
-    persist_identity_and_emit(
+    persist_imported_identity_and_emit(
         &ctx,
+        &bundle,
         expected_username,
         server_name,
-        payload.device_secret,
         medium_sk,
-        payload.dm_mailbox_key,
     )
     .await
 }
@@ -429,10 +436,10 @@ async fn load_user_descriptor(
         .ok_or_else(|| InternalRpcError::Other("username not found in directory".into()))
 }
 
-async fn build_provisioning_payload(
+async fn build_provisioning_bootstrap(
     ctx: &AnyCtx<Config>,
     username: &UserName,
-) -> Result<ProvisioningPayload, InternalRpcError> {
+) -> Result<ProvisioningBootstrap, InternalRpcError> {
     let identity = load_identity(ctx).await?;
     if identity.username != *username {
         return Err(InternalRpcError::Other(
@@ -464,11 +471,110 @@ async fn build_provisioning_payload(
         signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
     };
     add_device_update.sign(&identity.device_secret);
-    Ok(ProvisioningPayload {
+    Ok(ProvisioningBootstrap {
         device_secret,
         add_device_update,
         dm_mailbox_key: identity.dm_mailbox_key,
     })
+}
+
+async fn build_provisioning_transfer(
+    ctx: &AnyCtx<Config>,
+    username: &UserName,
+) -> Result<ProvisioningTransfer, InternalRpcError> {
+    let identity = load_identity(ctx).await?;
+    let dm_server_name = identity
+        .server_name
+        .clone()
+        .ok_or_else(|| InternalRpcError::Other("server name not available".into()))?;
+    let bootstrap = build_provisioning_bootstrap(ctx, username).await?;
+    let bundle = build_provisioning_bundle(ctx, bootstrap, dm_server_name).await?;
+    let bundle_attachment = upload_provisioning_bundle(ctx, &bundle).await?;
+    Ok(ProvisioningTransfer { bundle_attachment })
+}
+
+async fn upload_provisioning_bundle(
+    ctx: &AnyCtx<Config>,
+    bundle: &ProvisioningBundle,
+) -> Result<Attachment, InternalRpcError> {
+    let bundle_bytes = bcs::to_bytes(bundle).map_err(internal_err)?;
+    let temp_dir = tempfile::tempdir().map_err(internal_err)?;
+    let bundle_path = temp_dir.path().join("provisioning-bundle.bcs");
+    tokio::fs::write(&bundle_path, &bundle_bytes)
+        .await
+        .map_err(internal_err)?;
+    let progress_ctx = ctx.clone();
+    let progress = std::sync::Arc::new(move |uploaded_size, total_size| {
+        emit_event(
+            &progress_ctx,
+            Event::ProvisionBundleUploadProgress {
+                uploaded_size,
+                total_size,
+            },
+        );
+    });
+    let result = attachment_upload_path(
+        ctx,
+        bundle_path,
+        "provisioning-bundle.bcs".into(),
+        "application/x-nullspace-provisioning-bundle".into(),
+        Some(progress),
+    )
+    .await;
+    drop(temp_dir);
+    match result {
+        Ok(attachment) => {
+            emit_event(ctx, Event::ProvisionBundleUploadDone);
+            Ok(attachment)
+        }
+        Err(err) => {
+            emit_event(
+                ctx,
+                Event::ProvisionBundleUploadFailed {
+                    error: err.to_string(),
+                },
+            );
+            Err(internal_err(err))
+        }
+    }
+}
+
+async fn download_provisioning_bundle(
+    ctx: &AnyCtx<Config>,
+    attachment: &Attachment,
+) -> Result<ProvisioningBundle, InternalRpcError> {
+    let temp_dir = tempfile::tempdir().map_err(internal_err)?;
+    let bundle_path = temp_dir.path().join("provisioning-bundle.bcs");
+    let progress_ctx = ctx.clone();
+    let progress = std::sync::Arc::new(move |downloaded_size, total_size| {
+        emit_event(
+            &progress_ctx,
+            Event::ProvisionBundleDownloadProgress {
+                downloaded_size,
+                total_size,
+            },
+        );
+    });
+    let result = attachment_download_oneshot_with_progress(
+        ctx,
+        attachment.clone(),
+        bundle_path.clone(),
+        Some(progress),
+    )
+    .await;
+    if let Err(err) = result {
+        emit_event(
+            ctx,
+            Event::ProvisionBundleDownloadFailed {
+                error: err.to_string(),
+            },
+        );
+        return Err(internal_err(err));
+    }
+    let bundle_bytes = tokio::fs::read(&bundle_path).await.map_err(internal_err)?;
+    drop(temp_dir);
+    emit_event(ctx, Event::ProvisionBundleDownloadDone);
+    bcs::from_bytes(&bundle_bytes).map_err(internal_err)
 }
 
 async fn persist_identity_and_emit(
@@ -489,6 +595,33 @@ async fn persist_identity_and_emit(
         dm_mailbox_key,
     )
     .await?;
+    DbNotify::touch();
+    emit_event(ctx, Event::State { logged_in: true });
+    Ok(())
+}
+
+async fn persist_imported_identity_and_emit(
+    ctx: &AnyCtx<Config>,
+    bundle: &ProvisioningBundle,
+    username: UserName,
+    server_name: ServerName,
+    medium_sk: DhSecret,
+) -> Result<(), InternalRpcError> {
+    let db = ctx.get(DATABASE);
+    let mut tx = db.begin().await.map_err(internal_err)?;
+    persist_identity(
+        &mut tx,
+        username,
+        server_name,
+        bundle.bootstrap.device_secret.clone(),
+        medium_sk,
+        bundle.bootstrap.dm_mailbox_key,
+    )
+    .await?;
+    import_provisioning_bundle(&mut tx, bundle)
+        .await
+        .map_err(internal_err)?;
+    tx.commit().await.map_err(internal_err)?;
     DbNotify::touch();
     emit_event(ctx, Event::State { logged_in: true });
     Ok(())
@@ -732,10 +865,8 @@ fn decode_elias_delta_bits(bits: &[bool], cursor: &mut usize) -> Result<u64, Int
 }
 
 #[derive(Serialize, Deserialize)]
-struct ProvisioningPayload {
-    device_secret: DeviceSecret,
-    add_device_update: DirectoryUpdate,
-    dm_mailbox_key: MailboxKey,
+struct ProvisioningTransfer {
+    bundle_attachment: Attachment,
 }
 
 #[serde_as]
@@ -757,7 +888,7 @@ enum ProvisionWireMessage {
 
 fn encrypt_finish_payload(
     spake_key: &SpakeKey,
-    payload: &ProvisioningPayload,
+    payload: &ProvisioningTransfer,
 ) -> Result<ProvisionFinishEnvelope, InternalRpcError> {
     let mut nonce = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut nonce);
@@ -775,7 +906,7 @@ fn encrypt_finish_payload(
 fn decrypt_finish_payload(
     spake_key: &SpakeKey,
     envelope: &ProvisionFinishEnvelope,
-) -> Result<ProvisioningPayload, InternalRpcError> {
+) -> Result<ProvisioningTransfer, InternalRpcError> {
     let nonce: [u8; 24] = envelope
         .nonce
         .as_ref()
@@ -785,7 +916,7 @@ fn decrypt_finish_payload(
     let plaintext = key
         .decrypt(nonce, &envelope.ciphertext, &[])
         .map_err(|err| InternalRpcError::Other(format!("provision decryption failed: {err}")))?;
-    serde_json::from_slice::<ProvisioningPayload>(&plaintext).map_err(internal_err)
+    serde_json::from_slice::<ProvisioningTransfer>(&plaintext).map_err(internal_err)
 }
 
 async fn post_spake_message(

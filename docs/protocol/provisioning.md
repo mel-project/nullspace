@@ -97,11 +97,20 @@ Plaintext JSON:
 
 ```json
 {
-  "device_secret": "...",
-  "add_device_update": "...",
-  "dm_mailbox_key": "..."
+  "bundle_attachment": "..."
 }
 ```
+
+`bundle_attachment` is a normal attachment object whose payload is the provisioning bundle.
+
+The bundle payload includes:
+
+- `device_secret`
+- `add_device_update`
+- `dm_mailbox_key`
+- recent local conversation history
+- current group state, including the current group bearer keys
+- mailbox cursors for imported mailboxes
 
 `add_device_update` is a signed raw directory update of the shape:
 
@@ -111,9 +120,10 @@ Plaintext JSON:
 
 After decrypting the finish payload, B must:
 
-1. verify the signed update targets that username and adds the decrypted device key;
-2. submit the signed update to the directory;
-3. verify the new device is present in the resulting descriptor;
-4. authenticate to the bound server, publish medium-term keys, and create or fetch the DM mailbox using `dm_mailbox_key`.
+1. download and decode the bundle attachment;
+2. verify the signed update targets that username and adds the decrypted device key;
+3. submit the signed update to the directory;
+4. verify the new device is present in the resulting descriptor;
+5. authenticate to the bound server, publish medium-term keys, create or fetch the DM mailbox using `dm_mailbox_key`, and import the transferred local state.
 
 This completes provisioning.

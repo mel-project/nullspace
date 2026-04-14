@@ -2,14 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use eframe::egui::{
-    Checkbox, CursorIcon, Rect, Response, RichText, Sense, TextEdit, TextWrapMode, Widget, vec2,
+    Align2, Checkbox, CursorIcon, Rect, Response, RichText, Sense, TextEdit, TextWrapMode,
+    Widget, vec2,
 };
+use egui_flex::{Flex, FlexAlign, item};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
-use egui_taffy::{TuiBuilderLogic, tui};
 use nullspace_client::{ConvoId, ConvoSummary, UserDetails};
 use nullspace_structs::username::UserName;
-use taffy::{AlignItems, Dimension, FlexDirection, Size as TaffySize, Style};
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
@@ -153,26 +153,16 @@ impl Widget for UserSearch<'_> {
                 let row_width = ui.available_width();
                 let mut avatar_clicked = false;
                 let mut checkbox_clicked = false;
+                let row_id = ui.id().with(("user_search_row", &row.username));
                 let row_scope_response = ui
                     .scope(|ui| {
-                        tui(ui, ui.id().with(("user_search_row", &row.username)))
-                            .reserve_available_width()
-                            .style(Style {
-                                flex_direction: FlexDirection::Row,
-                                align_items: Some(AlignItems::Center),
-                                size: TaffySize {
-                                    width: Dimension::Percent(1.0),
-                                    height: Dimension::Auto,
-                                },
-                                gap: TaffySize::length(gap_x),
-                                ..Default::default()
-                            })
-                            .show(|tui| {
-                                tui.style(Style {
-                                    flex_shrink: 0.0,
-                                    ..Default::default()
-                                })
-                                .ui(|ui| {
+                        Flex::horizontal()
+                            .id_salt(row_id)
+                            .w_full()
+                            .align_items(FlexAlign::Center)
+                            .gap(vec2(gap_x, ui.spacing().item_spacing.y))
+                            .show(ui, |flex| {
+                                flex.add_ui(item(), |ui| {
                                     let avatar =
                                         Avatar::for_user(&row.username, row.avatar.clone(), 28.0)
                                             .sense(eframe::egui::Sense::click());
@@ -182,46 +172,58 @@ impl Widget for UserSearch<'_> {
                                     }
                                 });
 
-                                tui.style(Style {
-                                    flex_grow: 1.0,
-                                    ..Default::default()
-                                })
-                                .ui(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(row.primary_text(selected).color(if enabled {
-                                            ui.visuals().text_color()
-                                        } else {
-                                            ui.visuals().weak_text_color()
-                                        }));
-                                        if row.primary_label != row.username.as_str() {
-                                            ui.label(
-                                                RichText::new(row.username.as_str())
-                                                    .color(ui.visuals().weak_text_color()),
-                                            );
-                                        }
-                                    });
-                                });
+                                flex.add_ui(
+                                    item().grow(1.0).shrink().content_id(row_id.with((
+                                        "label",
+                                        &row.primary_label,
+                                        selected,
+                                        enabled,
+                                    )))
+                                    .align_self_content(Align2::LEFT_CENTER),
+                                    |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(row.primary_text(selected).color(
+                                                if enabled {
+                                                    ui.visuals().text_color()
+                                                } else {
+                                                    ui.visuals().weak_text_color()
+                                                },
+                                            ));
+                                            if row.primary_label != row.username.as_str() {
+                                                ui.label(
+                                                    RichText::new(row.username.as_str())
+                                                        .color(ui.visuals().weak_text_color()),
+                                                );
+                                            }
+                                        });
+                                    },
+                                );
 
-                            tui.style(Style {
-                                flex_shrink: 0.0,
-                                ..Default::default()
+                                flex.add_ui(
+                                    item().content_id(row_id.with((
+                                        "trailing",
+                                        disabled_reason,
+                                        selected,
+                                    ))),
+                                    |ui| {
+                                        if let Some(reason) = disabled_reason {
+                                            ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                                            ui.label(
+                                                RichText::new(reason)
+                                                    .size(11.0)
+                                                    .color(ui.visuals().warn_fg_color),
+                                            );
+                                        } else {
+                                            let mut checked = selected;
+                                            let checkbox_response =
+                                                ui.add(Checkbox::without_text(&mut checked));
+                                            checkbox_clicked = checkbox_response.clicked();
+                                        }
+                                    },
+                                );
                             })
-                            .ui(|ui| {
-                                if let Some(reason) = disabled_reason {
-                                    ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                                    ui.label(
-                                        RichText::new(reason)
-                                            .size(11.0)
-                                            .color(ui.visuals().warn_fg_color),
-                                    );
-                                } else {
-                                    let mut checked = selected;
-                                    let checkbox_response = ui.add(Checkbox::without_text(&mut checked));
-                                    checkbox_clicked = checkbox_response.clicked();
-                                }
-                            });
-                    });
                     })
+                    .inner
                     .response;
                 let row_height = row_scope_response.rect.bottom() - row_start.y;
                 let row_rect = Rect::from_min_size(row_start, vec2(row_width, row_height.max(0.0)));

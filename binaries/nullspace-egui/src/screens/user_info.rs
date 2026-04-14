@@ -1,13 +1,10 @@
 use chrono::{DateTime, Local};
-use eframe::egui::{Response, TextWrapMode, Widget, Window};
+use eframe::egui::{Grid, Response, TextWrapMode, Ui, Widget, WidgetText, Window};
 use egui::RichText;
 use egui_hooks::UseHookExt;
-use egui_taffy::{Tui, TuiBuilderLogic, tui};
 use nullspace_client::UserDetails;
 use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
-use taffy::style_helpers::{auto, fr, length};
-use taffy::{AlignItems, Display, FlexDirection, LengthPercentage, Size as TaffySize, Style};
 
 use crate::NullspaceApp;
 use crate::utils::color::identity_color;
@@ -54,106 +51,67 @@ impl Widget for UserInfo<'_> {
                         last_dm_message: None,
                     });
 
-                // Main container with taffy
-                tui(ui, ui.id().with("user_info"))
-                    .style(Style {
-                        flex_direction: FlexDirection::Column,
-                        gap: TaffySize::length(12.),
-                        ..Default::default()
-                    })
-                    .show(|tui| {
-                        // Header: Avatar + Name
-                        tui.style(Style {
-                            flex_direction: FlexDirection::Row,
-                            align_items: Some(AlignItems::Center),
-                            gap: TaffySize::length(12.),
-                            ..Default::default()
-                        })
-                        .add(|tui| {
-                            // Avatar (fixed size, no shrink)
-                            tui.style(Style {
-                                flex_shrink: 0.,
-                                ..Default::default()
-                            })
-                            .ui(|ui| {
-                                let size = 48.0;
-                                ui.add(Avatar::for_user(
-                                    &details.username,
-                                    details.avatar.clone(),
-                                    size,
-                                ));
-                            });
-
-                            // Name section (grows to fill space)
-                            tui.style(Style {
-                                flex_direction: FlexDirection::Column,
-                                gap: TaffySize {
-                                    width: LengthPercentage::Length(4.),
-                                    height: LengthPercentage::Length(4.),
-                                },
-                                flex_grow: 1.,
-                                ..Default::default()
-                            })
-                            .ui(|ui| {
-                                let display = details
-                                    .display_name
-                                    .as_deref()
-                                    .unwrap_or_else(|| details.username.as_str());
-                                ui.heading(display);
-                                ui.label(
-                                    RichText::new(details.username.as_str())
-                                        .color(identity_color(&details.username)),
-                                );
-                            });
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let size = 48.0;
+                        ui.add(Avatar::for_user(
+                            &details.username,
+                            details.avatar.clone(),
+                            size,
+                        ));
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            let display = details
+                                .display_name
+                                .as_deref()
+                                .unwrap_or_else(|| details.username.as_str());
+                            ui.heading(display);
+                            ui.label(
+                                RichText::new(details.username.as_str())
+                                    .color(identity_color(&details.username)),
+                            );
                         });
+                    });
+                    ui.add_space(12.0);
 
-                        // Info rows
-                        tui.style(Style {
-                            flex_direction: FlexDirection::Column,
-                            gap: TaffySize::length(12.),
-                            ..Default::default()
-                        })
-                        .add(|tui| {
-                            // Server row
+                    Grid::new(ui.id().with("user_info_grid"))
+                        .num_columns(2)
+                        .min_col_width(120.0)
+                        .spacing([16.0, 12.0])
+                        .show(ui, |ui| {
                             let server_label = details
                                 .server_name
                                 .as_ref()
                                 .map(|s| s.to_string())
                                 .unwrap_or_else(|| "unknown".to_string());
-                            render_info_row(tui, "Server", |tui| {
-                                tui.wrap_mode(TextWrapMode::Extend).label(&server_label);
+                            render_info_row(ui, "Server", |ui| {
+                                extend_label(ui, server_label);
                             });
 
-                            // Common groups row
-                            render_info_row(tui, "Common groups", |tui| {
+                            render_info_row(ui, "Common groups", |ui| {
                                 if details.common_groups.is_empty() {
-                                    tui.wrap_mode(TextWrapMode::Extend).label("None");
+                                    extend_label(ui, "None");
                                 } else {
-                                    tui.style(Style {
-                                        flex_direction: FlexDirection::Column,
-                                        gap: TaffySize::length(4.),
-                                        ..Default::default()
-                                    })
-                                    .wrap_mode(TextWrapMode::Extend)
-                                    .add(|tui| {
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 4.0;
                                         for group in &details.common_groups {
-                                            tui.label(format!("Group {}", group.short_id()));
+                                            extend_label(ui, format!("Group {}", group.short_id()));
                                         }
                                     });
                                 }
                             });
 
-                            // Last message row
-                            render_info_row(tui, "Last message", |tui| {
+                            render_info_row(ui, "Last message", |ui| {
                                 if let Some(last) = details.last_dm_message.as_ref() {
                                     let time = format_timestamp(last.received_at);
-                                    tui.wrap_mode(TextWrapMode::Extend).label(time);
+                                    extend_label(ui, time);
                                 } else {
-                                    tui.wrap_mode(TextWrapMode::Extend).label("None");
+                                    extend_label(ui, "None");
                                 }
                             });
                         });
-                    });
+                });
             });
 
         if !window_open {
@@ -165,20 +123,16 @@ impl Widget for UserInfo<'_> {
     }
 }
 
-fn render_info_row(tui: &mut Tui, label: &str, content: impl FnOnce(&mut Tui)) {
-    tui.style(Style {
-        display: Display::Grid,
-        grid_template_columns: vec![length(120.0), fr(1.0)],
-        grid_auto_rows: vec![auto()],
-        gap: TaffySize::length(16.),
-        ..Default::default()
-    })
-    .add(|tui| {
-        // Label (fixed width via grid column)
-        tui.wrap_mode(TextWrapMode::Extend).label(label);
+fn render_info_row(ui: &mut Ui, label: &str, content: impl FnOnce(&mut Ui)) {
+    extend_label(ui, label);
+    content(ui);
+    ui.end_row();
+}
 
-        // Content (flexible via grid column)
-        tui.add(|tui| content(tui));
+fn extend_label(ui: &mut Ui, text: impl Into<WidgetText>) {
+    ui.scope(|ui| {
+        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+        ui.label(text);
     });
 }
 

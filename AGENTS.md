@@ -51,6 +51,18 @@ The documented workarounds are:
 
 For short trailing status/reason labels in horizontal rows, prefer `Truncate` or `Extend` over default wrapping. That avoids the pathological "one letter per line" result.
 
+## egui_flex
+
+Use `egui_flex` sparingly and prefer plain egui layout primitives unless you actually need grow/shrink behavior.
+
+For row layouts that are supposed to consume the full available width, `w_full()` is usually required; otherwise the flex container may size to its contents.
+
+Nested flex containers need to go through `add_flex` or `show_in` so the parent can measure them correctly.
+
+Only one item in a non-wrapping flex row should use `shrink()`.
+
+If a flex item's text or selected state changes its intrinsic width across frames, set a stable `content_id(...)` so it gets remeasured promptly.
+
 ## nullspace-client group state
 
 In `nullspace-client`, local group state should advance through the normal receive/poll path rather than being written through immediately after a successful send. Local insertion of outgoing thread events is still allowed for UI presentation. Group ban and unban propagate by submitting a new GBK rotation.

@@ -30,7 +30,7 @@ impl Widget for Settings<'_> {
                         .rail_width(130.0)
                         .show(ui, |tabs| {
                             tabs.tab("Profile", |ui| profile::render(ui, self.app));
-                            tabs.tab("Add device", add_device::render);
+                            tabs.tab("Add device", |ui| add_device::render(ui, self.app));
                             tabs.tab("Preferences", |ui| preferences::render(ui, self.app));
                             tabs.tab("Debug", |ui| debug::render(ui, self.app));
                         });

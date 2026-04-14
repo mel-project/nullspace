@@ -316,6 +316,30 @@ pub enum Event {
 
     /// A file download failed.
     DownloadFailed { attachment_id: Hash, error: String },
+
+    /// Progress update for the host-side provisioning bundle upload.
+    ProvisionBundleUploadProgress {
+        uploaded_size: u64,
+        total_size: u64,
+    },
+
+    /// The host-side provisioning bundle upload finished.
+    ProvisionBundleUploadDone,
+
+    /// The host-side provisioning bundle upload failed.
+    ProvisionBundleUploadFailed { error: String },
+
+    /// Progress update for the guest-side provisioning bundle download.
+    ProvisionBundleDownloadProgress {
+        downloaded_size: u64,
+        total_size: u64,
+    },
+
+    /// The guest-side provisioning bundle download finished.
+    ProvisionBundleDownloadDone,
+
+    /// The guest-side provisioning bundle download failed.
+    ProvisionBundleDownloadFailed { error: String },
 }
 
 /// Typed upload completion payload.

@@ -3,7 +3,7 @@ use egui::{Button, Image, Label, Modal, ProgressBar, ScrollArea, TextEdit};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::{State, Var};
 use egui_infinite_scroll::InfiniteScroll;
-use nullspace_client::{ConvoId, ConvoItem, UploadedRoot};
+use nullspace_client::{ConvoId, ConvoItem, GroupView, UploadedRoot};
 use nullspace_structs::event::{MessagePayload, MessageText};
 use nullspace_structs::username::UserName;
 use pollster::block_on;
@@ -71,7 +71,46 @@ impl Widget for Convo<'_> {
                 *last_update_seen = app.state.msg_updates;
             }
 
+            let group_view = match convo_id.get() {
+                ConvoId::Group { group_id } => Some(ui.use_memo(
+                    || flatten_rpc(block_on(get_rpc().group_view(group_id))),
+                    (group_id, app.state.msg_updates),
+                )),
+                ConvoId::Direct { .. } => None,
+            };
+            let group_access = group_view
+                .as_ref()
+                .and_then(|view| view.as_ref().ok())
+                .map(|view| group_access_state(&app.state.own_username, view));
+
             let full_rect = ui.available_rect_before_wrap();
+            if matches!(group_access, Some(GroupAccessState::Banned)) {
+                ui.allocate_rect(full_rect, egui::Sense::hover());
+                ui.scope_builder(egui::UiBuilder::new().max_rect(full_rect), |ui| {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            RichText::new("You are banned")
+                                .heading()
+                                .color(ui.visuals().error_fg_color),
+                        );
+                    });
+                });
+
+                if let ConvoId::Group { group_id } = convo_id.get() {
+                    ui.add(GroupWindow {
+                        app,
+                        open: &mut show_group_window,
+                        group: group_id,
+                        user_info: &mut user_info_target,
+                    });
+                }
+                ui.add(UserInfo {
+                    app,
+                    target: user_info_target,
+                });
+                return ui.response();
+            }
+
             let header_height = 40.0;
             let composer_height = 100.0;
             let width = full_rect.width();
@@ -93,6 +132,7 @@ impl Widget for Convo<'_> {
                     app,
                     ui,
                     convo_id.get(),
+                    group_view.as_ref().and_then(|view| view.as_ref().ok()),
                     &mut show_group_window,
                     &mut user_info_target,
                 );
@@ -101,7 +141,12 @@ impl Widget for Convo<'_> {
                 render_messages(ui, app, &mut scroller);
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
-                render_composer(ui, app, convo_id.get());
+                let composer_disabled_reason = match group_access {
+                    Some(GroupAccessState::Muted) => Some("You are muted"),
+                    Some(GroupAccessState::PendingJoin) => Some("Joining group..."),
+                    _ => None,
+                };
+                render_composer(ui, app, convo_id.get(), composer_disabled_reason);
             });
 
             if let ConvoId::Group { group_id } = convo_id.get() {
@@ -120,6 +165,36 @@ impl Widget for Convo<'_> {
             ui.response()
         });
         response.inner
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GroupAccessState {
+    Active,
+    Muted,
+    Banned,
+    PendingJoin,
+}
+
+fn group_access_state(own_username: &Option<UserName>, group_view: &GroupView) -> GroupAccessState {
+    let Some(own_username) = own_username.as_ref() else {
+        return if group_view.capabilities.can_send_messages {
+            GroupAccessState::Active
+        } else {
+            GroupAccessState::PendingJoin
+        };
+    };
+
+    match group_view
+        .roster
+        .iter()
+        .find(|entry| entry.username == *own_username)
+    {
+        Some(entry) if entry.is_banned => GroupAccessState::Banned,
+        Some(entry) if entry.is_muted => GroupAccessState::Muted,
+        Some(_) => GroupAccessState::Active,
+        None if group_view.capabilities.can_send_messages => GroupAccessState::Active,
+        None => GroupAccessState::PendingJoin,
     }
 }
 
@@ -216,6 +291,7 @@ fn render_header(
     app: &mut NullspaceApp,
     ui: &mut eframe::egui::Ui,
     convo_id: ConvoId,
+    group_view: Option<&GroupView>,
     show_group_window: &mut bool,
     user_info_target: &mut Option<UserName>,
 ) {
@@ -239,15 +315,9 @@ fn render_header(
             });
         }
         ConvoId::Group { group_id } => {
-            let display_title = ui.use_memo(
-                || {
-                    flatten_rpc(block_on(get_rpc().group_view(group_id)))
-                        .map(|view| view.display_title)
-                },
-                (group_id, app.state.msg_updates),
-            );
-            let display_title =
-                display_title.unwrap_or_else(|_| format!("Group {}", group_id.short_id()));
+            let display_title = group_view
+                .map(|view| view.display_title.clone())
+                .unwrap_or_else(|| format!("Group {}", group_id.short_id()));
             ui.horizontal_centered(|ui| {
                 ui.add(Avatar::for_group(group_id, None, 24.0));
                 ui.add(Label::new(RichText::from(display_title).heading()));
@@ -329,8 +399,14 @@ fn start_upload(attachment: &mut Var<Option<Uuid>>, path: PathBuf) {
     attachment.replace(upload_id);
 }
 
-fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId) {
+fn render_composer(
+    ui: &mut egui::Ui,
+    app: &mut NullspaceApp,
+    convo_id: ConvoId,
+    disabled_reason: Option<&str>,
+) {
     ui.add_space(8.0);
+    let composer_enabled = disabled_reason.is_none();
     let mut attachment: Var<Option<Uuid>> = ui.use_state(|| None, ()).into_var();
     let pending_attachments: GBox<Vec<PathBuf>> = ui.use_gbox(Vec::new, ());
     let upload_files_done: State<usize> = ui.use_state(|| 0, ());
@@ -361,40 +437,6 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
             } else {
                 (*uploaded as f32 / *total as f32).clamp(0.0, 1.0)
             };
-        } else if let Some(done) = app.state.upload_done.get(in_progress) {
-            let upload_id = *in_progress;
-            let root = done.clone();
-            let convo_id = convo_id.clone();
-            smol::spawn(async move {
-                let payload = match root {
-                    UploadedRoot::Attachment(root) => MessagePayload {
-                        payload: MessageText::Plain(String::new()),
-                        attachments: vec![root],
-                        images: Vec::new(),
-                        replies_to: None,
-                        metadata: Default::default(),
-                    },
-                    UploadedRoot::ImageAttachment(root) => MessagePayload {
-                        payload: MessageText::Plain(String::new()),
-                        attachments: Vec::new(),
-                        images: vec![root],
-                        replies_to: None,
-                        metadata: Default::default(),
-                    },
-                };
-                let _ = flatten_rpc(get_rpc().convo_send(convo_id, payload).await);
-            })
-            .detach();
-            *attachment = None;
-            let next_done = *upload_files_done + 1;
-            upload_files_done.set_next(next_done);
-            app.state.upload_done.remove(&upload_id);
-            app.state.upload_progress.remove(&upload_id);
-            app.state.upload_error.remove(&upload_id);
-            if pending_attachments.read().is_empty() && next_done >= *upload_files_total {
-                upload_files_done.set_next(0);
-                upload_files_total.set_next(0);
-            }
         } else if let Some(error) = app.state.upload_error.get(in_progress) {
             byte_progress_text = "Upload failed".to_string();
             ui.label(
@@ -413,13 +455,58 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
                     upload_files_total.set_next(0);
                 }
             }
+        } else if composer_enabled {
+            if let Some(done) = app.state.upload_done.get(in_progress) {
+                let upload_id = *in_progress;
+                let root = done.clone();
+                let convo_id = convo_id.clone();
+                smol::spawn(async move {
+                    let payload = match root {
+                        UploadedRoot::Attachment(root) => MessagePayload {
+                            payload: MessageText::Plain(String::new()),
+                            attachments: vec![root],
+                            images: Vec::new(),
+                            replies_to: None,
+                            metadata: Default::default(),
+                        },
+                        UploadedRoot::ImageAttachment(root) => MessagePayload {
+                            payload: MessageText::Plain(String::new()),
+                            attachments: Vec::new(),
+                            images: vec![root],
+                            replies_to: None,
+                            metadata: Default::default(),
+                        },
+                    };
+                    let _ = flatten_rpc(get_rpc().convo_send(convo_id, payload).await);
+                })
+                .detach();
+                *attachment = None;
+                let next_done = *upload_files_done + 1;
+                upload_files_done.set_next(next_done);
+                app.state.upload_done.remove(&upload_id);
+                app.state.upload_progress.remove(&upload_id);
+                app.state.upload_error.remove(&upload_id);
+                if pending_attachments.read().is_empty() && next_done >= *upload_files_total {
+                    upload_files_done.set_next(0);
+                    upload_files_total.set_next(0);
+                }
+            }
         }
     } else {
         ui.horizontal(|ui| {
-            if ui.button("\u{ea7f} Attach").clicked() {
+            if ui
+                .add_enabled(composer_enabled, Button::new("\u{ea7f} Attach"))
+                .clicked()
+            {
                 app.file_dialog.pick_multiple();
             }
-            if ui.button("\u{ed7a} Clipboard image").clicked() && pasted_image.is_none() {
+            if ui
+                .add_enabled(
+                    composer_enabled && pasted_image.is_none(),
+                    Button::new("\u{ed7a} Clipboard image"),
+                )
+                .clicked()
+            {
                 match read_clipboard_image() {
                     Ok(image) => {
                         *pasted_image = Some(image);
@@ -467,23 +554,31 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
 
     ui.take_available_space();
 
+    if let Some(reason) = disabled_reason {
+        ui.label(RichText::new(reason).color(ui.visuals().weak_text_color()));
+    }
+
     // the texting part
     let newline_shortcut = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
     let text_response = ScrollArea::vertical()
         .animated(false)
         .show(ui, |ui| {
-            ui.add_sized(
-                ui.available_size(),
-                TextEdit::multiline(&mut *draft)
-                    .desired_rows(1)
-                    .hint_text("Enter a message...")
-                    .desired_width(f32::INFINITY)
-                    .return_key(Some(newline_shortcut)),
-            )
+            ui.add_enabled_ui(composer_enabled, |ui| {
+                ui.add_sized(
+                    ui.available_size(),
+                    TextEdit::multiline(&mut *draft)
+                        .desired_rows(1)
+                        .hint_text("Enter a message...")
+                        .desired_width(f32::INFINITY)
+                        .return_key(Some(newline_shortcut)),
+                )
+            })
+            .inner
         })
         .inner;
 
-    let enter_pressed = text_response.has_focus()
+    let enter_pressed = composer_enabled
+        && text_response.has_focus()
         && text_response
             .ctx
             .input(|input| input.key_pressed(Key::Enter) && !input.modifiers.shift);
@@ -506,7 +601,7 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
             ));
             ui.add(Image::from_bytes(paste.uri.clone(), paste.png_bytes.clone()).max_width(320.0));
             ui.horizontal(|ui| {
-                let busy = attachment.is_some();
+                let busy = attachment.is_some() || !composer_enabled;
                 if ui.add_enabled(!busy, Button::new("Send")).clicked() {
                     let path = match persist_paste_image(&paste) {
                         Ok(path) => path,
@@ -521,8 +616,10 @@ fn render_composer(ui: &mut egui::Ui, app: &mut NullspaceApp, convo_id: ConvoId)
                 if ui.button("Cancel").clicked() {
                     *pasted_image = None;
                 }
-                if busy {
+                if busy && attachment.is_some() {
                     ui.label("Upload in progress");
+                } else if let Some(reason) = disabled_reason {
+                    ui.label(reason);
                 }
             });
         });

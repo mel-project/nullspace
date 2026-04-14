@@ -4,8 +4,8 @@ use anyctx::AnyCtx;
 use nullspace_structs::e2ee::DeviceSigned;
 use nullspace_structs::event::{
     Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, GroupUnban,
-    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN, TAG_LEAVE_REQUEST,
-    TAG_ROTATION_HINT,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN, TAG_JOIN_REQUEST,
+    TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
 };
 use nullspace_structs::group::{GroupBearerKey, GroupId, MemberState};
 use nullspace_structs::mailbox::MailboxEntry;
@@ -165,7 +165,6 @@ enum ProcessResult {
 enum MessageAuthorization {
     Accept,
     Skip,
-    SkipAndNotify,
 }
 
 async fn process_group_entry(
@@ -249,7 +248,7 @@ async fn process_group_entry(
     drop(conn);
 
     if let Some(result) =
-        try_apply_admin_action(ctx, group_id, thread_id, &sender, &event, entry.received_at).await?
+        try_apply_roster_event(ctx, group_id, thread_id, &sender, &event, entry.received_at).await?
     {
         return Ok(result);
     }
@@ -257,10 +256,6 @@ async fn process_group_entry(
     match authorize_regular_event(ctx, group_id, &sender).await? {
         MessageAuthorization::Accept => {}
         MessageAuthorization::Skip => return Ok(ProcessResult::Skip),
-        MessageAuthorization::SkipAndNotify => {
-            emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
-            return Ok(ProcessResult::Skip);
-        }
     }
 
     let mut conn = db.acquire().await?;
@@ -295,7 +290,7 @@ async fn authorize_regular_event(
 ) -> anyhow::Result<MessageAuthorization> {
     let db = ctx.get(DATABASE);
     let mut conn = db.acquire().await?;
-    let (rotation_index, mut roster) = match load_roster(&mut conn, group_id).await {
+    let (_, roster) = match load_roster(&mut conn, group_id).await {
         Ok(roster) => roster,
         Err(err) => {
             tracing::warn!(group = %group_id, error = %err, "no roster for received group event");
@@ -315,25 +310,13 @@ async fn authorize_regular_event(
         }
         Some(_) => Ok(MessageAuthorization::Accept),
         None => {
-            let is_muted = roster.settings.new_members_muted;
-            roster.members.insert(
-                sender.clone(),
-                MemberState {
-                    is_admin: false,
-                    is_muted,
-                },
-            );
-            replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
-            if is_muted {
-                Ok(MessageAuthorization::SkipAndNotify)
-            } else {
-                Ok(MessageAuthorization::Accept)
-            }
+            tracing::warn!(group = %group_id, sender = %sender, "non-member sent regular group event");
+            Ok(MessageAuthorization::Skip)
         }
     }
 }
 
-async fn try_apply_admin_action(
+async fn try_apply_roster_event(
     ctx: &AnyCtx<Config>,
     group_id: GroupId,
     thread_id: i64,
@@ -347,6 +330,7 @@ async fn try_apply_admin_action(
         TAG_GROUP_PERMISSION_CHANGE
             | TAG_GROUP_SETTINGS_CHANGE
             | TAG_GROUP_UNBAN
+            | TAG_JOIN_REQUEST
             | TAG_LEAVE_REQUEST
     ) {
         return Ok(None);
@@ -367,7 +351,12 @@ async fn try_apply_admin_action(
         .get(sender)
         .is_some_and(|member| member.is_admin);
     let sender_is_member = roster.members.contains_key(sender);
-    if tag == TAG_LEAVE_REQUEST {
+    if tag == TAG_JOIN_REQUEST {
+        if roster.banned.contains(sender) {
+            tracing::warn!(group = %group_id, sender = %sender, "banned user sent join request");
+            return Ok(Some(ProcessResult::Skip));
+        }
+    } else if tag == TAG_LEAVE_REQUEST {
         if !sender_is_member {
             tracing::warn!(group = %group_id, sender = %sender, "non-member sent leave request");
             return Ok(Some(ProcessResult::Skip));
@@ -430,6 +419,13 @@ fn apply_roster_delta(
         TAG_GROUP_UNBAN => {
             let change: GroupUnban = event.decode_body()?;
             roster.banned.remove(&change.username);
+            Ok(())
+        }
+        TAG_JOIN_REQUEST => {
+            roster.members.entry(sender.clone()).or_insert(MemberState {
+                is_admin: false,
+                is_muted: roster.settings.new_members_muted,
+            });
             Ok(())
         }
         TAG_LEAVE_REQUEST => {

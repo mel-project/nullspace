@@ -1,6 +1,7 @@
 mod identity_impl;
 pub mod medium_keys;
 pub mod provisioning;
+mod provisioning_bundle;
 
 pub use identity_impl::*;
 

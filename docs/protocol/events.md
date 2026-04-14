@@ -88,3 +88,9 @@ Sent in a group mailbox (tag 6) by an admin. The JSON body contains:
 Sent in a group mailbox (tag 7) by an admin. The JSON body contains:
 
 - `username`: the user to remove from the banned set
+
+## JoinRequestBody
+
+Sent in a group mailbox (tag 8) by a user who has accepted an invite and wants to become a member.
+
+- empty body

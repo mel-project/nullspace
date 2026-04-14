@@ -87,12 +87,14 @@ Validation is enforced by the raw directory:
 
 ## Provisioning bundle
 
-Provisioning transfers a new device secret plus a signed raw username update from an existing authorized device to the new device.
+Provisioning transfers a signed raw username update plus a bootstrap bundle from an existing authorized device to the new device.
 
-Bundle payload:
+The finish message carries an attachment object. The attachment payload contains the provisioning bundle.
+
+The bundle includes:
 
 ```
-[new_device_secret, add_device_update, dm_mailbox_key]
+[new_device_secret, add_device_update, dm_mailbox_key, local_state]
 ```
 
 where `add_device_update` is a raw update that:
@@ -101,7 +103,9 @@ where `add_device_update` is a raw update that:
 - includes `new_device_pk` in `owners`/descriptor `devices`
 - has `owners == next_descriptor.devices`
 
-The new device verifies these properties, submits `add_device_update`, waits for commit, then authenticates to the bound server, publishes a medium-term key, and creates or fetches the DM mailbox using `dm_mailbox_key`.
+`local_state` is client-maintained bootstrap data such as recent conversation history, current group state, the current group bearer keys, and mailbox cursors.
+
+The new device verifies these properties, downloads and decodes the bundle attachment, submits `add_device_update`, waits for commit, then authenticates to the bound server, publishes a medium-term key, creates or fetches the DM mailbox using `dm_mailbox_key`, and imports the transferred local state.
 
 ## Server authentication
 

@@ -24,7 +24,7 @@ use crate::internal::{Event, InternalRpcError, UploadedRoot};
 use crate::net::get_auth_token;
 use crate::net::get_server_client;
 
-use super::images;
+use super::{TransferProgressCallback, images};
 
 const MAX_CHUNK_SIZE: usize = 512 * 1024;
 const MAX_FANOUT: usize = 256;
@@ -38,7 +38,7 @@ pub async fn attachment_upload(
     let upload_id = Uuid::new_v4();
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        match upload_file(&ctx, absolute_path, mime, upload_id).await {
+        match upload_file(&ctx, absolute_path, None, mime, Some(upload_id), None).await {
             Ok(root) => emit_event(
                 &ctx,
                 Event::UploadDone {
@@ -107,8 +107,10 @@ async fn upload_image_attachment(
     let upload_result = upload_file(
         ctx,
         temp_path.clone(),
+        Some(SmolStr::new("image.webp")),
         SmolStr::new("image/webp"),
-        upload_id,
+        Some(upload_id),
+        None,
     )
     .await;
     drop(temp_file);
@@ -122,27 +124,34 @@ async fn upload_image_attachment(
     })
 }
 
+pub async fn attachment_upload_path(
+    ctx: &AnyCtx<Config>,
+    absolute_path: PathBuf,
+    filename: SmolStr,
+    mime: SmolStr,
+    progress: Option<TransferProgressCallback>,
+) -> anyhow::Result<Attachment> {
+    upload_file(ctx, absolute_path, Some(filename), mime, None, progress).await
+}
+
 async fn upload_file(
     ctx: &AnyCtx<Config>,
     absolute_path: PathBuf,
+    filename_override: Option<SmolStr>,
     mime: SmolStr,
-    upload_id: Uuid,
+    upload_id: Option<Uuid>,
+    progress: Option<TransferProgressCallback>,
 ) -> anyhow::Result<Attachment> {
     let db = ctx.get(DATABASE);
     let mut conn = db.acquire().await?;
     if !identity_exists(&mut conn).await? {
         return Err(InternalRpcError::NotReady.into());
     }
-    let filename = file_basename(&absolute_path)?;
+    let filename = filename_override
+        .map(|name| name.to_string())
+        .unwrap_or(file_basename(&absolute_path)?);
     let total_size = tokio::fs::metadata(&absolute_path).await?.len();
-    emit_event(
-        ctx,
-        Event::UploadProgress {
-            id: upload_id,
-            uploaded_size: 0,
-            total_size,
-        },
-    );
+    emit_upload_progress(ctx, upload_id, progress.as_ref(), 0, total_size);
 
     let identity = Identity::load(&mut conn).await?;
     let server_name = identity
@@ -168,6 +177,7 @@ async fn upload_file(
             let absolute_path = absolute_path.clone();
             let uploaded_size = uploaded_size.clone();
             let content_key = content_key.clone();
+            let progress = progress.clone();
             async move {
                 let mut file = tokio::fs::File::open(&absolute_path).await?;
                 file.seek(SeekFrom::Start(offset)).await?;
@@ -191,13 +201,12 @@ async fn upload_file(
                 let uploaded_size = uploaded_size
                     .fetch_add(chunk_len as u64, std::sync::atomic::Ordering::Relaxed)
                     .saturating_add(chunk_len as u64);
-                emit_event(
+                emit_upload_progress(
                     &ctx,
-                    Event::UploadProgress {
-                        id: upload_id,
-                        uploaded_size,
-                        total_size,
-                    },
+                    upload_id,
+                    progress.as_ref(),
+                    uploaded_size,
+                    total_size,
                 );
                 Ok((index, hash, chunk_len as u64))
             }
@@ -240,6 +249,28 @@ async fn upload_file(
         children: current_level,
         content_key,
     })
+}
+
+fn emit_upload_progress(
+    ctx: &AnyCtx<Config>,
+    upload_id: Option<Uuid>,
+    progress: Option<&TransferProgressCallback>,
+    uploaded_size: u64,
+    total_size: u64,
+) {
+    if let Some(upload_id) = upload_id {
+        emit_event(
+            ctx,
+            Event::UploadProgress {
+                id: upload_id,
+                uploaded_size,
+                total_size,
+            },
+        );
+    }
+    if let Some(progress) = progress {
+        progress(uploaded_size, total_size);
+    }
 }
 
 fn file_basename(path: &Path) -> anyhow::Result<String> {

@@ -1,5 +1,6 @@
 use anyctx::AnyCtx;
-use nullspace_structs::event::{GroupInvitation, MessagePayload, TAG_MESSAGE};
+use bytes::Bytes;
+use nullspace_structs::event::{GroupInvitation, MessagePayload, TAG_JOIN_REQUEST, TAG_MESSAGE};
 use nullspace_structs::group::GroupId;
 
 use crate::config::Config;
@@ -194,6 +195,7 @@ pub(super) async fn accept_group_invitation(
     invitation: &GroupInvitation,
 ) -> anyhow::Result<GroupId> {
     let db = ctx.get(DATABASE);
+    let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?).await?;
     let group_id = invitation.group_id;
     let server_name = invitation.gbk.server.clone();
     let invitation_rotation_index = invitation.rotation_index;
@@ -233,6 +235,18 @@ pub(super) async fn accept_group_invitation(
         .await?;
     let convo_id = ConvoId::Group { group_id };
     super::ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
+    if !roster.members.contains_key(&identity.username)
+        && !roster.banned.contains(&identity.username)
+    {
+        super::send::queue_message(
+            &mut tx,
+            &convo_id,
+            &identity.username,
+            TAG_JOIN_REQUEST,
+            &Bytes::new(),
+        )
+        .await?;
+    }
     tx.commit().await?;
     DbNotify::touch();
     Ok(group_id)

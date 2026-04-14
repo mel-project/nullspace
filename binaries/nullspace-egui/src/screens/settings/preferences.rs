@@ -1,18 +1,17 @@
-use eframe::egui::{ComboBox, Grid, Ui};
+use eframe::egui::{ComboBox, Ui};
 
 use crate::{
     NullspaceApp,
+    screens::settings::form,
     utils::prefs::{AppTheme, ConvoRowStyle},
+    widgets::pretty::PrettyToggle,
 };
 
 pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
     const ZOOM_OPTIONS: &[u16] = &[75, 100, 125, 150, 175, 200];
 
-    Grid::new("preferences_grid")
-        .num_columns(2)
-        .spacing([16.0, 8.0])
-        .show(ui, |ui| {
-            ui.label("Theme");
+    form::show(ui, "preferences_grid", |form| {
+        form.row("Theme", |ui| {
             ComboBox::from_id_salt("theme_preference")
                 .selected_text(app.state.prefs.theme.label())
                 .show_ui(ui, |ui| {
@@ -32,9 +31,9 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
                         AppTheme::Dark.label(),
                     );
                 });
-            ui.end_row();
+        });
 
-            ui.label("Zoom");
+        form.row("Zoom", |ui| {
             ComboBox::from_id_salt("zoom_percent")
                 .selected_text(format!("{}%", app.state.prefs.zoom_percent))
                 .show_ui(ui, |ui| {
@@ -46,15 +45,15 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
                         );
                     }
                 });
-            ui.end_row();
+        });
 
-            ui.label("Auto-download images");
+        form.row("Auto-download images", |ui| {
             let mut enabled = app.state.prefs.max_auto_image_download_bytes.is_some();
-            ui.checkbox(&mut enabled, "");
+            ui.add(PrettyToggle::new(&mut enabled));
             app.state.prefs.max_auto_image_download_bytes = enabled.then_some(1_000_000);
-            ui.end_row();
+        });
 
-            ui.label("Message style");
+        form.row("Message style", |ui| {
             ComboBox::from_id_salt("message_style")
                 .selected_text(app.state.prefs.convo_row_style.label())
                 .show_ui(ui, |ui| {
@@ -69,6 +68,6 @@ pub(super) fn render(ui: &mut Ui, app: &mut NullspaceApp) {
                         ConvoRowStyle::Friendly.label(),
                     );
                 });
-            ui.end_row();
         });
+    });
 }

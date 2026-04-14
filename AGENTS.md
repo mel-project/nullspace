@@ -28,6 +28,29 @@ This is doubly so if the RPC call is in a `use_memo` or any other construct that
 
 Prefer `use_gbox` when you want a widget-owned handle that is cheap to copy into closures or async tasks, or when the state itself is a long-lived object such as a task handle, scroller, or other nontrivial owned value. Prefer `use_state`/`State`/`Var` for normal form state that is edited inline by egui widgets like `TextEdit`, `Checkbox`, and selection controls.
 
+## Niche crate notes
+
+When you learn something non-obvious about a niche crate while developing, add a short note about it to this file so the knowledge accumulates. This especially applies to crates like `egui_taffy`, `egui_flex`, and `egui_hooks`, where the surprising parts are usually layout or state-model details that are easy to rediscover the hard way.
+
+## egui_taffy
+
+`egui_taffy::tui(...)` does not default to "fill the available parent width". Its default available space is `MinContent` on both axes, so a flex row will happily shrink-wrap unless you explicitly give it a width budget.
+
+`reserve_available_width()` gives the taffy tree a definite width budget, but that alone does not make the root node itself stretch to fill that width. If you want `flex_grow` on a child to actually consume remaining horizontal space and push trailing siblings to the far edge, the root flex node often also needs an explicit width such as `size.width = Dimension::Percent(1.0)`.
+
+In other words: for `egui_taffy` row layouts, "the container knows how much width is available" and "the container itself fills that width" are separate things. If a supposedly growing middle column is not growing, check both.
+
+This is exactly the kind of layout where `egui_taffy` helps: fixed leading item, growing middle item, fixed trailing item. But it only behaves like flexbox after the parent width contract is made explicit.
+
+`egui_taffy` also has a text-wrapping pitfall documented upstream: in dynamic layouts, wrapped egui text may try to use as little width as possible and end up wrapping into a one-character-wide vertical column. When a trailing text label in a taffy row suddenly stacks letters vertically, assume this issue first.
+
+The documented workarounds are:
+- give the text element a width or minimum width, or otherwise make it fill the parent width
+- set an explicit wrap mode for that element, such as `egui::TextWrapMode::Truncate`
+- or disable wrapping for that context with `TextWrapMode::Extend`
+
+For short trailing status/reason labels in horizontal rows, prefer `Truncate` or `Extend` over default wrapping. That avoids the pathological "one letter per line" result.
+
 ## nullspace-client group state
 
 In `nullspace-client`, local group state should advance through the normal receive/poll path rather than being written through immediately after a successful send. Local insertion of outgoing thread events is still allowed for UI presentation. Group ban and unban propagate by submitting a new GBK rotation.

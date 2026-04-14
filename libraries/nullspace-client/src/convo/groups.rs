@@ -7,9 +7,8 @@ use nullspace_crypt::hash::Hash;
 use nullspace_crypt::signing::{Signable, Signature, SigningPublic};
 use nullspace_structs::e2ee::HeaderEncrypted;
 use nullspace_structs::event::{
-    GroupInvitation, GroupPermissionChange, GroupSettingsChange, GroupUnban,
-    TAG_GROUP_INVITATION, TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE,
-    TAG_GROUP_UNBAN, TAG_LEAVE_REQUEST,
+    GroupInvitation, GroupPermissionChange, GroupSettingsChange, GroupUnban, TAG_GROUP_INVITATION,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN, TAG_LEAVE_REQUEST,
 };
 use nullspace_structs::group::{
     GroupBearerKey, GroupId, GroupMetadata, GroupRoster, GroupRosterSettings, GroupRotation,

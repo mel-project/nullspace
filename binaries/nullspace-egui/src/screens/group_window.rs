@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
-use eframe::egui::{Button, Checkbox, Response, RichText, TextEdit, Ui, Widget, Window};
+use eframe::egui::{
+    Button, Checkbox, Response, RichText, ScrollArea, TextEdit, Ui, Widget, Window,
+};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 use nullspace_client::{ConvoSummary, GroupAction, GroupRosterEntry, GroupView};
@@ -25,6 +27,7 @@ enum GroupActionFeedback {
 }
 
 type ActionSlot = Slot<Result<GroupActionFeedback, String>>;
+const ADD_MEMBERS_FOOTER_HEIGHT: f32 = 36.0;
 
 pub struct GroupWindow<'a> {
     pub app: &'a mut NullspaceApp,
@@ -41,12 +44,14 @@ impl Widget for GroupWindow<'_> {
 
         let mut window_open = *self.open;
         let mut close_requested = false;
+
         Window::new("Group")
             .collapsible(false)
             .default_width(640.0)
             .default_height(520.0)
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
+                let mut show_add_members: Var<bool> = ui.use_state(|| false, ()).into_var();
                 let group_view = ui.use_memo(
                     || flatten_rpc(block_on(get_rpc().group_view(self.group))),
                     (self.group, self.app.state.msg_updates),
@@ -58,7 +63,6 @@ impl Widget for GroupWindow<'_> {
                 let actions = ui.use_async_slot::<Result<GroupActionFeedback, String>>(self.group);
                 let mut inline_error: Var<Option<String>> =
                     ui.use_state(|| None::<String>, ()).into_var();
-                let mut show_add_members: Var<bool> = ui.use_state(|| false, ()).into_var();
                 let mut invitees: Var<BTreeSet<UserName>> =
                     ui.use_state(BTreeSet::<UserName>::new, ()).into_var();
 
@@ -579,90 +583,116 @@ impl GroupWindowBody<'_, '_> {
         Window::new("Add members")
             .collapsible(false)
             .default_width(480.0)
-            .vscroll(true)
+            .default_height(520.0)
             .open(&mut window_open)
             .show(ui.ctx(), |ui| {
-                ui.label(
-                    RichText::new("Search people, then send invites to add them to this group.")
-                        .color(ui.visuals().weak_text_color()),
+                let full_rect = ui.available_rect_before_wrap();
+                let width = full_rect.width();
+                let footer_height =
+                    ADD_MEMBERS_FOOTER_HEIGHT + ui.spacing().item_spacing.y + ui.spacing().window_margin.bottom as f32;
+                let body_height = (full_rect.height() - footer_height).max(0.0);
+                let body_rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(width, body_height));
+                let footer_rect = egui::Rect::from_min_size(
+                    egui::pos2(full_rect.min.x, body_rect.max.y),
+                    egui::vec2(width, full_rect.max.y - body_rect.max.y),
                 );
-                ui.add_space(8.0);
 
-                ui.add(UserSearch {
-                    app: self.app,
-                    id_source: "group_invite_search",
-                    known_users: &known_users,
-                    selection: UserSearchSelection::Multi(self.invitees),
-                    user_info_target: self.user_info_target,
-                    disabled_reasons: &disabled_reasons,
-                    placeholder: "Search people or enter exact @username",
-                    empty_text: "Enter an exact @username to invite someone not already visible here.",
-                });
+                ui.allocate_rect(full_rect, egui::Sense::hover());
 
-                if !self.invitees.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new(format!("Selected: {}", self.invitees.len()))
-                            .color(ui.visuals().weak_text_color()),
-                    );
-                    ui.horizontal_wrapped(|ui| {
-                        let selected: Vec<UserName> = self.invitees.iter().cloned().collect();
-                        for username in selected {
-                            if ui.small_button(username.as_str()).clicked() {
-                                self.invitees.remove(&username);
-                            }
-                        }
-                    });
-                }
+                ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+                    ScrollArea::vertical()
+                        .max_height(body_rect.height())
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(
+                                    "Search people, then send invites to add them to this group.",
+                                )
+                                .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.add_space(8.0);
 
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        close_requested = true;
-                        clear_selection = true;
-                    }
+                            ui.add(UserSearch {
+                                app: self.app,
+                                id_source: "group_invite_search",
+                                known_users: &known_users,
+                                selection: UserSearchSelection::Multi(self.invitees),
+                                user_info_target: self.user_info_target,
+                                disabled_reasons: &disabled_reasons,
+                                placeholder: "Search people or enter exact @username",
+                                empty_text:
+                                    "Enter an exact @username to invite someone not already visible here.",
+                            });
 
-                    if ui
-                        .add_enabled(
-                            self.group_view.capabilities.can_share_invites
-                                && !self.invitees.is_empty()
-                                && !self.busy,
-                            Button::new("Send invites"),
-                        )
-                        .clicked()
-                    {
-                        let selected_invitees: Vec<UserName> = self.invitees.iter().cloned().collect();
-                        let group_id = self.group_id;
-                        self.start_action(async move {
-                            let mut failures = Vec::new();
-                            for username in selected_invitees {
-                                if let Err(err) = flatten_rpc(
-                                    get_rpc()
-                                        .group_action(
-                                            group_id,
-                                            GroupAction::ShareInvite {
-                                                username: username.clone(),
-                                            },
-                                        )
-                                        .await,
-                                ) {
-                                    failures.push((username, err));
-                                }
-                            }
-                            if failures.is_empty() {
-                                Ok(GroupActionFeedback::CloseAddMembersWindow)
-                            } else {
-                                let summary = failures
-                                    .into_iter()
-                                    .map(|(username, err)| format!("{username}: {err}"))
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                Ok(GroupActionFeedback::Message(format!(
-                                    "Some invites failed:\n{summary}"
-                                )))
+                            if !self.invitees.is_empty() {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!("Selected: {}", self.invitees.len()))
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                                ui.horizontal_wrapped(|ui| {
+                                    let selected: Vec<UserName> =
+                                        self.invitees.iter().cloned().collect();
+                                    for username in selected {
+                                        if ui.small_button(username.as_str()).clicked() {
+                                            self.invitees.remove(&username);
+                                        }
+                                    }
+                                });
                             }
                         });
-                    }
+                });
+
+                ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close_requested = true;
+                            clear_selection = true;
+                        }
+
+                        if ui
+                            .add_enabled(
+                                self.group_view.capabilities.can_share_invites
+                                    && !self.invitees.is_empty()
+                                    && !self.busy,
+                                Button::new("Send invites"),
+                            )
+                            .clicked()
+                        {
+                            let selected_invitees: Vec<UserName> =
+                                self.invitees.iter().cloned().collect();
+                            let group_id = self.group_id;
+                            self.start_action(async move {
+                                let mut failures = Vec::new();
+                                for username in selected_invitees {
+                                    if let Err(err) = flatten_rpc(
+                                        get_rpc()
+                                            .group_action(
+                                                group_id,
+                                                GroupAction::ShareInvite {
+                                                    username: username.clone(),
+                                                },
+                                            )
+                                            .await,
+                                    ) {
+                                        failures.push((username, err));
+                                    }
+                                }
+                                if failures.is_empty() {
+                                    Ok(GroupActionFeedback::CloseAddMembersWindow)
+                                } else {
+                                    let summary = failures
+                                        .into_iter()
+                                        .map(|(username, err)| format!("{username}: {err}"))
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    Ok(GroupActionFeedback::Message(format!(
+                                        "Some invites failed:\n{summary}"
+                                    )))
+                                }
+                            });
+                        }
+                    });
                 });
             });
 

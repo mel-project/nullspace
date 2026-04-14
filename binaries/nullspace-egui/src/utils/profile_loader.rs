@@ -105,8 +105,10 @@ impl ProfileLoader {
             .as_ref()
             .map(|entry| is_stale(entry.cached_at_unix_secs))
             .unwrap_or(true);
-        let should_fetch =
-            entry.inflight.is_none() && !entry.missing && retry_ready && (entry.force_refresh || cache_stale);
+        let should_fetch = entry.inflight.is_none()
+            && !entry.missing
+            && retry_ready
+            && (entry.force_refresh || cache_stale);
 
         if should_fetch {
             entry.force_refresh = false;

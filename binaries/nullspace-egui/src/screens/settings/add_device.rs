@@ -1,7 +1,7 @@
 use std::{ops::Deref, time::Duration};
 
 use eframe::egui::Ui;
-use egui::{Color32, RichText};
+use egui::{Color32, FontFamily, FontId, RichText, Spinner};
 use egui_hooks::{UseHookExt, hook::state::State};
 use nullspace_client::ProvisionHostState;
 
@@ -63,8 +63,11 @@ pub(super) fn render(ui: &mut Ui) {
         *refreshes,
     );
 
-    ui.label("Pair a new device with this code:");
     ui.vertical_centered(|ui| {
+        let code_font = FontId::new(20.0, FontFamily::Proportional);
+        let code_height = ui.fonts_mut(|fonts| fonts.row_height(&code_font));
+
+        ui.label("Pair a new device with this code:");
         if let Some(fatal_error) = fatal_error.deref() {
             ui.colored_label(ui.visuals().error_fg_color, fatal_error);
         }
@@ -75,7 +78,7 @@ pub(super) fn render(ui: &mut Ui) {
             }
             ui.label(text);
         } else {
-            ui.spinner();
+            ui.add(Spinner::new().size(code_height));
         }
         if *pairing_done {
             ui.colored_label(success_fg_color(ui.visuals()), "Device added.");

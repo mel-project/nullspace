@@ -19,7 +19,7 @@ use crate::attachments::store_attachment_root;
 use crate::config::{Config, Ctx};
 use crate::convo::last_dm_received_at;
 use crate::database::DATABASE;
-use crate::identity::{identity_exists, Identity};
+use crate::identity::{Identity, identity_exists};
 use crate::internal::{
     InternalRpcError, MessageDirection, UserDetails, UserLastMessageSummary, internal_err,
     map_anyhow_err,

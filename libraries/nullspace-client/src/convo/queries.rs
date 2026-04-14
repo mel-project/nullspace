@@ -86,11 +86,9 @@ async fn display_title_for_convo(
 ) -> anyhow::Result<String> {
     match convo_id {
         ConvoId::Direct { peer } => Ok(peer.as_str().to_owned()),
-        ConvoId::Group { group_id } => Ok(
-            load_group_title(db, *group_id)
-                .await?
-                .unwrap_or_else(|| format!("Group {}", group_id.short_id())),
-        ),
+        ConvoId::Group { group_id } => Ok(load_group_title(db, *group_id)
+            .await?
+            .unwrap_or_else(|| format!("Group {}", group_id.short_id()))),
     }
 }
 
@@ -140,8 +138,10 @@ pub async fn convo_history(
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let sender = UserName::parse(row.event.sender_username)?;
-        let kind = match decode_convo_item_kind(u16::try_from(row.event.event_tag)?, &row.event.event_body)
-        {
+        let kind = match decode_convo_item_kind(
+            u16::try_from(row.event.event_tag)?,
+            &row.event.event_body,
+        ) {
             Ok(Some(kind)) => kind,
             Ok(None) => continue,
             Err(err) => {

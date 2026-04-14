@@ -212,9 +212,8 @@ pub(super) async fn accept_group_invitation(
         .verify(rotation.signer)
         .map_err(|_| anyhow::anyhow!("rotation signature verification failed"))?;
 
-    let roster =
-        nullspace_structs::group::decrypt_roster(&gbk, &rotation.roster_encrypted)
-            .map_err(|err| anyhow::anyhow!(err))?;
+    let roster = nullspace_structs::group::decrypt_roster(&gbk, &rotation.roster_encrypted)
+        .map_err(|err| anyhow::anyhow!(err))?;
 
     let rotation_hash = rotation.hash();
 
@@ -229,20 +228,11 @@ pub(super) async fn accept_group_invitation(
         &rotation.new_admin_set,
         &rotation_hash,
     )
-    .await
-    ?;
-    super::groups::replace_current_roster(
-        &mut tx,
-        group_id,
-        invitation_rotation_index,
-        &roster,
-    )
-    .await
-    ?;
+    .await?;
+    super::groups::replace_current_roster(&mut tx, group_id, invitation_rotation_index, &roster)
+        .await?;
     let convo_id = ConvoId::Group { group_id };
-    super::ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty())
-        .await
-        ?;
+    super::ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
     tx.commit().await?;
     DbNotify::touch();
     Ok(group_id)

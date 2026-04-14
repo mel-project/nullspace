@@ -165,9 +165,7 @@ pub enum ConvoEventItem {
     GroupSettingsChange(GroupSettingsChange),
     GroupUnban(GroupUnban),
     LeaveRequest,
-    Unknown {
-        tag: u16,
-    },
+    Unknown { tag: u16 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -323,11 +321,10 @@ pub(super) async fn thread_accepts_event_link(
         return Ok(true);
     }
 
-    let has_any = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM thread_events WHERE thread_id = ? LIMIT 1",
-    )
-    .bind(thread_id)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let has_any =
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM thread_events WHERE thread_id = ? LIMIT 1")
+            .bind(thread_id)
+            .fetch_optional(&mut *conn)
+            .await?;
     Ok(has_any.is_none())
 }

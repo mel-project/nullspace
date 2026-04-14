@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::events::{event_loop, spawn_audio_thread};
 use crate::fonts::{FontVariant, load_fonts};
+use crate::utils::color;
 use crate::utils::prefs::{AppTheme, PrefData};
 use crate::utils::profile_loader::ProfileLoader;
 
@@ -452,10 +453,12 @@ fn supports_hide_window() -> bool {
 fn configure_theme_styles(ctx: &egui::Context) {
     for theme in [egui::Theme::Light, egui::Theme::Dark] {
         ctx.style_mut_of(theme, |style| {
+            apply_palette(&mut style.visuals, theme);
             style.spacing.item_spacing = egui::vec2(6.0, 6.0);
             style.spacing.window_margin = egui::Margin::same(8);
             style.spacing.button_padding = egui::vec2(8.0, 4.0);
             style.spacing.scroll = ScrollStyle::floating();
+            style.visuals.text_options.font_hinting = false;
             for wid in [
                 &mut style.visuals.widgets.active,
                 &mut style.visuals.widgets.hovered,
@@ -482,15 +485,98 @@ fn configure_theme_styles(ctx: &egui::Context) {
     }
 }
 
+fn apply_palette(visuals: &mut egui::Visuals, theme: egui::Theme) {
+    let dark = matches!(theme, egui::Theme::Dark);
+
+    visuals.hyperlink_color = color::primary(500);
+    visuals.warn_fg_color = color::warning(if dark { 100 } else { 500 });
+    visuals.error_fg_color = color::danger(if dark { 100 } else { 500 });
+    visuals.selection.bg_fill = if dark {
+        color::primary(620)
+    } else {
+        color::primary(180)
+    };
+    visuals.selection.stroke.color = if dark {
+        color::primary(100)
+    } else {
+        color::primary(720)
+    };
+
+    visuals.widgets.inactive.bg_fill = if dark {
+        color::neutral(860)
+    } else {
+        color::neutral(160)
+    };
+    visuals.widgets.noninteractive.bg_stroke.color = if dark {
+        color::neutral(560)
+    } else {
+        color::neutral(320)
+    };
+    visuals.widgets.inactive.weak_bg_fill = if dark {
+        color::neutral(900)
+    } else {
+        color::neutral(140)
+    };
+    visuals.widgets.inactive.bg_stroke.color = if dark {
+        color::neutral(620)
+    } else {
+        color::neutral(340)
+    };
+
+    visuals.widgets.hovered.bg_fill = if dark {
+        color::neutral(820)
+    } else {
+        color::primary(220)
+    };
+    visuals.widgets.hovered.weak_bg_fill = if dark {
+        color::neutral(860)
+    } else {
+        visuals.widgets.hovered.bg_fill
+    };
+    visuals.widgets.hovered.bg_stroke.color = if dark {
+        color::neutral(500)
+    } else {
+        color::primary(520)
+    };
+
+    visuals.widgets.active.bg_fill = if dark {
+        color::neutral(760)
+    } else {
+        color::primary(260)
+    };
+    visuals.widgets.active.weak_bg_fill = if dark {
+        color::neutral(820)
+    } else {
+        visuals.widgets.active.bg_fill
+    };
+    visuals.widgets.active.bg_stroke.color = if dark {
+        color::neutral(420)
+    } else {
+        color::primary(620)
+    };
+
+    visuals.widgets.open.bg_fill = if dark {
+        color::neutral(900)
+    } else {
+        visuals.widgets.active.bg_fill
+    };
+    visuals.widgets.open.weak_bg_fill = if dark {
+        color::neutral(900)
+    } else {
+        color::neutral(140)
+    };
+    visuals.widgets.open.bg_stroke.color = if dark {
+        color::neutral(620)
+    } else {
+        color::neutral(340)
+    };
+}
+
 fn apply_theme_preference(ctx: &egui::Context, theme: AppTheme) {
     ctx.set_theme(theme.to_egui());
 }
 
 fn apply_debug_mode(ctx: &egui::Context, debug_mode: bool) {
-    #[cfg(debug_assertions)]
-    ctx.set_debug_on_hover(debug_mode);
-
-    #[cfg(not(debug_assertions))]
     let _ = (ctx, debug_mode);
 }
 

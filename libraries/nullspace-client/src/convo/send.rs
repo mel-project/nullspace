@@ -287,12 +287,12 @@ async fn mark_message_failed(
          SET send_error = ?, received_at = ? \
          WHERE thread_id = ? AND id > ? AND received_at IS NULL AND send_error IS NULL",
     )
-        .bind(format!("earlier draft send failed: {err}"))
-        .bind(synth_received_at.0 as i64)
-        .bind(pending.thread_id)
-        .bind(pending.id)
-        .execute(&mut *tx)
-        .await?;
+    .bind(format!("earlier draft send failed: {err}"))
+    .bind(synth_received_at.0 as i64)
+    .bind(pending.thread_id)
+    .bind(pending.id)
+    .execute(&mut *tx)
+    .await?;
     Ok(())
 }
 

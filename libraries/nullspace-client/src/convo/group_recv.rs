@@ -4,8 +4,8 @@ use anyctx::AnyCtx;
 use nullspace_structs::e2ee::DeviceSigned;
 use nullspace_structs::event::{
     Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, GroupUnban,
-    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN,
-    TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN, TAG_LEAVE_REQUEST,
+    TAG_ROTATION_HINT,
 };
 use nullspace_structs::group::{GroupBearerKey, GroupId, MemberState};
 use nullspace_structs::mailbox::MailboxEntry;
@@ -344,7 +344,10 @@ async fn try_apply_admin_action(
     let tag = event.tag;
     if !matches!(
         tag,
-        TAG_GROUP_PERMISSION_CHANGE | TAG_GROUP_SETTINGS_CHANGE | TAG_GROUP_UNBAN | TAG_LEAVE_REQUEST
+        TAG_GROUP_PERMISSION_CHANGE
+            | TAG_GROUP_SETTINGS_CHANGE
+            | TAG_GROUP_UNBAN
+            | TAG_LEAVE_REQUEST
     ) {
         return Ok(None);
     }

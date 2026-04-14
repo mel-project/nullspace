@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use eframe::egui::{Button, Response, RichText, ScrollArea, TextEdit, Widget};
+use eframe::egui::{
+    Checkbox, CursorIcon, Rect, Response, RichText, Sense, TextEdit, TextWrapMode, Widget, vec2,
+};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
+use egui_taffy::{TuiBuilderLogic, tui};
 use nullspace_client::{ConvoId, ConvoSummary, UserDetails};
 use nullspace_structs::username::UserName;
+use taffy::{AlignItems, Dimension, FlexDirection, Size as TaffySize, Style};
 
 use crate::NullspaceApp;
 use crate::rpc::{flatten_rpc, get_rpc};
@@ -140,57 +144,106 @@ impl Widget for UserSearch<'_> {
             }
 
             ui.add_space(6.0);
-            ScrollArea::vertical().show(ui, |ui| {
-                for row in rows {
-                    let disabled_reason = self.disabled_reasons.get(&row.username);
-                    let enabled = disabled_reason.is_none();
-                    let selected = self.selection.is_selected(&row.username);
-                    let button_text = if selected {
-                        format!("{} {}", row.primary_label, "Selected")
-                    } else {
-                        row.primary_label.clone()
-                    };
+            for row in rows {
+                let disabled_reason = self.disabled_reasons.get(&row.username);
+                let enabled = disabled_reason.is_none();
+                let selected = self.selection.is_selected(&row.username);
+                let gap_x = ui.spacing().item_spacing.x;
+                let row_start = ui.cursor().min;
+                let row_width = ui.available_width();
+                let mut avatar_clicked = false;
+                let mut checkbox_clicked = false;
+                let row_scope_response = ui
+                    .scope(|ui| {
+                        tui(ui, ui.id().with(("user_search_row", &row.username)))
+                            .reserve_available_width()
+                            .style(Style {
+                                flex_direction: FlexDirection::Row,
+                                align_items: Some(AlignItems::Center),
+                                size: TaffySize {
+                                    width: Dimension::Percent(1.0),
+                                    height: Dimension::Auto,
+                                },
+                                gap: TaffySize::length(gap_x),
+                                ..Default::default()
+                            })
+                            .show(|tui| {
+                                tui.style(Style {
+                                    flex_shrink: 0.0,
+                                    ..Default::default()
+                                })
+                                .ui(|ui| {
+                                    let avatar =
+                                        Avatar::for_user(&row.username, row.avatar.clone(), 28.0)
+                                            .sense(eframe::egui::Sense::click());
+                                    if ui.add(avatar).clicked() {
+                                        avatar_clicked = true;
+                                        *self.user_info_target = Some(row.username.clone());
+                                    }
+                                });
 
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let avatar = Avatar::for_user(&row.username, row.avatar.clone(), 28.0)
-                                .sense(eframe::egui::Sense::click());
-                            if ui.add(avatar).clicked() {
-                                *self.user_info_target = Some(row.username.clone());
-                            }
+                                tui.style(Style {
+                                    flex_grow: 1.0,
+                                    ..Default::default()
+                                })
+                                .ui(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(row.primary_text(selected).color(if enabled {
+                                            ui.visuals().text_color()
+                                        } else {
+                                            ui.visuals().weak_text_color()
+                                        }));
+                                        if row.primary_label != row.username.as_str() {
+                                            ui.label(
+                                                RichText::new(row.username.as_str())
+                                                    .color(ui.visuals().weak_text_color()),
+                                            );
+                                        }
+                                    });
+                                });
 
-                            let response = ui.add_enabled(
-                                enabled,
-                                Button::new(button_text)
-                                    .selected(selected)
-                                    .min_size([220.0, 30.0].into()),
-                            );
-                            if response.clicked() {
-                                self.selection.activate(&row.username);
-                            }
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.add_space(28.0 + ui.style().spacing.item_spacing.x);
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new(row.secondary_line.clone())
-                                        .size(11.0)
-                                        .color(ui.visuals().weak_text_color()),
-                                );
+                            tui.style(Style {
+                                flex_shrink: 0.0,
+                                ..Default::default()
+                            })
+                            .ui(|ui| {
                                 if let Some(reason) = disabled_reason {
+                                    ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                                     ui.label(
                                         RichText::new(reason)
                                             .size(11.0)
                                             .color(ui.visuals().warn_fg_color),
                                     );
+                                } else {
+                                    let mut checked = selected;
+                                    let checkbox_response = ui.add(Checkbox::without_text(&mut checked));
+                                    checkbox_clicked = checkbox_response.clicked();
                                 }
                             });
-                        });
                     });
-                    ui.add_space(4.0);
+                    })
+                    .response;
+                let row_height = row_scope_response.rect.bottom() - row_start.y;
+                let row_rect = Rect::from_min_size(row_start, vec2(row_width, row_height.max(0.0)));
+                let row_response = if enabled {
+                    ui.interact(
+                        row_rect,
+                        ui.id().with(("user_search_row_click", &row.username)),
+                        Sense::click(),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                } else {
+                    ui.interact(
+                        row_rect,
+                        ui.id().with(("user_search_row_click", &row.username)),
+                        Sense::hover(),
+                    )
+                };
+                if enabled && !avatar_clicked && (row_response.clicked() || checkbox_clicked) {
+                    self.selection.activate(&row.username);
                 }
-            });
+                ui.add_space(2.0);
+            }
 
             ui.response()
         })
@@ -203,7 +256,6 @@ struct SearchRow {
     username: UserName,
     avatar: Option<nullspace_structs::fragment::ImageAttachment>,
     primary_label: String,
-    secondary_line: String,
 }
 
 impl SearchRow {
@@ -212,7 +264,6 @@ impl SearchRow {
             Some(details) => Self::from_details(details),
             None => Self {
                 primary_label: username.as_str().to_string(),
-                secondary_line: username.as_str().to_string(),
                 avatar: None,
                 username,
             },
@@ -225,23 +276,20 @@ impl SearchRow {
             .clone()
             .unwrap_or_else(|| details.username.as_str().to_string());
 
-        let mut secondary = details.username.as_str().to_string();
-        if let Some(server) = details.server_name.as_ref() {
-            secondary.push_str("  •  ");
-            secondary.push_str(server.as_str());
-        }
-        if !details.common_groups.is_empty() {
-            secondary.push_str("  •  ");
-            secondary.push_str(&format!("{} shared groups", details.common_groups.len()));
-        } else if details.last_dm_message.is_some() {
-            secondary.push_str("  •  Existing chat");
-        }
-
         Self {
             username: details.username,
             avatar: details.avatar,
             primary_label,
-            secondary_line: secondary,
         }
+    }
+}
+
+impl SearchRow {
+    fn primary_text(&self, selected: bool) -> RichText {
+        let mut text = RichText::new(self.primary_label.clone());
+        if selected {
+            text = text.strong();
+        }
+        text
     }
 }

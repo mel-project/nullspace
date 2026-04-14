@@ -13,10 +13,7 @@ pub struct ConvoSelect<'a> {
 impl Widget for ConvoSelect<'_> {
     fn ui(self, ui: &mut eframe::egui::Ui) -> Response {
         let (fill_color, text_color) = if self.selected {
-            (
-                ui.visuals().widgets.inactive.bg_fill,
-                ui.visuals().text_color(),
-            )
+            (ui.visuals().selection.bg_fill, ui.visuals().text_color())
         } else {
             (ui.visuals().window_fill, ui.visuals().text_color())
         };

@@ -115,10 +115,7 @@ impl ConvoRow<'_> {
             // This "trick" makes avatar and no-avatar take the same space
             if self.is_beginning {
                 let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(36.0, 36.0));
-                ui.place(
-                    rect,
-                    Avatar::for_user(&self.message.sender, avatar, 36.0),
-                );
+                ui.place(rect, Avatar::for_user(&self.message.sender, avatar, 36.0));
             }
             ui.add_space(36.0 + ui.style().spacing.item_spacing.x);
 

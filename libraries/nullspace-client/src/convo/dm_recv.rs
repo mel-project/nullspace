@@ -158,26 +158,26 @@ async fn process_mailbox_entry(
             && verified.sender != identity.username
         {
             match event.decode_body::<nullspace_structs::event::GroupInvitation>() {
-                Ok(invitation) => match super::convo_impl::accept_group_invitation(ctx, &invitation)
-                    .await
-                {
-                    Ok(group_id) => {
-                        emit_event(
-                            ctx,
-                            crate::internal::Event::ConvoUpdated {
-                                convo_id: super::ConvoId::Group { group_id },
-                            },
-                        );
+                Ok(invitation) => {
+                    match super::convo_impl::accept_group_invitation(ctx, &invitation).await {
+                        Ok(group_id) => {
+                            emit_event(
+                                ctx,
+                                crate::internal::Event::ConvoUpdated {
+                                    convo_id: super::ConvoId::Group { group_id },
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                inviter = %verified.sender,
+                                group = %invitation.group_id,
+                                "failed to auto-accept group invitation",
+                            );
+                        }
                     }
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            inviter = %verified.sender,
-                            group = %invitation.group_id,
-                            "failed to auto-accept group invitation",
-                        );
-                    }
-                },
+                }
                 Err(err) => {
                     tracing::warn!(
                         error = %err,

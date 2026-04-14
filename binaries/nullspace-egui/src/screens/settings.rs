@@ -5,6 +5,7 @@ use crate::widgets::tabbed_pane::TabbedPane;
 
 mod add_device;
 mod debug;
+mod form;
 mod preferences;
 mod profile;
 
@@ -22,6 +23,7 @@ impl Widget for Settings<'_> {
                 .collapsible(false)
                 .default_pos(center)
                 .max_size([500.0, 500.0])
+                .resizable(false)
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
                     TabbedPane::new("settings_tabs")

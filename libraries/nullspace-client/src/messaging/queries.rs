@@ -190,31 +190,3 @@ pub async fn mark_convo_read(
     .rows_affected();
     Ok(affected)
 }
-
-pub async fn last_dm_received_at(
-    db: &mut sqlx::SqliteConnection,
-    local_username: &UserName,
-    other_username: &UserName,
-) -> anyhow::Result<Option<NanoTimestamp>> {
-    let convo_id = ConvoId::Direct {
-        peer: other_username.clone(),
-    };
-    let thread_kind = convo_id.convo_type();
-    let counterparty = convo_id.counterparty();
-    let received_at = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT e.received_at \
-         FROM thread_events e \
-         JOIN event_threads t ON e.thread_id = t.id \
-         WHERE t.thread_kind = ? AND t.thread_counterparty = ? AND e.event_tag != ? AND e.sender_username != ? \
-         ORDER BY e.id DESC \
-         LIMIT 1",
-    )
-    .bind(thread_kind)
-    .bind(counterparty)
-    .bind(i64::from(TAG_GROUP_INVITATION))
-    .bind(local_username.as_str())
-    .fetch_optional(&mut *db)
-    .await?
-    .flatten();
-    Ok(received_at.map(|ts| NanoTimestamp(ts as u64)))
-}

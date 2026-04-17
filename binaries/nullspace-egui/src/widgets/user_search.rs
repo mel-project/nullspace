@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use eframe::egui::{
-    Align2, Checkbox, CursorIcon, Rect, Response, RichText, Sense, TextEdit, TextWrapMode,
-    Widget, vec2,
+    Align2, Checkbox, CursorIcon, Rect, Response, RichText, Sense, TextEdit, TextWrapMode, Widget,
+    vec2,
 };
 use egui_flex::{Flex, FlexAlign, item};
 use egui_hooks::UseHookExt;
@@ -173,13 +173,16 @@ impl Widget for UserSearch<'_> {
                                 });
 
                                 flex.add_ui(
-                                    item().grow(1.0).shrink().content_id(row_id.with((
-                                        "label",
-                                        &row.primary_label,
-                                        selected,
-                                        enabled,
-                                    )))
-                                    .align_self_content(Align2::LEFT_CENTER),
+                                    item()
+                                        .grow(1.0)
+                                        .shrink()
+                                        .content_id(row_id.with((
+                                            "label",
+                                            &row.primary_label,
+                                            selected,
+                                            enabled,
+                                        )))
+                                        .align_self_content(Align2::LEFT_CENTER),
                                     |ui| {
                                         ui.horizontal(|ui| {
                                             ui.label(row.primary_text(selected).color(

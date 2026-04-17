@@ -11,8 +11,8 @@ use super::Identity;
 use crate::Config;
 use crate::DIR_CLIENT;
 use crate::database::DATABASE;
-use crate::net::get_auth_token;
-use crate::net::get_server_client;
+use crate::identity::get_auth_token;
+use crate::transport::get_server_client;
 
 const MEDIUM_ROTATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 

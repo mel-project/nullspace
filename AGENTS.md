@@ -88,3 +88,9 @@ Always run cargo check after making significant changes to make sure things comp
 
 use module/mod.rs when *all* it does is reexport things, but use module.rs when the root has its own logic and its submodules are    
 helpers for this logic.         
+
+## Visibility style
+
+Prefer module structure that keeps private things private without restricted visibilities.
+
+As a style rule, treat `pub(crate)` and `pub(super)` as anti-patterns. If something should not be visible outside a module boundary, reorganize the modules so plain `pub` on the intended interface is sufficient and internal helpers remain private by normal module visibility.

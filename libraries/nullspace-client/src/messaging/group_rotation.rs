@@ -1,11 +1,6 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use crate::config::Config;
-use crate::database::DATABASE;
-use crate::identity::Identity;
-use crate::net::{get_auth_token, get_server_client};
-use crate::users::get_user_info;
 use anyctx::AnyCtx;
 use bytes::Bytes;
 use nullspace_crypt::dh::DhPublic;
@@ -19,7 +14,12 @@ use nullspace_structs::group::{
 };
 use nullspace_structs::timestamp::NanoTimestamp;
 
-use super::groups::{load_gbk, load_roster};
+use crate::config::Config;
+use crate::database::DATABASE;
+use crate::identity::{Identity, get_auth_token};
+use crate::storage::{load_gbk, load_roster};
+use crate::transport::get_server_client;
+use crate::users::get_user_info;
 
 /// Admin rotation submit loop.
 ///

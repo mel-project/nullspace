@@ -1,9 +1,10 @@
 mod identity_impl;
 pub mod medium_keys;
 pub mod provisioning;
-mod provisioning_bundle;
+mod session;
 
 pub use identity_impl::*;
+pub use session::{get_auth_token, own_server_name};
 
 use anyhow::Context;
 

@@ -9,11 +9,12 @@ use crate::events::emit_event;
 use crate::identity::Identity;
 use nullspace_crypt::signing::Signable;
 
-use crate::internal::{
+use crate::api::{
     Event, GroupAction, GroupCapabilities, GroupCreateRequest, GroupRosterEntry, GroupSettings,
     GroupView, InternalRpcError, internal_err, map_anyhow_err,
 };
-use crate::net::get_server_client;
+use crate::storage::{ensure_thread_id, load_gbk, load_roster, replace_current_roster, store_gbk};
+use crate::transport::get_server_client;
 
 use super::{ConvoId, ConvoItem, ConvoSummary};
 
@@ -124,16 +125,14 @@ pub async fn group_view_impl(
         .await
         .map_err(internal_err)?;
 
-    let (_, roster) =
-        super::groups::load_roster(&mut *db.acquire().await.map_err(internal_err)?, group_id)
-            .await
-            .map_err(|_| InternalRpcError::NotFound)?;
+    let (_, roster) = load_roster(&mut *db.acquire().await.map_err(internal_err)?, group_id)
+        .await
+        .map_err(|_| InternalRpcError::NotFound)?;
 
-    let server_name =
-        super::groups::load_gbk(&mut *db.acquire().await.map_err(internal_err)?, group_id)
-            .await
-            .map_err(|_| InternalRpcError::NotFound)?
-            .server_name;
+    let server_name = load_gbk(&mut *db.acquire().await.map_err(internal_err)?, group_id)
+        .await
+        .map_err(|_| InternalRpcError::NotFound)?
+        .server_name;
 
     let my_member = roster.members.get(&identity.username);
     let am_admin = my_member.map_or(false, |m| m.is_admin);
@@ -190,7 +189,7 @@ pub async fn group_view_impl(
     })
 }
 
-pub(super) async fn accept_group_invitation(
+pub async fn accept_group_invitation(
     ctx: &AnyCtx<Config>,
     invitation: &GroupInvitation,
 ) -> anyhow::Result<GroupId> {
@@ -221,7 +220,7 @@ pub(super) async fn accept_group_invitation(
 
     // Store GBK and roster
     let mut tx = db.begin().await.map_err(internal_err)?;
-    super::groups::store_gbk(
+    store_gbk(
         &mut tx,
         group_id,
         &gbk,
@@ -231,10 +230,9 @@ pub(super) async fn accept_group_invitation(
         &rotation_hash,
     )
     .await?;
-    super::groups::replace_current_roster(&mut tx, group_id, invitation_rotation_index, &roster)
-        .await?;
+    replace_current_roster(&mut tx, group_id, invitation_rotation_index, &roster).await?;
     let convo_id = ConvoId::Group { group_id };
-    super::ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
+    ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
     if !roster.members.contains_key(&identity.username)
         && !roster.banned.contains(&identity.username)
     {

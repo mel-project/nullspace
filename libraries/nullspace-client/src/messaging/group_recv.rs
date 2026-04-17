@@ -12,19 +12,21 @@ use nullspace_structs::mailbox::MailboxEntry;
 use nullspace_structs::server::ServerName;
 use tokio::task::JoinSet;
 
+use crate::api::Event as ApiEvent;
 use crate::config::Config;
-use crate::convo::{
-    ConvoId, NewThreadEvent, ensure_thread_id, insert_thread_event, thread_accepts_event_link,
-};
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
-use crate::net::LONG_POLLER;
-use crate::net::{load_mailbox_after, update_mailbox_after};
+use crate::storage::{
+    NewThreadEvent, ensure_thread_id, insert_thread_event, load_mailbox_after, load_roster,
+    replace_current_roster, thread_accepts_event_link, update_mailbox_after,
+};
+use crate::transport::LONG_POLLER;
 
-use super::groups::{load_roster, refresh_group_state, replace_current_roster};
+use super::ConvoId;
+use super::groups::refresh_group_state;
 use super::send::store_message_attachments;
 
-pub(super) async fn group_recv_loop(ctx: &AnyCtx<Config>) {
+pub async fn group_recv_loop(ctx: &AnyCtx<Config>) {
     loop {
         if let Err(err) = group_recv_loop_once(ctx).await {
             tracing::error!(error = %err, "group recv loop error");
@@ -125,13 +127,13 @@ async fn poll_single_group(
         after = entry.received_at;
         match process_group_entry(ctx, group_id, &gbk, &server_name, mailbox_id, entry).await {
             Ok(ProcessResult::Message(convo_id)) => {
-                emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
+                emit_event(ctx, ApiEvent::ConvoUpdated { convo_id });
             }
             Ok(ProcessResult::RotationHint) => {
                 match refresh_group_state(ctx, group_id).await {
                     Ok(true) => emit_event(
                         ctx,
-                        crate::internal::Event::ConvoUpdated {
+                        ApiEvent::ConvoUpdated {
                             convo_id: ConvoId::Group { group_id },
                         },
                     ),
@@ -387,7 +389,7 @@ async fn try_apply_roster_event(
 
     emit_event(
         ctx,
-        crate::internal::Event::ConvoUpdated {
+        ApiEvent::ConvoUpdated {
             convo_id: ConvoId::Group { group_id },
         },
     );

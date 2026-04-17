@@ -1,11 +1,12 @@
 use std::time::Duration;
 
 use nullspace_structs::mailbox::MailboxId;
+use nullspace_structs::server::ServerName;
 use nullspace_structs::timestamp::NanoTimestamp;
 
 pub async fn load_mailbox_after(
     conn: &mut sqlx::SqliteConnection,
-    server_name: &nullspace_structs::server::ServerName,
+    server_name: &ServerName,
     mailbox: MailboxId,
 ) -> anyhow::Result<NanoTimestamp> {
     let row = sqlx::query_as::<_, (i64,)>(
@@ -23,7 +24,7 @@ pub async fn load_mailbox_after(
 
 pub async fn update_mailbox_after(
     conn: &mut sqlx::SqliteConnection,
-    server_name: &nullspace_structs::server::ServerName,
+    server_name: &ServerName,
     mailbox: MailboxId,
     after: NanoTimestamp,
 ) -> anyhow::Result<()> {

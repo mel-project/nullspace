@@ -515,6 +515,7 @@ fn configure_theme_styles(ctx: &egui::Context) {
                 &mut style.visuals.widgets.inactive,
             ] {
                 wid.corner_radius = egui::CornerRadius::ZERO.at_least(6);
+                wid.bg_stroke.width = 1.0;
             }
             style.visuals.widgets.hovered.expansion = 0.0;
             style.visuals.widgets.active.expansion = 0.0;

@@ -17,12 +17,11 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use uuid::Uuid;
 
 use crate::Config;
+use crate::api::{Event, InternalRpcError, UploadedRoot};
 use crate::database::DATABASE;
 use crate::events::emit_event;
-use crate::identity::{Identity, identity_exists};
-use crate::internal::{Event, InternalRpcError, UploadedRoot};
-use crate::net::get_auth_token;
-use crate::net::get_server_client;
+use crate::identity::{Identity, get_auth_token, identity_exists};
+use crate::transport::get_server_client;
 
 use super::{TransferProgressCallback, images};
 

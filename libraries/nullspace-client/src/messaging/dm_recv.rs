@@ -5,23 +5,22 @@ use nullspace_structs::event::{Event, EventRecipient};
 use nullspace_structs::mailbox::{MailboxEntry, MailboxId};
 use nullspace_structs::server::ServerName;
 
+use crate::api::Event as ApiEvent;
 use crate::config::Config;
-use crate::convo::{
-    NewThreadEvent, THREAD_KIND_DIRECT, ensure_thread_id, insert_thread_event,
-    thread_accepts_event_link,
-};
 use crate::database::DATABASE;
 use crate::events::emit_event;
-use crate::identity::Identity;
-use crate::net::LONG_POLLER;
-use crate::net::get_auth_token;
-use crate::net::{get_server_client, own_server_name};
-use crate::net::{load_mailbox_after, update_mailbox_after};
+use crate::identity::{Identity, get_auth_token, own_server_name};
+use crate::messaging::THREAD_KIND_DIRECT;
+use crate::storage::{
+    NewThreadEvent, ensure_thread_id, insert_thread_event, load_mailbox_after,
+    thread_accepts_event_link, update_mailbox_after,
+};
+use crate::transport::{LONG_POLLER, get_server_client};
 
 use super::device_crypt::decrypt_and_verify;
 use super::send::store_message_attachments;
 
-pub(super) async fn dm_recv_loop(ctx: &AnyCtx<Config>) {
+pub async fn dm_recv_loop(ctx: &AnyCtx<Config>) {
     loop {
         if let Err(err) = dm_recv_loop_once(ctx).await {
             tracing::error!(error = %err, "dm recv loop error");
@@ -59,7 +58,7 @@ async fn dm_recv_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         after = entry.received_at;
         match process_mailbox_entry(ctx, &server_name, mailbox, entry).await {
             Ok(Some(convo_id)) => {
-                emit_event(ctx, crate::internal::Event::ConvoUpdated { convo_id });
+                emit_event(ctx, ApiEvent::ConvoUpdated { convo_id });
             }
             Ok(None) => {}
             Err(err) => {
@@ -163,7 +162,7 @@ async fn process_mailbox_entry(
                         Ok(group_id) => {
                             emit_event(
                                 ctx,
-                                crate::internal::Event::ConvoUpdated {
+                                ApiEvent::ConvoUpdated {
                                     convo_id: super::ConvoId::Group { group_id },
                                 },
                             );

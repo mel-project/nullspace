@@ -19,7 +19,7 @@ use crate::users::{UserInfo, get_user_dm_mailbox, get_user_info};
 
 use super::device_crypt::sign_and_encrypt;
 
-pub(super) async fn send_dm(
+pub async fn send_dm(
     ctx: &AnyCtx<Config>,
     peer: &UserName,
     event: Event,

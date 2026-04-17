@@ -504,14 +504,12 @@ impl GroupWindowBody<'_, '_> {
                 self.start_action(async move {
                     flatten_rpc(
                         get_rpc()
-                            .group_action(group_id, GroupAction::SetNewMembersMuted { muted })
-                            .await,
-                    )?;
-                    flatten_rpc(
-                        get_rpc()
                             .group_action(
                                 group_id,
-                                GroupAction::SetAllowNewMembersToSeeHistory { allow },
+                                GroupAction::SetMemberDefaults {
+                                    muted,
+                                    allow_history: allow,
+                                },
                             )
                             .await,
                     )?;

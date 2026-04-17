@@ -33,14 +33,16 @@ impl SettingsForm<'_> {
                 + 2.0 * self.ui.spacing().button_padding.y,
         );
 
-        self.ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.set_min_height(row_height);
-            ui.label(label);
-        });
-        self.ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.set_min_height(row_height);
-            add_field(ui);
-        });
+        self.ui
+            .with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.set_min_height(row_height);
+                ui.label(label);
+            });
+        self.ui
+            .with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.set_min_height(row_height);
+                add_field(ui);
+            });
         self.ui.end_row();
     }
 }

@@ -16,24 +16,24 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use serde::{Deserialize, Serialize};
 
-use crate::attachments::store_attachment_root;
+use crate::api::{InternalRpcError, internal_err};
 use crate::config::Config;
-use crate::convo::ensure_thread_id;
-use crate::convo::groups::{load_roster, replace_current_roster, store_gbk};
 use crate::database::DATABASE;
-use crate::internal::{InternalRpcError, internal_err};
+use crate::storage::{
+    ensure_thread_id, load_roster, replace_current_roster, store_attachment_root, store_gbk,
+};
 
 const MAX_TRANSFER_MESSAGES_PER_THREAD: usize = 1000;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningBootstrap {
+pub struct ProvisioningBootstrap {
     pub device_secret: DeviceSecret,
     pub add_device_update: DirectoryUpdate,
     pub dm_mailbox_key: MailboxKey,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningBundle {
+pub struct ProvisioningBundle {
     pub bootstrap: ProvisioningBootstrap,
     pub threads: Vec<ProvisioningThread>,
     pub events: Vec<ProvisioningEvent>,
@@ -42,7 +42,7 @@ pub(super) struct ProvisioningBundle {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningThread {
+pub struct ProvisioningThread {
     pub id: i64,
     pub thread_kind: String,
     pub thread_counterparty: String,
@@ -50,7 +50,7 @@ pub(super) struct ProvisioningThread {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningEvent {
+pub struct ProvisioningEvent {
     pub id: i64,
     pub thread_id: i64,
     pub sender_username: String,
@@ -64,7 +64,7 @@ pub(super) struct ProvisioningEvent {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningGroupState {
+pub struct ProvisioningGroupState {
     pub group_id: GroupId,
     pub rotation_index: u64,
     pub gbk: GroupBearerKey,
@@ -79,7 +79,7 @@ pub(super) struct ProvisioningGroupState {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningGroupMember {
+pub struct ProvisioningGroupMember {
     pub username: UserName,
     pub is_admin: bool,
     pub is_muted: bool,
@@ -87,7 +87,7 @@ pub(super) struct ProvisioningGroupMember {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ProvisioningMailboxState {
+pub struct ProvisioningMailboxState {
     pub server_name: ServerName,
     pub mailbox_id: MailboxId,
     pub after_timestamp: NanoTimestamp,
@@ -124,7 +124,7 @@ struct GroupKeyRow {
     rotation_hash: Vec<u8>,
 }
 
-pub(super) async fn build_provisioning_bundle(
+pub async fn build_provisioning_bundle(
     ctx: &AnyCtx<Config>,
     bootstrap: ProvisioningBootstrap,
     dm_server_name: ServerName,
@@ -145,7 +145,7 @@ pub(super) async fn build_provisioning_bundle(
     })
 }
 
-pub(super) async fn import_provisioning_bundle(
+pub async fn import_provisioning_bundle(
     conn: &mut sqlx::SqliteConnection,
     bundle: &ProvisioningBundle,
 ) -> anyhow::Result<()> {

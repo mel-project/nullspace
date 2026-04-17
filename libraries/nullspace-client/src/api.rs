@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use crate::attachments::{self, AttachmentStatus};
 use crate::config::Config;
-use crate::convo;
-pub use crate::convo::{
+use crate::messaging;
+pub use crate::messaging::{
     ConvoEventItem, ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary,
 };
 use crate::identity;
@@ -473,6 +473,10 @@ pub enum GroupAction {
     SetAllowNewMembersToSeeHistory {
         allow: bool,
     },
+    SetMemberDefaults {
+        muted: bool,
+        allow_history: bool,
+    },
     SetAdmin {
         username: UserName,
         is_admin: bool,
@@ -590,7 +594,7 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn convo_list(&self) -> Result<Vec<ConvoSummary>, InternalRpcError> {
-        convo::convo_list_impl(&self.ctx).await
+        messaging::convo_list_impl(&self.ctx).await
     }
 
     async fn convo_history(
@@ -600,7 +604,7 @@ impl InternalProtocol for InternalImpl {
         after: Option<i64>,
         limit: u16,
     ) -> Result<Vec<ConvoItem>, InternalRpcError> {
-        convo::convo_history_impl(&self.ctx, convo_id, before, after, limit).await
+        messaging::convo_history_impl(&self.ctx, convo_id, before, after, limit).await
     }
 
     async fn convo_send(
@@ -608,7 +612,7 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         message: MessagePayload,
     ) -> Result<i64, InternalRpcError> {
-        convo::convo_send_impl(&self.ctx, convo_id, message).await
+        messaging::convo_send_impl(&self.ctx, convo_id, message).await
     }
 
     async fn convo_mark_read(
@@ -616,11 +620,11 @@ impl InternalProtocol for InternalImpl {
         convo_id: ConvoId,
         up_to_id: i64,
     ) -> Result<(), InternalRpcError> {
-        convo::convo_mark_read_impl(&self.ctx, convo_id, up_to_id).await
+        messaging::convo_mark_read_impl(&self.ctx, convo_id, up_to_id).await
     }
 
     async fn group_create(&self, request: GroupCreateRequest) -> Result<GroupId, InternalRpcError> {
-        convo::group_create_impl(&self.ctx, request).await
+        messaging::group_create_impl(&self.ctx, request).await
     }
 
     async fn own_server(&self) -> Result<ServerName, InternalRpcError> {
@@ -628,7 +632,7 @@ impl InternalProtocol for InternalImpl {
     }
 
     async fn group_view(&self, group: GroupId) -> Result<GroupView, InternalRpcError> {
-        convo::group_view_impl(&self.ctx, group).await
+        messaging::group_view_impl(&self.ctx, group).await
     }
 
     async fn group_action(
@@ -636,7 +640,7 @@ impl InternalProtocol for InternalImpl {
         group: GroupId,
         action: GroupAction,
     ) -> Result<(), InternalRpcError> {
-        convo::group_action_impl(&self.ctx, group, action).await
+        messaging::group_action_impl(&self.ctx, group, action).await
     }
 
     async fn attachment_upload(

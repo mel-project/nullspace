@@ -6,14 +6,14 @@ const IMAGE_TARGET_SIZE_BYTES: usize = 500_000;
 const IMAGE_WEBP_QUALITY: f32 = 70.0;
 const THUMBHASH_MAX_DIMENSION: u32 = 100;
 
-pub(super) struct PreparedImage {
+pub struct PreparedImage {
     pub webp_bytes: Vec<u8>,
     pub thumbhash: String,
     pub width: u32,
     pub height: u32,
 }
 
-pub(super) fn prepare_webp_and_thumbhash(source_bytes: &[u8]) -> anyhow::Result<PreparedImage> {
+pub fn prepare_webp_and_thumbhash(source_bytes: &[u8]) -> anyhow::Result<PreparedImage> {
     let decoded = image::load_from_memory(source_bytes)?;
     let (src_w, src_h) = (decoded.width(), decoded.height());
     if src_w == 0 || src_h == 0 {

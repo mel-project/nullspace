@@ -15,16 +15,15 @@ use tracing::warn;
 
 use super::profile::get_profile;
 use crate::DIR_CLIENT;
-use crate::attachments::store_attachment_root;
 use crate::config::{Config, Ctx};
-use crate::convo::last_dm_received_at;
 use crate::database::DATABASE;
 use crate::identity::{Identity, identity_exists};
-use crate::internal::{
+use crate::api::{
     InternalRpcError, MessageDirection, UserDetails, UserLastMessageSummary, internal_err,
     map_anyhow_err,
 };
-use crate::net::get_server_client;
+use crate::storage::{last_dm_received_at, store_attachment_root};
+use crate::transport::get_server_client;
 
 pub struct UserInfo {
     pub username: UserName,

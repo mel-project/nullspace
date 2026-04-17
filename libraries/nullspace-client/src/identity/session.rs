@@ -9,17 +9,36 @@ use nullspace_structs::server::{
     AuthToken, DeviceAuthRequest, ServerClient, ServerName, SignedDeviceAuthRequest,
 };
 
-use super::server::own_server_name;
+use super::Identity;
 use crate::DIR_CLIENT;
 use crate::RPC_POOL;
 use crate::config::{Config, Ctx};
 use crate::database::DATABASE;
-use crate::identity::Identity;
 
 const AUTH_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
 
 static AUTH_TOKEN_CACHE: Ctx<Cache<ServerName, AuthToken>> =
     |_ctx: &AnyCtx<Config>| Cache::builder().time_to_idle(AUTH_TOKEN_TTL).build();
+
+pub async fn own_server_name(
+    ctx: &AnyCtx<Config>,
+    identity: &Identity,
+) -> anyhow::Result<ServerName> {
+    if let Some(server_name) = identity.server_name.clone() {
+        return Ok(server_name);
+    }
+    let dir = ctx.get(DIR_CLIENT);
+    let descriptor = dir
+        .get_user_descriptor(&identity.username)
+        .await?
+        .context("identity username not in directory")?;
+    let server_name = descriptor.server_name.clone();
+    sqlx::query("UPDATE client_identity SET server_name = ? WHERE id = 1")
+        .bind(server_name.as_str())
+        .execute(ctx.get(DATABASE))
+        .await?;
+    Ok(server_name)
+}
 
 pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
     let db = ctx.get(DATABASE);
@@ -47,11 +66,10 @@ pub async fn get_auth_token(ctx: &AnyCtx<Config>) -> anyhow::Result<AuthToken> {
                 signature: nullspace_crypt::signing::Signature::from_bytes([0u8; 64]),
             };
             request.sign(&device_secret);
-            let auth = server
+            server
                 .device_auth_finish(request)
                 .await?
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-            Ok(auth)
+                .map_err(|err| anyhow::anyhow!(err.to_string()))
         })
         .await
         .map_err(|err: Arc<anyhow::Error>| anyhow::anyhow!(err.to_string()))

@@ -1,33 +1,35 @@
 #![doc = include_str!(concat!(env!("OUT_DIR"), "/README-rustdocified.md"))]
 
+mod api;
 mod attachments;
+mod bootstrap;
 mod c_api;
 mod config;
-mod convo;
 mod database;
 mod events;
 mod identity;
-mod internal;
-mod main_loop;
-mod net;
+mod messaging;
 mod retry;
+mod runtime;
+mod storage;
+mod transport;
 mod users;
 
 use anyctx::AnyCtx;
+use async_channel::Sender;
 use nanorpc::{DynRpcTransport, JrpcRequest, JrpcResponse, RpcTransport};
 use nullspace_dirclient::DirClient;
 use nullspace_rpc_pool::RpcPool;
-use std::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
-pub use crate::config::Config;
-use crate::config::Ctx;
-pub use crate::internal::{
+pub use crate::api::{
     ConvoEventItem, ConvoId, ConvoItem, ConvoItemKind, ConvoItemPreview, ConvoSummary, Event,
     GroupAction, GroupCapabilities, GroupCreateRequest, GroupRosterEntry, GroupSettings, GroupView,
     InternalClient, InternalProtocol, InternalRpcError, MessageDirection, ProvisionHostState,
     RegisterFinish, RegisterStartInfo, UploadedRoot, UserDetails, UserLastMessageSummary,
 };
+pub use crate::config::Config;
+use crate::config::Ctx;
 
 static RPC_POOL: Ctx<RpcPool> =
     |_ctx: &AnyCtx<Config>| RpcPool::builder().max_concurrency(1).build();
@@ -75,13 +77,13 @@ impl Client {
     /// 3. Once an identity exists in the database, launch the background
     ///    workers -- message send/receive loops, medium-term key rotation,
     ///    group refresh / rotation loops, and the event channel used to push
-    ///    [`Event`](internal::Event)s to the frontend.
+    ///    [`Event`](api::Event)s to the frontend.
     ///
     /// # Panics
     ///
     /// Panics if the background thread or Tokio runtime cannot be created.
     pub fn new(config: Config) -> Self {
-        let (send_rpc, recv_rpc) = std::sync::mpsc::channel();
+        let (send_rpc, recv_rpc) = async_channel::unbounded();
         std::thread::Builder::new()
             .name("nullspace-tokio".to_string())
             .stack_size(16_000_000)
@@ -90,7 +92,7 @@ impl Client {
                     .enable_all()
                     .build()
                     .expect("nullspace-client tokio runtime");
-                runtime.block_on(main_loop::main_loop(config, recv_rpc));
+                runtime.block_on(runtime::main_loop(config, recv_rpc));
             })
             .expect("spawn nullspace-client runtime thread");
         Self { send_rpc }
@@ -100,7 +102,7 @@ impl Client {
     ///
     /// The returned [`InternalClient`] is cheap to clone and can be shared
     /// freely across threads.  Every method on it corresponds to a method on
-    /// [`InternalProtocol`](internal::InternalProtocol); calls are dispatched
+    /// [`InternalProtocol`](api::InternalProtocol); calls are dispatched
     /// over an in-process channel to the background service thread.
     pub fn rpc(&self) -> InternalClient {
         let transport = DynRpcTransport::new(InternalTransport {
@@ -109,13 +111,13 @@ impl Client {
         InternalClient::from(transport)
     }
 
-    pub(crate) fn send_rpc_raw(
+    pub fn send_rpc_raw(
         &self,
         req: JrpcRequest,
     ) -> Result<oneshot::Receiver<JrpcResponse>, anyhow::Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.send_rpc
-            .send((req, resp_tx))
+            .send_blocking((req, resp_tx))
             .map_err(|_| anyhow::anyhow!("internal RPC channel closed"))?;
         Ok(resp_rx)
     }
@@ -135,6 +137,7 @@ impl RpcTransport for InternalTransport {
 
         self.send_rpc
             .send((req, resp_tx))
+            .await
             .map_err(|_| anyhow::anyhow!("internal RPC channel closed"))?;
 
         resp_rx

@@ -3,7 +3,7 @@ use nullspace_structs::username::UserName;
 
 use crate::config::Config;
 use crate::database::DATABASE;
-use crate::internal::{InternalRpcError, internal_err};
+use crate::api::{InternalRpcError, internal_err};
 
 use super::Identity;
 

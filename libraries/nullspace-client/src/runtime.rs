@@ -1,54 +1,51 @@
-use std::sync::mpsc::Receiver;
-
 use anyctx::AnyCtx;
+use async_channel::Receiver;
 use futures_concurrency::future::Race;
 use nanorpc::{JrpcRequest, JrpcResponse, RpcService};
 use tokio::sync::oneshot;
 
 use crate::Config;
+use crate::api::Event;
+use crate::api::InternalImpl;
 use crate::database::{DATABASE, DbNotify};
-use crate::events::{event_loop, init_event_tx};
+use crate::events::{emit_event, init_event_tx};
 use crate::identity::identity_exists;
-
-use crate::convo::convo_loop;
-
 use crate::identity::medium_keys::medium_key_loop;
-use crate::internal::InternalImpl;
+use crate::messaging::{group_worker_loop, message_loop};
 
 pub async fn main_loop(
     cfg: Config,
-    recv_rpc: Receiver<(JrpcRequest, oneshot::Sender<JrpcResponse>)>,
+    req_rx: Receiver<(JrpcRequest, oneshot::Sender<JrpcResponse>)>,
 ) {
     let ctx = AnyCtx::new(cfg);
     let _db = ctx.get(DATABASE);
 
-    let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        for msg in recv_rpc {
-            let _ = req_tx.send(msg);
-        }
-    });
-
     let (event_tx, event_rx) = async_channel::unbounded();
     init_event_tx(&ctx, event_tx.clone());
+    emit_initial_login_state(&ctx).await;
     let internal = InternalImpl::new(ctx.clone(), event_rx);
-    let futs = (
-        rpc_loop(internal, req_rx),
-        event_loop(&ctx),
-        worker_loop(&ctx),
-    );
+    let futs = (rpc_loop(internal, req_rx), worker_loop(&ctx));
     futs.race().await;
+}
+
+async fn emit_initial_login_state(ctx: &AnyCtx<Config>) {
+    let db = ctx.get(DATABASE);
+    let logged_in = match db.acquire().await {
+        Ok(mut conn) => identity_exists(&mut conn).await.unwrap_or(false),
+        Err(_) => false,
+    };
+    emit_event(ctx, Event::State { logged_in });
 }
 
 async fn rpc_loop(
     internal: InternalImpl,
-    mut req_rx: tokio::sync::mpsc::UnboundedReceiver<(JrpcRequest, oneshot::Sender<JrpcResponse>)>,
+    req_rx: Receiver<(JrpcRequest, oneshot::Sender<JrpcResponse>)>,
 ) {
-    while let Some((req, resp_tx)) = req_rx.recv().await {
-        let service = crate::internal::InternalService(internal.clone());
+    while let Ok((req, resp_tx)) = req_rx.recv().await {
+        let service = crate::api::InternalService(internal.clone());
         tokio::spawn(async move {
             let response = service.respond_raw(req).await;
-            resp_tx.send(response).ok();
+            let _ = resp_tx.send(response);
         });
     }
 }
@@ -71,5 +68,7 @@ async fn worker_loop(ctx: &AnyCtx<Config>) {
         }
         notify.wait_for_change().await;
     }
-    (convo_loop(ctx), medium_key_loop(ctx)).race().await;
+    (message_loop(ctx), group_worker_loop(ctx), medium_key_loop(ctx))
+        .race()
+        .await;
 }

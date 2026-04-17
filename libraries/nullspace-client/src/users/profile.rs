@@ -7,10 +7,9 @@ use nullspace_structs::username::UserName;
 use super::info::get_user_info;
 use crate::config::Config;
 use crate::database::DATABASE;
-use crate::identity::Identity;
-use crate::identity::identity_exists;
-use crate::internal::{InternalRpcError, internal_err};
-use crate::net::{get_server_client, own_server_name};
+use crate::api::{InternalRpcError, internal_err};
+use crate::identity::{Identity, identity_exists, own_server_name};
+use crate::transport::get_server_client;
 
 pub async fn get_profile(
     ctx: &anyctx::AnyCtx<Config>,

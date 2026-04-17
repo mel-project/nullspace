@@ -13,13 +13,14 @@ use parking_lot::Mutex;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::Config;
+use crate::api::{Event, InternalRpcError};
 use crate::database::DATABASE;
 use crate::events::emit_event;
 use crate::identity::identity_exists;
-use crate::internal::{Event, InternalRpcError};
-use crate::net::get_server_client;
+use crate::storage::load_attachment_root;
+use crate::transport::get_server_client;
 
-use super::{AttachmentStatus, TransferProgressCallback, load_attachment_root};
+use super::{AttachmentStatus, TransferProgressCallback};
 
 const TRANSFER_CONCURRENCY: usize = 16;
 

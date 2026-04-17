@@ -9,11 +9,12 @@ use nullspace_structs::timestamp::NanoTimestamp;
 use nullspace_structs::username::UserName;
 use tracing::warn;
 
-use crate::convo::{NewThreadEvent, ensure_thread_id, insert_thread_event};
+use crate::api::Event as ClientEvent;
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
 use crate::retry::retry_backoff;
-use crate::{attachments::store_attachment_root, config::Config};
+use crate::storage::{NewThreadEvent, ensure_thread_id, insert_thread_event, store_attachment_root};
+use crate::config::Config;
 
 use super::dm_send::send_dm;
 use super::group_send::send_group;
@@ -116,7 +117,7 @@ async fn send_loop_once(ctx: &AnyCtx<Config>) -> anyhow::Result<()> {
         }
         emit_event(
             ctx,
-            crate::internal::Event::ConvoUpdated {
+            ClientEvent::ConvoUpdated {
                 convo_id: convo_id_emit,
             },
         );
@@ -296,7 +297,7 @@ async fn mark_message_failed(
     Ok(())
 }
 
-pub(super) async fn store_message_attachments(
+pub async fn store_message_attachments(
     tx: &mut sqlx::SqliteConnection,
     event_tag: u16,
     event_body: &Bytes,

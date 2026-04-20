@@ -6,8 +6,8 @@ use bytes::Bytes;
 use nullspace_crypt::signing::{Signable, Signature};
 use nullspace_structs::e2ee::HeaderEncrypted;
 use nullspace_structs::event::{
-    GroupInvitation, GroupPermissionChange, GroupSettingsChange, GroupUnban, TAG_GROUP_INVITATION,
-    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN, TAG_LEAVE_REQUEST,
+    GroupInvitation, GroupPermissionChange, GroupSettingsChange, TAG_GROUP_INVITATION,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_LEAVE_REQUEST,
 };
 use nullspace_structs::group::{
     GroupBearerKey, GroupId, GroupMetadata, GroupRoster, GroupRosterSettings, GroupRotation,
@@ -176,12 +176,6 @@ pub async fn refresh_group_state(ctx: &AnyCtx<Config>, group_id: GroupId) -> any
         let roster =
             nullspace_structs::group::decrypt_roster(&payload.gbk, &rotation.roster_encrypted)?;
 
-        let auth = get_auth_token(ctx).await?;
-        server
-            .mailbox_create(auth, payload.gbk.mailbox_key())
-            .await?
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
         let rotation_hash = rotation.hash();
         let next_index = loaded.rotation_index + 1;
         let mut tx = db.begin().await?;
@@ -278,28 +272,7 @@ pub async fn group_action(
         GroupAction::ShareInvite { username } => {
             anyhow::ensure!(am_admin, "only admins can invite");
             anyhow::ensure!(!roster.banned.contains(&username), "user is banned");
-            let loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
-            let gbk = loaded.gbk;
-            let invitation = GroupInvitation {
-                group_id: gbk.group_id,
-                gbk: gbk.clone(),
-                rotation_index: loaded.rotation_index,
-                title: roster.metadata.title.clone(),
-                description: roster.metadata.description.clone(),
-            };
-            let body = super::encode_event_body(&invitation)?;
-            let dm_convo = ConvoId::Direct {
-                peer: username.clone(),
-            };
-            let mut conn = db.acquire().await?;
-            super::send::queue_message(
-                &mut conn,
-                &dm_convo,
-                &identity.username,
-                TAG_GROUP_INVITATION,
-                &body,
-            )
-            .await?;
+            queue_group_invitation_for_user(ctx, group_id, username.clone()).await?;
         }
 
         GroupAction::SetAdmin { username, is_admin } => {
@@ -324,72 +297,17 @@ pub async fn group_action(
             .await?;
         }
 
-        GroupAction::SetMetadata { title, description } => {
+        GroupAction::SetSettings {
+            title,
+            description,
+            new_users_muted,
+            allow_history,
+        } => {
             anyhow::ensure!(am_admin, "only admins can change metadata");
             let body = super::encode_event_body(&GroupSettingsChange {
                 title,
                 description,
-                new_members_muted: roster.settings.new_members_muted,
-                allow_new_members_to_see_history: roster.settings.allow_new_members_to_see_history,
-            })?;
-            let mut conn = db.acquire().await?;
-            super::send::queue_message(
-                &mut conn,
-                &group_convo,
-                &identity.username,
-                TAG_GROUP_SETTINGS_CHANGE,
-                &body,
-            )
-            .await?;
-        }
-
-        GroupAction::SetNewMembersMuted { muted } => {
-            anyhow::ensure!(am_admin, "only admins can change settings");
-            let body = super::encode_event_body(&GroupSettingsChange {
-                title: roster.metadata.title.clone(),
-                description: roster.metadata.description.clone(),
-                new_members_muted: muted,
-                allow_new_members_to_see_history: roster.settings.allow_new_members_to_see_history,
-            })?;
-            let mut conn = db.acquire().await?;
-            super::send::queue_message(
-                &mut conn,
-                &group_convo,
-                &identity.username,
-                TAG_GROUP_SETTINGS_CHANGE,
-                &body,
-            )
-            .await?;
-        }
-
-        GroupAction::SetAllowNewMembersToSeeHistory { allow } => {
-            anyhow::ensure!(am_admin, "only admins can change settings");
-            let body = super::encode_event_body(&GroupSettingsChange {
-                title: roster.metadata.title.clone(),
-                description: roster.metadata.description.clone(),
-                new_members_muted: roster.settings.new_members_muted,
-                allow_new_members_to_see_history: allow,
-            })?;
-            let mut conn = db.acquire().await?;
-            super::send::queue_message(
-                &mut conn,
-                &group_convo,
-                &identity.username,
-                TAG_GROUP_SETTINGS_CHANGE,
-                &body,
-            )
-            .await?;
-        }
-
-        GroupAction::SetMemberDefaults {
-            muted,
-            allow_history,
-        } => {
-            anyhow::ensure!(am_admin, "only admins can change settings");
-            let body = super::encode_event_body(&GroupSettingsChange {
-                title: roster.metadata.title.clone(),
-                description: roster.metadata.description.clone(),
-                new_members_muted: muted,
+                new_members_muted: new_users_muted,
                 allow_new_members_to_see_history: allow_history,
             })?;
             let mut conn = db.acquire().await?;
@@ -408,21 +326,10 @@ pub async fn group_action(
             if banned {
                 roster.members.remove(&username);
                 roster.banned.insert(username);
-                submit_rotation(ctx, &identity, group_id, &roster).await?;
             } else {
-                let body = super::encode_event_body(&GroupUnban {
-                    username: username.clone(),
-                })?;
-                let mut conn = db.acquire().await?;
-                super::send::queue_message(
-                    &mut conn,
-                    &group_convo,
-                    &identity.username,
-                    TAG_GROUP_UNBAN,
-                    &body,
-                )
-                .await?;
+                roster.banned.remove(&username);
             }
+            submit_rotation(ctx, &identity, group_id, &roster).await?;
         }
 
         GroupAction::Leave => {
@@ -445,5 +352,35 @@ pub async fn group_action(
     }
 
     DbNotify::touch();
+    Ok(())
+}
+
+pub async fn queue_group_invitation_for_user(
+    ctx: &AnyCtx<Config>,
+    group_id: GroupId,
+    username: nullspace_structs::username::UserName,
+) -> anyhow::Result<()> {
+    let db = ctx.get(DATABASE);
+    let identity = Identity::load(&mut *db.acquire().await?).await?;
+    let (_, roster) = load_roster(&mut *db.acquire().await?, group_id).await?;
+    let loaded = load_gbk(&mut *db.acquire().await?, group_id).await?;
+    let invitation = GroupInvitation {
+        group_id: loaded.gbk.group_id,
+        gbk: loaded.gbk.clone(),
+        rotation_index: loaded.rotation_index,
+        title: roster.metadata.title.clone(),
+        description: roster.metadata.description.clone(),
+    };
+    let body = super::encode_event_body(&invitation)?;
+    let dm_convo = ConvoId::Direct { peer: username };
+    let mut conn = db.acquire().await?;
+    super::send::queue_message(
+        &mut conn,
+        &dm_convo,
+        &identity.username,
+        TAG_GROUP_INVITATION,
+        &body,
+    )
+    .await?;
     Ok(())
 }

@@ -81,35 +81,9 @@ impl Widget for Convo<'_> {
             let group_access = group_view
                 .as_ref()
                 .and_then(|view| view.as_ref().ok())
-                .map(|view| group_access_state(&app.state.own_username, view));
+                .map(|view| group_is_muted(&app.state.own_username, view));
 
             let full_rect = ui.available_rect_before_wrap();
-            if matches!(group_access, Some(GroupAccessState::Banned)) {
-                ui.allocate_rect(full_rect, egui::Sense::hover());
-                ui.scope_builder(egui::UiBuilder::new().max_rect(full_rect), |ui| {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(
-                            RichText::new("You are banned")
-                                .heading()
-                                .color(ui.visuals().error_fg_color),
-                        );
-                    });
-                });
-
-                if let ConvoId::Group { group_id } = convo_id.get() {
-                    ui.add(GroupWindow {
-                        app,
-                        open: &mut show_group_window,
-                        group: group_id,
-                        user_info: &mut user_info_target,
-                    });
-                }
-                ui.add(UserInfo {
-                    app,
-                    target: user_info_target,
-                });
-                return ui.response();
-            }
 
             let header_height = 40.0;
             let composer_height = 100.0;
@@ -141,11 +115,8 @@ impl Widget for Convo<'_> {
                 render_messages(ui, app, &mut scroller);
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(composer_rect), |ui| {
-                let composer_disabled_reason = match group_access {
-                    Some(GroupAccessState::Muted) => Some("You are muted"),
-                    Some(GroupAccessState::PendingJoin) => Some("Joining group..."),
-                    _ => None,
-                };
+                let composer_disabled_reason = group_access
+                    .and_then(|muted| muted.then_some("You are muted"));
                 render_composer(ui, app, convo_id.get(), composer_disabled_reason);
             });
 
@@ -168,21 +139,9 @@ impl Widget for Convo<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GroupAccessState {
-    Active,
-    Muted,
-    Banned,
-    PendingJoin,
-}
-
-fn group_access_state(own_username: &Option<UserName>, group_view: &GroupView) -> GroupAccessState {
+fn group_is_muted(own_username: &Option<UserName>, group_view: &GroupView) -> bool {
     let Some(own_username) = own_username.as_ref() else {
-        return if group_view.capabilities.can_send_messages {
-            GroupAccessState::Active
-        } else {
-            GroupAccessState::PendingJoin
-        };
+        return false;
     };
 
     match group_view
@@ -190,11 +149,8 @@ fn group_access_state(own_username: &Option<UserName>, group_view: &GroupView) -
         .iter()
         .find(|entry| entry.username == *own_username)
     {
-        Some(entry) if entry.is_banned => GroupAccessState::Banned,
-        Some(entry) if entry.is_muted => GroupAccessState::Muted,
-        Some(_) => GroupAccessState::Active,
-        None if group_view.capabilities.can_send_messages => GroupAccessState::Active,
-        None => GroupAccessState::PendingJoin,
+        Some(entry) => entry.is_muted,
+        None => false,
     }
 }
 

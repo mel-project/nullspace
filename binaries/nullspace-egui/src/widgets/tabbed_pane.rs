@@ -1,4 +1,4 @@
-use eframe::egui::{Response, ScrollArea, Sense, Ui, WidgetText};
+use eframe::egui::{Button, Response, ScrollArea, Sense, Ui, WidgetText};
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
 
@@ -31,20 +31,23 @@ impl<'a> TabbedPane<'a> {
             let rail_rect = egui::Rect::from_min_max(
                 full_rect.min,
                 egui::pos2(full_rect.min.x + rail_width, full_rect.max.y),
-            );
+            )
+            .shrink(8.0);
             let body_rect = egui::Rect::from_min_max(
                 egui::pos2(
                     (rail_rect.max.x + gap).min(full_rect.max.x),
                     full_rect.min.y,
                 ),
                 full_rect.max,
-            );
+            )
+            .shrink(8.0);
 
             let mut rail_ui =
                 ui.new_child(egui::UiBuilder::new().max_rect(rail_rect).id_salt("rail"));
             rail_ui.set_clip_rect(rail_rect);
             rail_ui.set_width(rail_rect.width());
             rail_ui.set_max_width(rail_rect.width());
+            rail_ui.set_min_width(rail_rect.width());
 
             let mut body_host_ui = ui.new_child(
                 egui::UiBuilder::new()
@@ -95,8 +98,15 @@ impl TabbedPaneUi<'_> {
         let index = self.tab_count;
         self.tab_count += 1;
 
-        self.rail_ui
-            .selectable_value(self.selected_tab, index, label.into());
+        let selected = *self.selected_tab == index;
+        let rail_width = self.rail_ui.available_width();
+        let response = self.rail_ui.add_sized(
+            [rail_width, 24.0],
+            Button::new(label.into()).selected(selected),
+        );
+        if response.clicked() {
+            *self.selected_tab = index;
+        }
 
         if *self.selected_tab == index {
             self.body_ui.push_id(index, |ui| body(ui));

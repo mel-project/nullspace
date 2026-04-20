@@ -10,6 +10,11 @@ use super::{
 };
 
 pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<ConvoSummary>> {
+    let local_username = sqlx::query_scalar::<_, String>(
+        "SELECT username FROM client_identity WHERE id = 1",
+    )
+    .fetch_one(&mut *db)
+    .await?;
     let rows = sqlx::query_as::<_, ConvoListRow>(
         "SELECT t.thread_kind, t.thread_counterparty, \
                 (SELECT COUNT(*) FROM thread_events ue \
@@ -20,7 +25,12 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
                    AND ue.event_tag != ? \
                    AND ue.sender_username != ci.username \
                    AND mr.message_id IS NULL) AS unread_count, \
-                e.id AS msg_id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error \
+                e.id AS msg_id, e.sender_username, e.event_tag, e.event_body, e.received_at, mr.read_at, e.send_error, \
+                CASE \
+                    WHEN e.id IS NULL OR e.event_after IS NULL THEN 0 \
+                    WHEN EXISTS (SELECT 1 FROM thread_events parent WHERE parent.thread_id = e.thread_id AND parent.event_hash = e.event_after) THEN 0 \
+                    ELSE 1 \
+                END AS orphaned \
          FROM event_threads t \
          LEFT JOIN thread_events e \
            ON e.id = (SELECT MAX(id) FROM thread_events WHERE thread_id = t.id AND event_tag != ?) \
@@ -35,6 +45,11 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
     for row in rows {
         let convo_id = parse_convo_id(&row.thread_kind, &row.thread_counterparty)
             .ok_or_else(|| anyhow::anyhow!("invalid convo row"))?;
+        if let ConvoId::Group { group_id } = convo_id {
+            if !group_is_active_for_user(db, group_id, &local_username).await? {
+                continue;
+            }
+        }
         let last_item = match (
             row.msg_id,
             row.sender_username,
@@ -59,6 +74,7 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
                         send_error: row.send_error.clone(),
                         received_at: row.received_at.map(|ts| NanoTimestamp(ts as u64)),
                         read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+                        orphaned: row.orphaned.unwrap_or(false),
                         kind,
                     }
                     .preview()
@@ -78,6 +94,25 @@ pub async fn convo_list(db: &mut sqlx::SqliteConnection) -> anyhow::Result<Vec<C
         });
     }
     Ok(out)
+}
+
+async fn group_is_active_for_user(
+    db: &mut sqlx::SqliteConnection,
+    group_id: GroupId,
+    local_username: &str,
+) -> anyhow::Result<bool> {
+    let row = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 \
+         FROM group_keys gk \
+         JOIN group_members_current gm ON gm.group_id = gk.group_id \
+         WHERE gk.group_id = ? AND gm.username = ? \
+         LIMIT 1",
+    )
+    .bind(group_id.to_bytes().to_vec())
+    .bind(local_username)
+    .fetch_optional(&mut *db)
+    .await?;
+    Ok(row.is_some())
 }
 
 async fn display_title_for_convo(
@@ -118,7 +153,12 @@ pub async fn convo_history(
     let thread_kind = convo_id.convo_type();
     let counterparty = convo_id.counterparty();
     let mut rows = sqlx::query_as::<_, ConvoHistoryRow>(
-        "SELECT e.*, mr.read_at \
+        "SELECT e.*, mr.read_at, \
+                CASE \
+                    WHEN e.event_after IS NULL THEN 0 \
+                    WHEN EXISTS (SELECT 1 FROM thread_events parent WHERE parent.thread_id = e.thread_id AND parent.event_hash = e.event_after) THEN 0 \
+                    ELSE 1 \
+                END AS orphaned \
          FROM thread_events e \
          JOIN event_threads t ON e.thread_id = t.id \
          LEFT JOIN message_reads mr ON mr.message_id = e.id \
@@ -157,6 +197,7 @@ pub async fn convo_history(
             send_error: row.event.send_error,
             received_at: row.event.received_at.map(|ts| NanoTimestamp(ts as u64)),
             read_at: row.read_at.map(|ts| NanoTimestamp(ts as u64)),
+            orphaned: row.orphaned,
             kind,
         });
     }

@@ -3,9 +3,8 @@ use std::time::Duration;
 use anyctx::AnyCtx;
 use nullspace_structs::e2ee::DeviceSigned;
 use nullspace_structs::event::{
-    Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, GroupUnban,
-    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN, TAG_JOIN_REQUEST,
-    TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
+    Event, EventRecipient, GroupPermissionChange, GroupSettingsChange, TAG_GROUP_PERMISSION_CHANGE,
+    TAG_GROUP_SETTINGS_CHANGE, TAG_JOIN_REQUEST, TAG_LEAVE_REQUEST, TAG_ROTATION_HINT,
 };
 use nullspace_structs::group::{GroupBearerKey, GroupId, MemberState};
 use nullspace_structs::mailbox::MailboxEntry;
@@ -16,9 +15,10 @@ use crate::api::Event as ApiEvent;
 use crate::config::Config;
 use crate::database::{DATABASE, DbNotify};
 use crate::events::emit_event;
+use crate::identity::Identity;
 use crate::storage::{
     NewThreadEvent, ensure_thread_id, insert_thread_event, load_mailbox_after, load_roster,
-    replace_current_roster, thread_accepts_event_link, update_mailbox_after,
+    remove_local_group_state, replace_current_roster, update_mailbox_after,
 };
 use crate::transport::LONG_POLLER;
 
@@ -236,17 +236,7 @@ async fn process_group_entry(
 
     let convo_id = ConvoId::Group { group_id };
     let mut conn = db.acquire().await?;
-    let thread_id =
-        ensure_thread_id(&mut conn, convo_id.convo_type(), &convo_id.counterparty()).await?;
-    if !thread_accepts_event_link(&mut conn, thread_id, event.after.as_ref()).await? {
-        tracing::warn!(
-            sender = %sender,
-            event_after = ?event.after,
-            group = %group_id,
-            "dropping group event with unknown event parent",
-        );
-        return Ok(ProcessResult::Skip);
-    }
+    let thread_id = ensure_thread_id(&mut conn, convo_id.convo_type(), &convo_id.counterparty()).await?;
     drop(conn);
 
     if let Some(result) =
@@ -331,7 +321,6 @@ async fn try_apply_roster_event(
         tag,
         TAG_GROUP_PERMISSION_CHANGE
             | TAG_GROUP_SETTINGS_CHANGE
-            | TAG_GROUP_UNBAN
             | TAG_JOIN_REQUEST
             | TAG_LEAVE_REQUEST
     ) {
@@ -368,7 +357,20 @@ async fn try_apply_roster_event(
         return Ok(Some(ProcessResult::Skip));
     }
 
+    let identity = Identity::load(&mut conn).await?;
+    let own_leave = tag == TAG_LEAVE_REQUEST && *sender == identity.username;
+
     apply_roster_delta(&mut roster, sender, event)?;
+    if own_leave {
+        remove_local_group_state(&mut conn, group_id).await?;
+        emit_event(
+            ctx,
+            ApiEvent::ConvoUpdated {
+                convo_id: ConvoId::Group { group_id },
+            },
+        );
+        return Ok(Some(ProcessResult::Skip));
+    }
     replace_current_roster(&mut conn, group_id, rotation_index, &roster).await?;
 
     let event_hash = event.hash();
@@ -416,11 +418,6 @@ fn apply_roster_delta(
             roster.settings.new_members_muted = change.new_members_muted;
             roster.settings.allow_new_members_to_see_history =
                 change.allow_new_members_to_see_history;
-            Ok(())
-        }
-        TAG_GROUP_UNBAN => {
-            let change: GroupUnban = event.decode_body()?;
-            roster.banned.remove(&change.username);
             Ok(())
         }
         TAG_JOIN_REQUEST => {

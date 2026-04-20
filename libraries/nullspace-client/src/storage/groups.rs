@@ -185,6 +185,28 @@ pub async fn remove_local_group_state(
     group_id: GroupId,
 ) -> anyhow::Result<()> {
     let gid = group_id.to_bytes().to_vec();
+    let group_thread_counterparty = group_id.to_string();
+    let keys = sqlx::query_as::<_, (Vec<u8>, String)>(
+        "SELECT gbk, server_name FROM group_keys WHERE group_id = ?",
+    )
+    .bind(&gid)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    for (gbk_bytes, server_name) in keys {
+        let gbk: GroupBearerKey = bcs::from_bytes(&gbk_bytes)?;
+        let mailbox_id = gbk.mailbox_key().mailbox_id();
+        sqlx::query("DELETE FROM mailbox_state WHERE server_name = ? AND mailbox_id = ?")
+            .bind(server_name)
+            .bind(mailbox_id.to_bytes().to_vec())
+            .execute(&mut *conn)
+            .await?;
+    }
+
+    sqlx::query("DELETE FROM event_threads WHERE thread_kind = 'group' AND thread_counterparty = ?")
+        .bind(group_thread_counterparty)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query("DELETE FROM group_keys WHERE group_id = ?")
         .bind(&gid)
         .execute(&mut *conn)
@@ -202,6 +224,62 @@ pub async fn remove_local_group_state(
         .execute(&mut *conn)
         .await?;
     Ok(())
+}
+
+pub async fn purge_corrupted_group_state(
+    conn: &mut sqlx::SqliteConnection,
+    local_username: &str,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    let mut group_ids = BTreeSet::new();
+
+    let thread_group_ids = sqlx::query_scalar::<_, String>(
+        "SELECT thread_counterparty FROM event_threads WHERE thread_kind = 'group'",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for group_id_str in thread_group_ids {
+        if let Ok(group_id) = group_id_str.parse::<GroupId>() {
+            group_ids.insert(group_id);
+        }
+    }
+
+    let stored_group_ids = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT group_id FROM group_keys \
+         UNION \
+         SELECT group_id FROM group_state_current \
+         UNION \
+         SELECT group_id FROM group_members_current",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for group_id_bytes in stored_group_ids {
+        if let Ok(group_id_arr) = <[u8; 16]>::try_from(group_id_bytes.as_slice()) {
+            group_ids.insert(GroupId::from_bytes(group_id_arr));
+        }
+    }
+
+    for group_id in group_ids {
+        let is_active = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 \
+             FROM group_keys gk \
+             JOIN group_members_current gm ON gm.group_id = gk.group_id \
+             WHERE gk.group_id = ? AND gm.username = ? \
+             LIMIT 1",
+        )
+        .bind(group_id.to_bytes().to_vec())
+        .bind(local_username)
+        .fetch_optional(&mut *conn)
+        .await?
+        .is_some();
+
+        if !is_active {
+            remove_local_group_state(conn, group_id).await?;
+            changed = true;
+        }
+    }
+
+    Ok(changed)
 }
 
 pub async fn load_gbk(

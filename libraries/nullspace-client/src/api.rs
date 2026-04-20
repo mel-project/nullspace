@@ -459,23 +459,15 @@ pub enum GroupAction {
     ShareInvite {
         username: UserName,
     },
-    SetMetadata {
+    SetSettings {
         title: Option<String>,
         description: Option<String>,
+        new_users_muted: bool,
+        allow_history: bool,
     },
     SetMemberMuted {
         username: UserName,
         muted: bool,
-    },
-    SetNewMembersMuted {
-        muted: bool,
-    },
-    SetAllowNewMembersToSeeHistory {
-        allow: bool,
-    },
-    SetMemberDefaults {
-        muted: bool,
-        allow_history: bool,
     },
     SetAdmin {
         username: UserName,

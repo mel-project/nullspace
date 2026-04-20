@@ -12,8 +12,7 @@ use crate::events::emit_event;
 use crate::identity::{Identity, get_auth_token, own_server_name};
 use crate::messaging::THREAD_KIND_DIRECT;
 use crate::storage::{
-    NewThreadEvent, ensure_thread_id, insert_thread_event, load_mailbox_after,
-    thread_accepts_event_link, update_mailbox_after,
+    NewThreadEvent, ensure_thread_id, insert_thread_event, load_mailbox_after, update_mailbox_after,
 };
 use crate::transport::{LONG_POLLER, get_server_client};
 
@@ -124,14 +123,6 @@ async fn process_mailbox_entry(
 
     let mut conn = db.acquire().await?;
     let thread_id = ensure_thread_id(&mut conn, THREAD_KIND_DIRECT, peer_username.as_str()).await?;
-    if !thread_accepts_event_link(&mut conn, thread_id, event.after.as_ref()).await? {
-        tracing::warn!(
-            sender = %verified.sender,
-            event_after = ?event.after,
-            "dropping DM event with unknown event parent",
-        );
-        return Ok(None);
-    }
 
     let event_hash = event.hash();
     let inserted = insert_thread_event(
@@ -153,12 +144,16 @@ async fn process_mailbox_entry(
         store_message_attachments(&mut conn, event.tag, &event.body).await?;
         drop(conn);
 
-        if event.tag == nullspace_structs::event::TAG_GROUP_INVITATION
-            && verified.sender != identity.username
-        {
+        if event.tag == nullspace_structs::event::TAG_GROUP_INVITATION {
             match event.decode_body::<nullspace_structs::event::GroupInvitation>() {
                 Ok(invitation) => {
-                    match super::convo_impl::accept_group_invitation(ctx, &invitation).await {
+                    match super::convo_impl::accept_group_invitation(
+                        ctx,
+                        &invitation,
+                        verified.sender != identity.username,
+                    )
+                    .await
+                    {
                         Ok(group_id) => {
                             emit_event(
                                 ctx,

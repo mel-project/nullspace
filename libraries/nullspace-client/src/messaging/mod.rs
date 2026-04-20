@@ -20,9 +20,9 @@ use anyctx::AnyCtx;
 use bytes::Bytes;
 use futures_concurrency::future::Race;
 use nullspace_structs::event::{
-    GroupPermissionChange, GroupSettingsChange, GroupUnban, MessagePayload, MessageText,
-    TAG_GROUP_INVITATION, TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_GROUP_UNBAN,
-    TAG_JOIN_REQUEST, TAG_LEAVE_REQUEST, TAG_MESSAGE,
+    GroupPermissionChange, GroupSettingsChange, MessagePayload, MessageText, TAG_GROUP_INVITATION,
+    TAG_GROUP_PERMISSION_CHANGE, TAG_GROUP_SETTINGS_CHANGE, TAG_JOIN_REQUEST, TAG_LEAVE_REQUEST,
+    TAG_MESSAGE,
 };
 use nullspace_structs::group::GroupId;
 use nullspace_structs::timestamp::NanoTimestamp;
@@ -89,6 +89,7 @@ pub struct ConvoItem {
     pub send_error: Option<String>,
     pub received_at: Option<NanoTimestamp>,
     pub read_at: Option<NanoTimestamp>,
+    pub orphaned: bool,
     pub kind: ConvoItemKind,
 }
 
@@ -104,7 +105,6 @@ pub enum ConvoItemKind {
 pub enum ConvoEventItem {
     GroupPermissionChange(GroupPermissionChange),
     GroupSettingsChange(GroupSettingsChange),
-    GroupUnban(GroupUnban),
     JoinRequest,
     LeaveRequest,
     Unknown { tag: u16 },
@@ -183,7 +183,6 @@ impl ConvoEventItem {
                     "Group settings now set to: {title}; {description}; {new_members}; {history}"
                 )
             }
-            ConvoEventItem::GroupUnban(change) => format!("{} unbanned", change.username),
             ConvoEventItem::JoinRequest => format!("{sender} joined"),
             ConvoEventItem::LeaveRequest => format!("{sender} left"),
             ConvoEventItem::Unknown { tag } => format!("Unknown event tag {tag}"),
@@ -226,6 +225,7 @@ struct ConvoListRow {
     pub received_at: Option<i64>,
     pub read_at: Option<i64>,
     pub send_error: Option<String>,
+    pub orphaned: Option<bool>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -233,6 +233,7 @@ struct ConvoHistoryRow {
     #[sqlx(flatten)]
     pub event: ThreadEventsRow,
     pub read_at: Option<i64>,
+    pub orphaned: bool,
 }
 
 pub async fn message_loop(ctx: &AnyCtx<Config>) {
@@ -264,7 +265,6 @@ fn decode_convo_item_kind(event_tag: u16, body: &[u8]) -> anyhow::Result<Option<
             ConvoEventItem::GroupPermissionChange(decode_event_body(body)?)
         }
         TAG_GROUP_SETTINGS_CHANGE => ConvoEventItem::GroupSettingsChange(decode_event_body(body)?),
-        TAG_GROUP_UNBAN => ConvoEventItem::GroupUnban(decode_event_body(body)?),
         TAG_JOIN_REQUEST => ConvoEventItem::JoinRequest,
         TAG_LEAVE_REQUEST => ConvoEventItem::LeaveRequest,
         _ => ConvoEventItem::Unknown { tag: event_tag },

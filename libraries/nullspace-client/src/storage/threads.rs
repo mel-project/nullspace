@@ -58,34 +58,6 @@ pub async fn insert_thread_event(
     Ok(row.map(|(id,)| id))
 }
 
-pub async fn thread_accepts_event_link(
-    conn: &mut sqlx::SqliteConnection,
-    thread_id: i64,
-    event_after: Option<&Hash>,
-) -> anyhow::Result<bool> {
-    let Some(prev_hash) = event_after else {
-        return Ok(true);
-    };
-
-    let exists = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM thread_events WHERE thread_id = ? AND event_hash = ? LIMIT 1",
-    )
-    .bind(thread_id)
-    .bind(prev_hash.to_bytes().to_vec())
-    .fetch_optional(&mut *conn)
-    .await?;
-    if exists.is_some() {
-        return Ok(true);
-    }
-
-    let has_any =
-        sqlx::query_scalar::<_, i64>("SELECT 1 FROM thread_events WHERE thread_id = ? LIMIT 1")
-            .bind(thread_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    Ok(has_any.is_none())
-}
-
 pub async fn last_dm_received_at(
     db: &mut sqlx::SqliteConnection,
     local_username: &UserName,

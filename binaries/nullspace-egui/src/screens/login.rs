@@ -1,4 +1,4 @@
-use eframe::egui::{Button, Response, Spinner, Widget};
+use eframe::egui::{Button, Key, Response, Spinner, Widget};
 use egui::{Color32, ComboBox, Modal, RichText, TextEdit};
 use egui_hooks::UseHookExt;
 use nullspace_client::RegisterFinish;
@@ -69,13 +69,17 @@ impl Widget for Login<'_> {
             ui.separator();
             match *step {
                 LoginStep::EnterUsername => {
-                    ui.add(
+                    let username_response = ui.add(
                         TextEdit::singleline(&mut *username_str).hint_text("Enter a @username"),
                     );
+                    let submit = !rpc_running
+                        && (ui.add(Button::new("Next")).clicked()
+                            || (username_response.lost_focus()
+                                && ui.input(|i| i.key_pressed(Key::Enter))));
 
                     if rpc_running {
                         ui.add(Spinner::new());
-                    } else if ui.add(Button::new("Next")).clicked() {
+                    } else if submit {
                         let username = match username_str.parse::<UserName>() {
                             Ok(username) => username,
                             Err(err) => {
@@ -123,10 +127,11 @@ impl Widget for Login<'_> {
                     });
 
                     let server_str = if *server_choice == "Custom" {
-                        ui.add(
+                        let custom_server_response = ui.add(
                             TextEdit::singleline(&mut *custom_server_str)
                                 .hint_text("Enter a ~server_id"),
                         );
+                        let _ = custom_server_response;
                         (*custom_server_str).clone()
                     } else {
                         ui.label(
@@ -139,12 +144,14 @@ impl Widget for Login<'_> {
                     };
 
                     let register_enabled = !rpc_running;
+                    let enter_pressed = ui.input(|i| i.key_pressed(Key::Enter));
+                    let mut register_clicked = false;
 
                     ui.horizontal_centered(|ui| {
-                        if ui
+                        register_clicked = ui
                             .add_enabled(register_enabled, eframe::egui::Button::new("Register"))
-                            .clicked()
-                        {
+                            .clicked();
+                        if register_clicked || (register_enabled && enter_pressed) {
                             let server_name =
                                 match server_str.parse::<nullspace_structs::server::ServerName>() {
                                     Ok(server_name) => server_name,
@@ -174,15 +181,18 @@ impl Widget for Login<'_> {
                 LoginStep::FinishAddDevice => {
                     ui.label(format!("The user {username_str} exists!"));
                     ui.label("Enter the pairing code from your existing device:");
-                    ui.text_edit_singleline(&mut *pairing_code);
+                    let pairing_response = ui.text_edit_singleline(&mut *pairing_code);
                     ui.label(
                         RichText::new("On your other device, go to [File] > [Add device]").small(),
                     );
                     let add_enabled = !rpc_running;
-                    if ui
+                    let submit = add_enabled
+                        && (ui
                         .add_enabled(add_enabled, eframe::egui::Button::new("Log in"))
                         .clicked()
-                    {
+                            || (pairing_response.lost_focus()
+                                && ui.input(|i| i.key_pressed(Key::Enter))));
+                    if submit {
                         let username: UserName = match username_str.parse() {
                             Ok(username) => username,
                             Err(err) => {

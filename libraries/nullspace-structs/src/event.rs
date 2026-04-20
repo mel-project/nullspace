@@ -16,7 +16,6 @@ pub const TAG_GROUP_INVITATION: u16 = 3;
 pub const TAG_LEAVE_REQUEST: u16 = 4;
 pub const TAG_GROUP_PERMISSION_CHANGE: u16 = 5;
 pub const TAG_GROUP_SETTINGS_CHANGE: u16 = 6;
-pub const TAG_GROUP_UNBAN: u16 = 7;
 pub const TAG_JOIN_REQUEST: u16 = 8;
 
 /// Distinguishes whether an event targets a DM or a group conversation.
@@ -151,17 +150,5 @@ pub struct GroupSettingsChange {
 impl EventBody for GroupSettingsChange {
     fn tag() -> u16 {
         TAG_GROUP_SETTINGS_CHANGE
-    }
-}
-
-/// Body of a `TAG_GROUP_UNBAN` group mailbox event.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GroupUnban {
-    pub username: UserName,
-}
-
-impl EventBody for GroupUnban {
-    fn tag() -> u16 {
-        TAG_GROUP_UNBAN
     }
 }

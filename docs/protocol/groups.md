@@ -142,13 +142,13 @@ A rotation (and therefore a new GBK and mailbox epoch) is required when:
 - **Group creation** — the initial rotation establishes the group.
 - **Admin set change** — granting or revoking admin status requires a rotation so that `new_admin_set` in the chain stays consistent with actual admin authority.
 - **Banning a member** — the banned member's access must be revoked by changing the GBK.
+- **Unbanning a member** — restoring membership uses a new rotation so invites can point at an authoritative current snapshot.
 - **Admin leaving** — admin departure requires a rotation to update the admin set.
 - **Periodic key rotation** — probabilistic, targeting ~1 rotation per day. Each hour, each admin independently rolls the dice with probability `1 / (24 * n_admins)`, so the expected aggregate interval is ~24 hours regardless of admin count.
 
 Actions that do **not** require a rotation:
 - Joining after invite acceptance (sends a JOIN_REQUEST event instead)
 - Non-admin member leaving (sends a LEAVE_REQUEST event instead)
-- Unbanning a member
 - Mute changes, metadata changes, settings changes (sent as in-epoch events)
 - Sharing an invite
 
@@ -160,12 +160,11 @@ Within an epoch, admins (and non-admin leavers) can modify group state by postin
 |-----|------|---------------|------|--------|
 | 5 | GROUP_PERMISSION_CHANGE | admin only | `{"username", "muted"}` | sets `is_muted` for the named member |
 | 6 | GROUP_SETTINGS_CHANGE | admin only | `{"title", "description", "new_members_muted", "allow_new_members_to_see_history"}` | updates metadata and/or group-wide settings |
-| 7 | GROUP_UNBAN | admin only | `{"username"}` | removes the named user from the banned set |
 | 8 | JOIN_REQUEST | any invited, non-banned user | empty | adds sender to the roster as a non-admin member, using the current default mute setting |
 | 4 | LEAVE_REQUEST | any member | empty | removes sender from the roster |
 | 2 | ROTATION_HINT | any member | empty | signals clients to check registry for a new rotation (not a roster change) |
 
-Clients MUST verify that the event sender is an admin before applying tags 5–7. JOIN_REQUEST (tag 8) is accepted from non-banned senders. LEAVE_REQUEST (tag 4) is accepted from any current member. ROTATION_HINT (tag 2) does not modify the roster.
+Clients MUST verify that the event sender is an admin before applying tags 5–6. JOIN_REQUEST (tag 8) is accepted from non-banned senders. LEAVE_REQUEST (tag 4) is accepted from any current member. ROTATION_HINT (tag 2) does not modify the roster.
 
 Admin set changes are not delivered as in-epoch events — they go through the rotation registry instead, keeping `new_admin_set` authoritative and up to date.
 

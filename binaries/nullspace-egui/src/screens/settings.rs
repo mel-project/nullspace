@@ -22,8 +22,7 @@ impl Widget for Settings<'_> {
             Window::new("Settings")
                 .collapsible(false)
                 .default_pos(center)
-                .max_size([500.0, 500.0])
-                .resizable(false)
+                .default_size([400.0, 300.0])
                 .open(&mut window_open)
                 .show(ui.ctx(), |ui| {
                     TabbedPane::new("settings_tabs")

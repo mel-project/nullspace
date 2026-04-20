@@ -41,9 +41,8 @@ The outer event is BCS-encoded, but the current implementation encodes typed eve
 | LEAVE_REQUEST | 4 | group | empty |
 | GROUP_PERMISSION_CHANGE | 5 | group | JSON-encoded [GroupPermissionChangeBody](#grouppermissionchangebody) |
 | GROUP_SETTINGS_CHANGE | 6 | group | JSON-encoded [GroupSettingsChangeBody](#groupsettingschangebody) |
-| GROUP_UNBAN | 7 | group | JSON-encoded [GroupUnbanBody](#groupunbanbody) |
 
-Tags 2 and 4–7 are group management events. Their authorization and semantics are specified in [groups](groups.md).
+Tags 2 and 4–6 are group management events. Their authorization and semantics are specified in [groups](groups.md).
 
 ## MessagePayload
 
@@ -82,12 +81,6 @@ Sent in a group mailbox (tag 6) by an admin. The JSON body contains:
 - `description`: optional new group description (or `null` to clear)
 - `new_members_muted`: boolean — whether newly invited members start muted
 - `allow_new_members_to_see_history`: boolean — whether new members can see messages from before they joined
-
-## GroupUnbanBody
-
-Sent in a group mailbox (tag 7) by an admin. The JSON body contains:
-
-- `username`: the user to remove from the banned set
 
 ## JoinRequestBody
 

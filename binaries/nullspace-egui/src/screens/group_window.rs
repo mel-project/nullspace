@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
 use eframe::egui::{
-    Button, Checkbox, Response, RichText, ScrollArea, TextEdit, Ui, Widget, Window,
+    Button, Checkbox, Label, Response, RichText, ScrollArea, TextEdit, Ui, Widget, Window,
 };
 use egui_hooks::UseHookExt;
 use egui_hooks::hook::state::Var;
@@ -102,7 +102,6 @@ impl Widget for GroupWindow<'_> {
                 TabbedPane::new("group_tabs")
                     .rail_width(120.0)
                     .show(ui, |tabs| {
-                        tabs.tab("Overview", |ui| body.render_overview(ui));
                         tabs.tab("Members", |ui| body.render_members(ui));
                         tabs.tab("Settings", |ui| body.render_settings(ui));
                     });
@@ -158,18 +157,23 @@ impl GroupWindowBody<'_, '_> {
         actions.start(future);
     }
 
-    fn render_overview(&mut self, ui: &mut Ui) {
+    fn render_settings(&mut self, ui: &mut Ui) {
         let mut title_draft: Var<String> = ui.use_state(String::new, ()).into_var();
         let mut description_draft: Var<String> = ui.use_state(String::new, ()).into_var();
         let mut last_loaded_metadata: Var<Option<(Option<String>, Option<String>)>> = ui
             .use_state(|| None::<(Option<String>, Option<String>)>, ())
             .into_var();
+        let mut new_members_muted: Var<bool> = ui.use_state(|| false, ()).into_var();
+        let mut allow_history: Var<bool> = ui.use_state(|| false, ()).into_var();
+        let mut last_loaded_settings: Var<Option<(bool, bool)>> =
+            ui.use_state(|| None::<(bool, bool)>, ()).into_var();
+        let mut confirm_leave: Var<bool> = ui.use_state(|| false, ()).into_var();
 
-        let loaded_pair = (
+        let loaded_metadata = (
             self.group_view.title.clone(),
             self.group_view.description.clone(),
         );
-        if *last_loaded_metadata != Some(loaded_pair.clone()) {
+        if *last_loaded_metadata != Some(loaded_metadata.clone()) {
             let current_title = self.group_view.title.clone().unwrap_or_default();
             let current_description = self.group_view.description.clone().unwrap_or_default();
             let metadata_dirty =
@@ -177,7 +181,20 @@ impl GroupWindowBody<'_, '_> {
             if !metadata_dirty || last_loaded_metadata.is_none() {
                 *title_draft = current_title;
                 *description_draft = current_description;
-                *last_loaded_metadata = Some(loaded_pair);
+                *last_loaded_metadata = Some(loaded_metadata);
+            }
+        }
+        let loaded_defaults = (
+            self.group_view.settings.new_members_muted,
+            self.group_view.settings.allow_new_members_to_see_history,
+        );
+        if *last_loaded_settings != Some(loaded_defaults) {
+            let defaults_dirty =
+                *new_members_muted != loaded_defaults.0 || *allow_history != loaded_defaults.1;
+            if !defaults_dirty || last_loaded_settings.is_none() {
+                *new_members_muted = loaded_defaults.0;
+                *allow_history = loaded_defaults.1;
+                *last_loaded_settings = Some(loaded_defaults);
             }
         }
 
@@ -229,25 +246,54 @@ impl GroupWindowBody<'_, '_> {
 
         let loaded_title = self.group_view.title.clone().unwrap_or_default();
         let loaded_description = self.group_view.description.clone().unwrap_or_default();
-        let metadata_dirty =
-            *title_draft != loaded_title || *description_draft != loaded_description;
+        let metadata_dirty = *title_draft != loaded_title || *description_draft != loaded_description;
+
+        ui.separator();
+        ui.heading("Member defaults");
+        ui.add_enabled(
+            self.group_view.capabilities.can_manage_members && !self.busy,
+            Checkbox::new(&mut *new_members_muted, "Mute new members by default"),
+        );
+        ui.add_enabled(
+            self.group_view.capabilities.can_manage_members && !self.busy,
+            Checkbox::new(
+                &mut *allow_history,
+                "Allow new members to see history from before they joined",
+            ),
+        );
+        let defaults_dirty =
+            *new_members_muted != loaded_defaults.0 || *allow_history != loaded_defaults.1;
+        let settings_dirty = metadata_dirty || defaults_dirty;
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_edit_metadata && metadata_dirty && !self.busy,
+                    self.group_view.capabilities.can_edit_metadata
+                        && self.group_view.capabilities.can_manage_members
+                        && settings_dirty
+                        && !self.busy,
                     Button::new("Save"),
                 )
                 .clicked()
             {
                 let title = non_empty(title_draft.trim().to_string());
                 let description = non_empty(description_draft.trim().to_string());
+                let new_users_muted = *new_members_muted;
+                let allow_history = *allow_history;
                 let group_id = self.group_id;
                 self.start_action(async move {
                     flatten_rpc(
                         get_rpc()
-                            .group_action(group_id, GroupAction::SetMetadata { title, description })
+                            .group_action(
+                                group_id,
+                                GroupAction::SetSettings {
+                                    title,
+                                    description,
+                                    new_users_muted,
+                                    allow_history,
+                                },
+                            )
                             .await,
                     )?;
                     Ok(GroupActionFeedback::None)
@@ -255,16 +301,60 @@ impl GroupWindowBody<'_, '_> {
             }
             if ui
                 .add_enabled(
-                    self.group_view.capabilities.can_edit_metadata && metadata_dirty && !self.busy,
+                    self.group_view.capabilities.can_edit_metadata
+                        && self.group_view.capabilities.can_manage_members
+                        && settings_dirty
+                        && !self.busy,
                     Button::new("Reset"),
                 )
                 .clicked()
             {
                 *title_draft = loaded_title;
                 *description_draft = loaded_description;
+                *new_members_muted = loaded_defaults.0;
+                *allow_history = loaded_defaults.1;
                 *self.inline_error = None;
             }
         });
+
+
+        ui.separator();
+        ui.heading("Danger zone");
+        ui.label(
+            RichText::new("Leaving removes this group from your active local state.")
+                .color(ui.visuals().warn_fg_color),
+        );
+        if !*confirm_leave {
+            if ui
+                .add_enabled(
+                    self.group_view.capabilities.can_leave && !self.busy,
+                    Button::new("Leave group"),
+                )
+                .clicked()
+            {
+                *confirm_leave = true;
+            }
+        } else {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        self.group_view.capabilities.can_leave && !self.busy,
+                        Button::new("Confirm leave"),
+                    )
+                    .clicked()
+                {
+                    let group_id = self.group_id;
+                    self.start_action(async move {
+                        flatten_rpc(get_rpc().group_action(group_id, GroupAction::Leave).await)?;
+                        Ok(GroupActionFeedback::CloseWindow)
+                    });
+                    *confirm_leave = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    *confirm_leave = false;
+                }
+            });
+        }
     }
 
     fn render_members(&mut self, ui: &mut Ui) {
@@ -334,7 +424,10 @@ impl GroupWindowBody<'_, '_> {
                 headline.push_str(" [muted]");
             }
 
-            if ui.selectable_label(false, headline).clicked() {
+            if ui
+                .add(Label::new(RichText::new(headline)).sense(egui::Sense::click()))
+                .clicked()
+            {
                 *self.user_info_target = Some(entry.username.clone());
             }
             ui.label(RichText::new(entry.username.as_str()).color(ui.visuals().weak_text_color()));
@@ -452,120 +545,6 @@ impl GroupWindowBody<'_, '_> {
                 }
             });
         });
-    }
-
-    fn render_settings(&mut self, ui: &mut Ui) {
-        let mut new_members_muted: Var<bool> = ui.use_state(|| false, ()).into_var();
-        let mut allow_history: Var<bool> = ui.use_state(|| false, ()).into_var();
-        let mut last_loaded_settings: Var<Option<(bool, bool)>> =
-            ui.use_state(|| None::<(bool, bool)>, ()).into_var();
-        let mut confirm_leave: Var<bool> = ui.use_state(|| false, ()).into_var();
-
-        let loaded_pair = (
-            self.group_view.settings.new_members_muted,
-            self.group_view.settings.allow_new_members_to_see_history,
-        );
-        if *last_loaded_settings != Some(loaded_pair) {
-            let settings_dirty =
-                *new_members_muted != loaded_pair.0 || *allow_history != loaded_pair.1;
-            if !settings_dirty || last_loaded_settings.is_none() {
-                *new_members_muted = loaded_pair.0;
-                *allow_history = loaded_pair.1;
-                *last_loaded_settings = Some(loaded_pair);
-            }
-        }
-        let settings_dirty = *new_members_muted != loaded_pair.0 || *allow_history != loaded_pair.1;
-
-        ui.heading("Member defaults");
-        ui.add_enabled(
-            self.group_view.capabilities.can_manage_members && !self.busy,
-            Checkbox::new(&mut *new_members_muted, "Mute new members by default"),
-        );
-        ui.add_enabled(
-            self.group_view.capabilities.can_manage_members && !self.busy,
-            Checkbox::new(
-                &mut *allow_history,
-                "Allow new members to see history from before they joined",
-            ),
-        );
-
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    self.group_view.capabilities.can_manage_members && settings_dirty && !self.busy,
-                    Button::new("Save"),
-                )
-                .clicked()
-            {
-                let muted = *new_members_muted;
-                let allow = *allow_history;
-                let group_id = self.group_id;
-                self.start_action(async move {
-                    flatten_rpc(
-                        get_rpc()
-                            .group_action(
-                                group_id,
-                                GroupAction::SetMemberDefaults {
-                                    muted,
-                                    allow_history: allow,
-                                },
-                            )
-                            .await,
-                    )?;
-                    Ok(GroupActionFeedback::None)
-                });
-            }
-            if ui
-                .add_enabled(
-                    self.group_view.capabilities.can_manage_members && settings_dirty && !self.busy,
-                    Button::new("Reset"),
-                )
-                .clicked()
-            {
-                *new_members_muted = loaded_pair.0;
-                *allow_history = loaded_pair.1;
-                *self.inline_error = None;
-            }
-        });
-
-        ui.separator();
-        ui.heading("Danger zone");
-        ui.label(
-            RichText::new("Leaving removes this group from your active local state.")
-                .color(ui.visuals().warn_fg_color),
-        );
-        if !*confirm_leave {
-            if ui
-                .add_enabled(
-                    self.group_view.capabilities.can_leave && !self.busy,
-                    Button::new("Leave group"),
-                )
-                .clicked()
-            {
-                *confirm_leave = true;
-            }
-        } else {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        self.group_view.capabilities.can_leave && !self.busy,
-                        Button::new("Confirm leave"),
-                    )
-                    .clicked()
-                {
-                    let group_id = self.group_id;
-                    self.start_action(async move {
-                        flatten_rpc(get_rpc().group_action(group_id, GroupAction::Leave).await)?;
-                        Ok(GroupActionFeedback::CloseWindow)
-                    });
-                    *confirm_leave = false;
-                }
-                if ui.button("Cancel").clicked() {
-                    *confirm_leave = false;
-                }
-            });
-        }
     }
 
     fn render_add_members_window(&mut self, ui: &mut Ui) {

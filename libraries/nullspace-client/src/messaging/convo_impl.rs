@@ -192,6 +192,7 @@ pub async fn group_view_impl(
 pub async fn accept_group_invitation(
     ctx: &AnyCtx<Config>,
     invitation: &GroupInvitation,
+    sync_other_devices: bool,
 ) -> anyhow::Result<GroupId> {
     let db = ctx.get(DATABASE);
     let identity = Identity::load(&mut *db.acquire().await.map_err(internal_err)?).await?;
@@ -215,6 +216,11 @@ pub async fn accept_group_invitation(
 
     let roster = nullspace_structs::group::decrypt_roster(&gbk, &rotation.roster_encrypted)
         .map_err(|err| anyhow::anyhow!(err))?;
+    let was_already_member = load_roster(&mut *db.acquire().await?, group_id)
+        .await
+        .ok()
+        .is_some_and(|(_, roster)| roster.members.contains_key(&identity.username));
+    let should_join = !was_already_member;
 
     let rotation_hash = rotation.hash();
 
@@ -233,9 +239,7 @@ pub async fn accept_group_invitation(
     replace_current_roster(&mut tx, group_id, invitation_rotation_index, &roster).await?;
     let convo_id = ConvoId::Group { group_id };
     ensure_thread_id(&mut tx, convo_id.convo_type(), &convo_id.counterparty()).await?;
-    if !roster.members.contains_key(&identity.username)
-        && !roster.banned.contains(&identity.username)
-    {
+    if sync_other_devices && should_join {
         super::send::queue_message(
             &mut tx,
             &convo_id,
@@ -247,5 +251,9 @@ pub async fn accept_group_invitation(
     }
     tx.commit().await?;
     DbNotify::touch();
+    if sync_other_devices && should_join {
+        super::groups::queue_group_invitation_for_user(ctx, group_id, identity.username).await?;
+        DbNotify::touch();
+    }
     Ok(group_id)
 }

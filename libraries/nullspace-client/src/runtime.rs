@@ -9,9 +9,10 @@ use crate::api::Event;
 use crate::api::InternalImpl;
 use crate::database::{DATABASE, DbNotify};
 use crate::events::{emit_event, init_event_tx};
-use crate::identity::identity_exists;
+use crate::identity::{Identity, identity_exists};
 use crate::identity::medium_keys::medium_key_loop;
 use crate::messaging::{group_worker_loop, message_loop};
+use crate::storage::purge_corrupted_group_state;
 
 pub async fn main_loop(
     cfg: Config,
@@ -68,7 +69,31 @@ async fn worker_loop(ctx: &AnyCtx<Config>) {
         }
         notify.wait_for_change().await;
     }
+    scrub_group_state(ctx).await;
     (message_loop(ctx), group_worker_loop(ctx), medium_key_loop(ctx))
         .race()
         .await;
+}
+
+async fn scrub_group_state(ctx: &AnyCtx<Config>) {
+    let db = ctx.get(DATABASE);
+    let mut conn = match db.acquire().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to acquire database connection for group scrub");
+            return;
+        }
+    };
+    let identity = match Identity::load(&mut conn).await {
+        Ok(identity) => identity,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to load identity for group scrub");
+            return;
+        }
+    };
+    match purge_corrupted_group_state(&mut conn, identity.username.as_str()).await {
+        Ok(true) => DbNotify::touch(),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(error = %err, "failed to purge corrupted group state"),
+    }
 }

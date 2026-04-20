@@ -32,6 +32,11 @@ impl Widget for SteadyState<'_> {
             self.0.state.msg_updates,
         );
         let convos = ui_unwrap!(ui, convos);
+        if let Some(selection) = state.selected_chat.as_ref()
+            && !convos.iter().any(|convo| convo.convo_id == *selection)
+        {
+            state.selected_chat = None;
+        }
         let Some(own_username) = self.0.state.own_username.clone() else {
             return ui.response();
         };
